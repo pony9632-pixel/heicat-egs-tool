@@ -9,7 +9,9 @@ import csv
 import io
 import json
 import re
+import subprocess
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -23,7 +25,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.3"
+VERSION     = "1.5.4"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -714,6 +716,10 @@ class SingleOrderView(tk.Frame):
         super().__init__(master, bg=PAPER)
         self.app = app
         self.fields = {}
+        self._staging = []   # list of {order_id, name, obt, pdf_path, var}
+        self._print_btn = None
+        self._staging_card = None
+        self._staging_list_frame = None
         self._build()
 
     def _build(self):
@@ -833,6 +839,23 @@ class SingleOrderView(tk.Frame):
         self.result_lbl = tk.Label(wrap, textvariable=self.result_var,
             bg=PAPER, fg=INK2, font=F_SMALL, wraplength=820, justify="left")
         self.result_lbl.pack(fill="x", pady=(14, 0))
+
+        # staging card — hidden until first order is created
+        self._staging_card = Card(wrap, padding=18)
+        sc = self._staging_card.body
+        sh = tk.Frame(sc, bg=CARD); sh.pack(fill="x", pady=(0, 10))
+        Kicker(sh, "待列印清單").pack(side="left")
+        sg_btns = tk.Frame(sh, bg=CARD); sg_btns.pack(side="right")
+        TwButton(sg_btns, "全選", variant="ghost",
+                 command=self._select_all_staging).pack(side="left", padx=(0, 4))
+        TwButton(sg_btns, "清除全部", variant="ghost",
+                 command=self._clear_staging).pack(side="left")
+        self._staging_list_frame = tk.Frame(sc, bg=CARD)
+        self._staging_list_frame.pack(fill="x")
+        sf = tk.Frame(sc, bg=CARD); sf.pack(fill="x", pady=(12, 0))
+        self._print_btn = TwButton(sf, "列印選取 (0)", variant="primary",
+                                   command=self._print_selected)
+        self._print_btn.pack(side="right")
 
     def _field(self, parent, r, c, label, key, required=False, default="", mono=False, hint=None):
         cell = tk.Frame(parent, bg=_frame_bg(parent))
@@ -967,6 +990,101 @@ class SingleOrderView(tk.Frame):
             self.fields["recipient_address"].set(to_fill["address"])
             filled_parts.append(to_fill["address"])
         self.result_var.set("已從剪貼板帶入：" + "／".join(filled_parts))
+
+    # ── staging area ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_pdf_rotation(path: str) -> None:
+        try:
+            from pypdf import PdfReader, PdfWriter
+            reader = PdfReader(path)
+            writer = PdfWriter()
+            for page in reader.pages:
+                page.transfer_rotation_to_content()
+                writer.add_page(page)
+            with open(path, "wb") as f:
+                writer.write(f)
+        except Exception:
+            pass
+
+    def _add_to_staging(self, obt: str, name: str, order_id: str, pdf_path: str) -> None:
+        var = tk.BooleanVar(value=False)
+        var.trace_add("write", lambda *_: self._update_print_btn())
+        self._staging.append({"order_id": order_id, "name": name,
+                               "obt": obt, "pdf_path": pdf_path, "var": var})
+        self._refresh_staging_ui()
+
+    def _refresh_staging_ui(self) -> None:
+        for w in self._staging_list_frame.winfo_children():
+            w.destroy()
+        if not self._staging:
+            self._staging_card.pack_forget()
+            return
+        if not self._staging_card.winfo_ismapped():
+            self._staging_card.pack(fill="x", pady=(14, 0))
+        for item in self._staging:
+            row = tk.Frame(self._staging_list_frame, bg=CARD)
+            row.pack(fill="x", pady=(0, 4))
+            tk.Checkbutton(row, variable=item["var"], bg=CARD,
+                           activebackground=CARD, cursor="hand2").pack(side="left")
+            tk.Label(row, text=item["order_id"], font=F_MONO, bg=CARD,
+                     fg=INK, width=16, anchor="w").pack(side="left", padx=(4, 8))
+            tk.Label(row, text=item["name"], font=F_NORM, bg=CARD,
+                     fg=INK, width=10, anchor="w").pack(side="left", padx=(0, 8))
+            tk.Label(row, text=item["obt"], font=F_MONO, bg=CARD,
+                     fg=MUTED, anchor="w").pack(side="left")
+        self._update_print_btn()
+
+    def _update_print_btn(self) -> None:
+        if not self._print_btn:
+            return
+        n = sum(1 for item in self._staging if item["var"].get())
+        self._print_btn.set_text(f"列印選取 ({n})")
+
+    def _select_all_staging(self) -> None:
+        for item in self._staging:
+            item["var"].set(True)
+
+    def _clear_staging(self) -> None:
+        self._staging.clear()
+        self._refresh_staging_ui()
+
+    def _print_selected(self) -> None:
+        selected = [item for item in self._staging if item["var"].get()]
+        if not selected:
+            messagebox.showwarning("未選取", "請先勾選要列印的單據。")
+            return
+        if len(selected) > 2:
+            messagebox.showwarning("最多選取 2 筆", "一次最多合併列印 2 筆單據，請減少勾選數量。")
+            return
+        try:
+            if len(selected) == 1:
+                out_path = selected[0]["pdf_path"]
+            else:
+                out_path = self._merge_labels(selected[0]["pdf_path"],
+                                              selected[1]["pdf_path"])
+            subprocess.run(["open", out_path])
+            for item in selected:
+                self._staging.remove(item)
+            self._refresh_staging_ui()
+        except Exception as ex:
+            messagebox.showerror("列印失敗", str(ex))
+
+    def _merge_labels(self, path1: str, path2: str) -> str:
+        from pypdf import PdfReader, PdfWriter, Transformation
+        r1, r2 = PdfReader(path1), PdfReader(path2)
+        p1, p2 = r1.pages[0], r2.pages[0]
+        w = float(p1.mediabox.width)
+        h = float(p1.mediabox.height)
+        writer = PdfWriter()
+        combined = writer.add_blank_page(width=w, height=h * 2)
+        combined.merge_transformed_page(p1, Transformation().translate(0, h))
+        combined.merge_transformed_page(p2, Transformation())
+        out = Path(OUTPUT_DIR) / f"combined_{int(time.time())}.pdf"
+        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        with open(out, "wb") as f:
+            writer.write(f)
+        return str(out)
 
     def _read_clipboard_text(self):
         try:
@@ -1171,9 +1289,11 @@ class SingleOrderView(tk.Frame):
                 if r["success"]:
                     msg = f"✓ 建單成功！OBT：{r['obt_number']}"
                     if r["pdf_path"]:
-                        msg += f"\nPDF 已儲存：{Path(r['pdf_path']).resolve()}"
-                        import subprocess
-                        subprocess.run(["open", r["pdf_path"]])
+                        self._normalize_pdf_rotation(r["pdf_path"])
+                        self.after(0, lambda obt=r["obt_number"], nm=values["recipient_name"],
+                                          oid=values["order_id"], pp=r["pdf_path"]:
+                                   self._add_to_staging(obt, nm, oid, pp))
+                        msg += "\nPDF 已加入待列印清單，選取後按「列印選取」輸出。"
                     self.after(0, lambda: self.result_lbl.configure(fg=OK))
                 else:
                     raw = r['message']
