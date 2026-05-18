@@ -22,7 +22,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.4.0"
+VERSION     = "1.4.1"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -303,6 +303,9 @@ class App(tk.Tk):
                         elif str(dst) not in preserve:
                             dst.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(str(src), str(dst))
+                            # GitHub zipball 不帶執行權限，.command 雙擊會失效
+                            if dst.suffix == ".command":
+                                os.chmod(str(dst), 0o755)
 
                 os.unlink(temp_zip)
                 self.after(0, self._restart_app)
