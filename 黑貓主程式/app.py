@@ -23,7 +23,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.0"
+VERSION     = "1.5.1"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -92,6 +92,8 @@ PRODUCT_TYPE_OPTIONS = {
     "0014 印刷品":         "0014",
     "0015 其他":           "0015",
 }
+FIXED_PRODUCT_TYPE_LABEL = "0006 3C"
+FIXED_PRODUCT_TYPE_ID    = "0006"
 
 
 # ─── persistence helpers ─────────────────────────────────────────────────────
@@ -1119,7 +1121,7 @@ class SingleOrderView(tk.Frame):
                 else:
                     raw = r['message']
                     if "E009" in raw:
-                        raw += "\n→ 請至「設定」頁重新選擇「品名類別」"
+                        raw += "\n→ 品名類別已固定為 0006 3C，請確認版本為 v1.5.1 以上並在「設定」頁儲存設定後重試。"
                     msg = f"✗ 建單失敗：{raw}"
                     self.after(0, lambda: self.result_lbl.configure(fg=ERR))
                 self.after(0, lambda: self.result_var.set(msg))
@@ -1667,11 +1669,11 @@ class ConfigView(tk.Frame):
         # Product type
         pt_cell = tk.Frame(sc.body, bg=CARD); pt_cell.pack(fill="x", pady=(12, 0))
         field_label(pt_cell, "品名類別", hint="會印在託運單上").pack(fill="x", pady=(0, 6))
-        self.pt_var = tk.StringVar()
+        self.pt_var = tk.StringVar(value=FIXED_PRODUCT_TYPE_LABEL)
         self.vars["sender.product_type_id"] = self.pt_var
         ttk.Combobox(pt_cell, textvariable=self.pt_var,
-                     values=list(PRODUCT_TYPE_OPTIONS.keys()),
-                     state="readonly", style="Tw.TCombobox", font=F_NORM).pack(fill="x")
+                     values=[FIXED_PRODUCT_TYPE_LABEL],
+                     state="disabled", style="Tw.TCombobox", font=F_NORM).pack(fill="x")
 
         ba2 = tk.Frame(sc.body, bg=CARD); ba2.pack(fill="x", pady=(14, 0))
         TwButton(ba2, "儲存寄件人", variant="primary", command=self._save).pack(side="left")
@@ -1696,7 +1698,6 @@ class ConfigView(tk.Frame):
     def _load(self):
         cfg = load_cfg()
         sender = cfg.get("sender") or {}
-        _code_to_label = {v: k for k, v in PRODUCT_TYPE_OPTIONS.items()}
         for key, var in self.vars.items():
             if "." in key:
                 _, field = key.split(".", 1)
@@ -1704,7 +1705,7 @@ class ConfigView(tk.Frame):
             else:
                 val = cfg.get(key, "")
             if key == "sender.product_type_id":
-                val = _code_to_label.get(str(val), val)
+                val = FIXED_PRODUCT_TYPE_LABEL
             var.set(val)
         # 字體大小：把目前 config 的值對應回標籤
         try:
@@ -1730,7 +1731,7 @@ class ConfigView(tk.Frame):
         for key, var in self.vars.items():
             val = var.get()
             if key == "sender.product_type_id":
-                val = PRODUCT_TYPE_OPTIONS.get(val, val)
+                val = FIXED_PRODUCT_TYPE_ID
             if "." in key:
                 _, field = key.split(".", 1)
                 sender[field] = val
