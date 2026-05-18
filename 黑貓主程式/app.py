@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.1.6"
+VERSION     = "1.1.7"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -150,10 +150,19 @@ class App(tk.Tk):
         # macOS copy-paste fix
         # 用 ::tk::mac::* 覆寫系統層級指令，英文和注音輸入法模式下均有效
         import time as _time
-        _last_t = [0.0]
+        _last_t   = [0.0]
+        _last_inp = [None]   # 記住最後一個有 focus 的輸入元件
+
+        def _on_focus_in(e):
+            if hasattr(e.widget, "insert") and hasattr(e.widget, "clipboard_get"):
+                _last_inp[0] = e.widget
+        self.bind_all("<FocusIn>", _on_focus_in, add="+")
 
         def _fw():
-            return self.focus_get()
+            w = self.focus_get()
+            if w and hasattr(w, "insert") and hasattr(w, "clipboard_get"):
+                return w
+            return _last_inp[0]  # 注音模式 focus 被 IME 搶走時用上次的欄位
 
         def _do_paste():
             w = _fw()
