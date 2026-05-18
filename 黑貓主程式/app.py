@@ -23,7 +23,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.1"
+VERSION     = "1.5.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -800,14 +800,29 @@ class SingleOrderView(tk.Frame):
         Kicker(pmc.body, "付款設定").pack(anchor="w", pady=(0, 12))
         gpay = tk.Frame(pmc.body, bg=CARD); gpay.pack(fill="x")
         gpay.columnconfigure(0, weight=1); gpay.columnconfigure(1, weight=1)
-        self._combo_field(gpay, 0, 0, "運費付款方式", "is_freight",
-                          ["N 寄件人付", "Y 收件人付（運費到付）"], default="N 寄件人付")
-        self._combo_field(gpay, 0, 1, "代收貨款", "is_collection",
-                          ["N 不代收", "Y 代收（貨到付款）"], default="N 不代收")
-        gpay2 = tk.Frame(pmc.body, bg=CARD); gpay2.pack(fill="x", pady=(12, 0))
-        gpay2.columnconfigure(0, weight=1); gpay2.columnconfigure(1, weight=2)
-        self._field(gpay2, 0, 0, "代收金額", "collection_amount", default="0", mono=True)
-        self._field(gpay2, 0, 1, "備註", "notes", hint="選填")
+        self._toggle_group(gpay, 0, 0, "運費付款方式", "is_freight",
+                           ["N 寄件人付", "Y 收件人付（運費到付）"], default="N 寄件人付")
+
+        # 代收金額 — 僅在選擇代收時顯示
+        gpay_cod = tk.Frame(pmc.body, bg=CARD)
+        gpay_cod.columnconfigure(0, weight=1)
+        self._field(gpay_cod, 0, 0, "代收金額", "collection_amount", default="0", mono=True)
+
+        # 備註 — 永遠顯示
+        gpay_notes = tk.Frame(pmc.body, bg=CARD)
+        gpay_notes.columnconfigure(0, weight=1)
+        self._field(gpay_notes, 0, 0, "備註", "notes", hint="選填")
+        gpay_notes.pack(fill="x", pady=(12, 0))
+
+        def _on_collection_change(val):
+            if val.startswith("Y"):
+                gpay_cod.pack(fill="x", pady=(12, 0), before=gpay_notes)
+            else:
+                gpay_cod.pack_forget()
+
+        self._toggle_group(gpay, 0, 1, "代收貨款", "is_collection",
+                           ["N 不代收", "Y 代收（貨到付款）"], default="N 不代收",
+                           on_change=_on_collection_change)
 
         # submit
         sbtn = tk.Frame(wrap, bg=PAPER); sbtn.pack(fill="x", pady=(4, 0))
@@ -838,6 +853,43 @@ class SingleOrderView(tk.Frame):
         cb = ttk.Combobox(cell, textvariable=v, values=options,
                           state="readonly", style="Tw.TCombobox", font=F_NORM)
         cb.pack(fill="x")
+
+    def _toggle_group(self, parent, r, c, label, key, options, default="", on_change=None):
+        """Segmented toggle button group. options = list of display strings (e.g. 'N 寄件人付')."""
+        cell = tk.Frame(parent, bg=_frame_bg(parent))
+        cell.grid(row=r*2, column=c, sticky="ew", padx=(0 if c == 0 else 12, 0))
+        field_label(cell, label).pack(fill="x", pady=(0, 6))
+
+        v = tk.StringVar(value=default)
+        self.fields[key] = v
+
+        container = tk.Frame(cell, bg=HAIR)
+        container.pack(fill="x")
+
+        btn_map = {}
+
+        def _refresh(*_):
+            val = v.get()
+            for bval, btn in btn_map.items():
+                if bval == val:
+                    btn.configure(bg=INK, fg="#FFFFFF")
+                else:
+                    btn.configure(bg=CARD, fg=INK)
+            if on_change:
+                on_change(val)
+
+        for i, opt in enumerate(options):
+            display = opt[2:] if len(opt) > 2 else opt
+            btn = tk.Label(container, text=display, font=F_BOLD, padx=14, pady=9,
+                           cursor="hand2", bg=CARD, fg=INK)
+            btn.pack(side="left", fill="x", expand=True, padx=(1 if i > 0 else 0, 0))
+            btn_map[opt] = btn
+            btn.bind("<Button-1>", lambda e, val=opt: v.set(val))
+            btn.bind("<Enter>", lambda e, b=btn: b.cget("bg") != INK and b.configure(bg=HAIR2))
+            btn.bind("<Leave>", lambda e, b=btn: b.cget("bg") != INK and b.configure(bg=CARD))
+
+        v.trace_add("write", _refresh)
+        _refresh()
 
     def _get_values(self) -> dict:
         out = {}
