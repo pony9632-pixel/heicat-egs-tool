@@ -22,7 +22,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.4.5"
+VERSION     = "1.4.6"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -45,15 +45,30 @@ _IS_MAC = platform.system() == "Darwin"
 FONT_FAMILY = "Helvetica Neue" if _IS_MAC else "Helvetica"
 MONO_FAMILY = "Menlo" if _IS_MAC else "Courier"
 
-F_NORM   = (FONT_FAMILY, 12)
-F_SMALL  = (FONT_FAMILY, 11)
-F_TINY   = (FONT_FAMILY, 10)
-F_BOLD   = (FONT_FAMILY, 12, "bold")
-F_TITLE  = (FONT_FAMILY, 18, "bold")
-F_KICKER = (FONT_FAMILY, 10, "bold")
-F_LABEL  = (FONT_FAMILY, 10)
-F_MONO   = (MONO_FAMILY, 11)
-F_NAV    = (FONT_FAMILY, 12)
+# 字體縮放：從 config.yaml 讀 font_scale，預設 1.0；變更後重啟生效
+FONT_SCALE_OPTIONS = {"小": 0.85, "標準": 1.0, "大": 1.15, "特大": 1.30}
+
+def _load_font_scale():
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as _f:
+            v = (yaml.safe_load(_f) or {}).get("font_scale", 1.0)
+        return max(0.7, min(2.0, float(v or 1.0)))
+    except Exception:
+        return 1.0
+
+_FS = _load_font_scale()
+def _sz(n: int) -> int:
+    return max(7, int(round(n * _FS)))
+
+F_NORM   = (FONT_FAMILY, _sz(12))
+F_SMALL  = (FONT_FAMILY, _sz(11))
+F_TINY   = (FONT_FAMILY, _sz(10))
+F_BOLD   = (FONT_FAMILY, _sz(12), "bold")
+F_TITLE  = (FONT_FAMILY, _sz(18), "bold")
+F_KICKER = (FONT_FAMILY, _sz(10), "bold")
+F_LABEL  = (FONT_FAMILY, _sz(10))
+F_MONO   = (MONO_FAMILY, _sz(11))
+F_NAV    = (FONT_FAMILY, _sz(12))
 
 
 SPEC_OPTIONS   = {"0001  60 cm": "0001", "0002  90 cm": "0002", "0003 120 cm": "0003", "0004 150 cm": "0004"}
@@ -255,7 +270,7 @@ class App(tk.Tk):
         m.pack(side="left", padx=(0, 12))
         info = tk.Frame(mark, bg=PAPER)
         info.pack(side="left")
-        tk.Label(info, text="STUDIO A", font=(FONT_FAMILY, 22, "bold"),
+        tk.Label(info, text="STUDIO A", font=(FONT_FAMILY, _sz(22), "bold"),
                  bg=PAPER, fg=INK).pack(anchor="w")
         tk.Label(info, text="黑貓宅急便工具", font=F_SMALL,
                  bg=PAPER, fg=MUTED).pack(anchor="w")
@@ -675,7 +690,7 @@ class NavItem(tk.Frame):
         kbd_bg = HAIR2 if on else RAIL
         for w in (self.inner, self.lbl, self.kbd):
             w.configure(bg=bg)
-        self.lbl.configure(fg=fg, font=(FONT_FAMILY, 12, "bold") if on else F_NAV)
+        self.lbl.configure(fg=fg, font=(FONT_FAMILY, _sz(12), "bold") if on else F_NAV)
         self.kbd.configure(bg=kbd_bg, fg=MUTED)
 
 
@@ -995,7 +1010,7 @@ class BatchOrderView(tk.Frame):
             sc.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 8, 0))
             self.stats_row.columnconfigure(i, weight=1)
             Kicker(sc.body, l).pack(anchor="w")
-            tk.Label(sc.body, text=v, font=(MONO_FAMILY, 20, "bold"),
+            tk.Label(sc.body, text=v, font=(MONO_FAMILY, _sz(20), "bold"),
                      bg=CARD, fg=c).pack(anchor="w", pady=(2, 0))
             if u:
                 tk.Label(sc.body, text=u, font=F_TINY, bg=CARD, fg=MUTED).pack(anchor="w")
@@ -1400,6 +1415,19 @@ class ConfigView(tk.Frame):
         ba2 = tk.Frame(sc.body, bg=CARD); ba2.pack(fill="x", pady=(14, 0))
         TwButton(ba2, "儲存寄件人", variant="primary", command=self._save).pack(side="left")
 
+        # Appearance card
+        apc = Card(wrap, padding=22); apc.pack(fill="x", pady=(0, 14))
+        Kicker(apc.body, "外觀設定").pack(anchor="w", pady=(0, 12))
+        fs_cell = tk.Frame(apc.body, bg=CARD); fs_cell.pack(fill="x")
+        field_label(fs_cell, "字體大小", hint="變更後會重新啟動程式").pack(fill="x", pady=(0, 6))
+        self.fs_var = tk.StringVar(value="標準")
+        ttk.Combobox(fs_cell, textvariable=self.fs_var,
+                     values=list(FONT_SCALE_OPTIONS.keys()),
+                     state="readonly", style="Tw.TCombobox", font=F_NORM).pack(fill="x")
+        ba3 = tk.Frame(apc.body, bg=CARD); ba3.pack(fill="x", pady=(14, 0))
+        TwButton(ba3, "套用並重新啟動", variant="primary",
+                 command=self._apply_font_scale).pack(side="left")
+
         # status text
         self.status = tk.Label(wrap, text="", bg=PAPER, font=F_SMALL, anchor="w")
         self.status.pack(fill="x", pady=(8, 0))
@@ -1417,6 +1445,23 @@ class ConfigView(tk.Frame):
             if key == "sender.product_type_id":
                 val = _code_to_label.get(str(val), val)
             var.set(val)
+        # 字體大小：把目前 config 的值對應回標籤
+        try:
+            cur_scale = float(cfg.get("font_scale", 1.0) or 1.0)
+        except Exception:
+            cur_scale = 1.0
+        cur_label = next((k for k, v in FONT_SCALE_OPTIONS.items()
+                          if abs(v - cur_scale) < 1e-3), "標準")
+        self.fs_var.set(cur_label)
+
+    def _apply_font_scale(self):
+        label = self.fs_var.get()
+        new_scale = FONT_SCALE_OPTIONS.get(label, 1.0)
+        cfg = load_cfg()
+        cfg["font_scale"] = new_scale
+        save_cfg(cfg)
+        if hasattr(self.app, "_restart_app"):
+            self.app._restart_app()
 
     def _save(self):
         cfg = load_cfg()
