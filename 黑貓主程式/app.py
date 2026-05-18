@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.1.9"
+VERSION     = "1.2.0"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -237,6 +237,22 @@ class App(tk.Tk):
             self.bind_class(_cls, "<Command-v>", _guarded(_do_paste))
             self.bind_class(_cls, "<Command-x>", _guarded(_do_cut))
             self.bind_class(_cls, "<Command-a>", _guarded(_do_select_all))
+
+        # 最後防線：用 keycode 偵測 Cmd+C/V/X/A，不受 IME keysym 轉換影響
+        _KC = {9: _do_paste, 8: _do_copy, 7: _do_cut, 0: _do_select_all}
+        def _keycode_guard(e):
+            if not (e.state & 8):   # 8 = Command modifier on macOS
+                return
+            fn = _KC.get(e.keycode)
+            if fn is None:
+                return
+            now = _time.time()
+            if now - _last_t[0] < 0.05:
+                return "break"
+            _last_t[0] = now
+            fn()
+            return "break"
+        self.bind_all("<KeyPress>", _keycode_guard, add="+")
 
         # 自訂右鍵選單（取代原生無法貼上的系統選單）
         def _show_ctx(event):
