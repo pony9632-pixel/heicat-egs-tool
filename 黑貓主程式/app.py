@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.1.0"
+VERSION     = "1.1.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -193,9 +193,20 @@ class App(tk.Tk):
         self._new_version = new_version
         self._zipball_url = zipball_url
         self._html_url    = html_url
-        self._update_lbl.config(
-            text=f"🔔  發現新版本 v{new_version}！點此一鍵更新  →")
-        self._update_bar.pack(fill="x", after=self._hdr)
+        # 啟動時直接彈出詢問視窗
+        if messagebox.askyesno(
+                "🔔 發現新版本",
+                f"發現新版本 v{new_version}！\n\n"
+                "• config.yaml 與 contacts.json 會保留\n"
+                "• 更新完成後程式自動重新啟動\n\n"
+                "要立即更新嗎？",
+                default="yes"):
+            self._run_update()
+        else:
+            # 選擇稍後，保留頂部 banner 提醒
+            self._update_lbl.config(
+                text=f"🔔  發現新版本 v{new_version}！點此一鍵更新  →")
+            self._update_bar.pack(fill="x", after=self._hdr)
 
     def _do_update(self):
         if not self._zipball_url:
@@ -206,9 +217,12 @@ class App(tk.Tk):
                 "• config.yaml 與 contacts.json 會保留\n"
                 "• 更新完成後程式自動重新啟動"):
             return
+        self._run_update()
 
+    def _run_update(self):
         self._update_lbl.config(text="⏳  下載更新中，請稍候...")
         self._update_lbl.unbind("<Button-1>")
+        self._update_bar.pack(fill="x", after=self._hdr)
 
         def run():
             try:
