@@ -22,7 +22,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.4.2"
+VERSION     = "1.4.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -200,6 +200,19 @@ def field_label(master, text, required=False, hint=None):
         tk.Label(inner, text=hint, font=F_TINY, fg=MUTED,
                  bg=_frame_bg(master)).pack(side="right")
     return f
+
+
+def _bind_mousewheel_on_hover(hover_widget, canvas):
+    """游標進入 hover_widget 時才把 wheel 綁到 canvas，離開時解綁。
+    避免多個 view 用 bind_all 互相搶 wheel 事件。"""
+    def _on_wheel(e):
+        canvas.yview_scroll(int(-1 * (e.delta / 3)), "units")
+    def _on_enter(_):
+        canvas.bind_all("<MouseWheel>", _on_wheel)
+    def _on_leave(_):
+        canvas.unbind_all("<MouseWheel>")
+    hover_widget.bind("<Enter>", _on_enter)
+    hover_widget.bind("<Leave>", _on_leave)
 
 
 # ─── main window ─────────────────────────────────────────────────────────────
@@ -685,8 +698,8 @@ class SingleOrderView(tk.Frame):
         body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
 
-        # mouse wheel
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/3)), "units"))
+        # mouse wheel — 只在游標進入時綁定，避免和其他分頁的 canvas 互相搶
+        _bind_mousewheel_on_hover(self, canvas)
 
         wrap = tk.Frame(body, bg=PAPER)
         wrap.pack(fill="both", expand=True, padx=28, pady=24)
@@ -1127,8 +1140,7 @@ class ContactsView(tk.Frame):
             self.list_canvas.configure(scrollregion=self.list_canvas.bbox("all")))
         self.list_canvas.bind("<Configure>", lambda e:
             self.list_canvas.itemconfig(self.list_win, width=e.width))
-        self.list_canvas.bind_all("<MouseWheel>",
-            lambda e: self.list_canvas.yview_scroll(int(-1*(e.delta/3)), "units"))
+        _bind_mousewheel_on_hover(list_holder, self.list_canvas)
 
         # right detail
         self.detail_card = Card(split, padding=20)
@@ -1304,6 +1316,8 @@ class ConfigView(tk.Frame):
         win = canvas.create_window((0, 0), window=body, anchor="nw")
         body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
+
+        _bind_mousewheel_on_hover(self, canvas)
 
         wrap = tk.Frame(body, bg=PAPER)
         wrap.pack(fill="both", expand=True, padx=28, pady=24)
