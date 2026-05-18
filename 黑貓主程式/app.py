@@ -25,7 +25,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.5"
+VERSION     = "1.5.6"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -720,6 +720,13 @@ class SingleOrderView(tk.Frame):
         self._print_btn = None
         self._staging_card = None
         self._staging_list_frame = None
+        self._cat_var = None
+        self._cat_btns = {}
+        self._cat_map = {
+            "門市調撥": "Y 收件人付（運費到付）",
+            "客人":     "N 寄件人付",
+            "廠商":     "Y 收件人付（運費到付）",
+        }
         self._build()
 
     def _build(self):
@@ -766,6 +773,20 @@ class SingleOrderView(tk.Frame):
         action = tk.Frame(rc.body, bg=CARD); action.pack(fill="x", pady=(12, 0))
         TwButton(action, "＋ 存入通訊錄", variant="accent",
                  command=self._save_to_contacts).pack(side="left")
+
+        # recipient category quick-select
+        self._cat_var = tk.StringVar(value="")
+        cat_row = tk.Frame(rc.body, bg=CARD); cat_row.pack(fill="x", pady=(10, 0))
+        field_label(cat_row, "收件人分類", hint="自動帶入備註與付款方式").pack(anchor="w", pady=(0, 6))
+        cat_container = tk.Frame(cat_row, bg=HAIR); cat_container.pack(fill="x")
+        for i, lbl in enumerate(self._cat_map):
+            btn = tk.Label(cat_container, text=lbl, font=F_BOLD, padx=14, pady=9,
+                           cursor="hand2", bg=CARD, fg=INK)
+            btn.pack(side="left", fill="x", expand=True, padx=(1 if i > 0 else 0, 0))
+            self._cat_btns[lbl] = btn
+            btn.bind("<Button-1>", lambda e, l=lbl: self._select_category(l))
+            btn.bind("<Enter>", lambda e, b=btn: b.cget("bg") != INK and b.configure(bg=HAIR2))
+            btn.bind("<Leave>", lambda e, b=btn: b.cget("bg") != INK and b.configure(bg=CARD))
 
         # parcel card
         pc = Card(wrap, padding=22); pc.pack(fill="x", pady=(0, 14))
@@ -926,6 +947,14 @@ class SingleOrderView(tk.Frame):
             out[k] = val
         return out
 
+    def _select_category(self, label: str) -> None:
+        self._cat_var.set(label)
+        for lbl, btn in self._cat_btns.items():
+            btn.configure(bg=INK if lbl == label else CARD,
+                          fg="#FFFFFF" if lbl == label else INK)
+        self.fields["notes"].set(label)
+        self.fields["is_freight"].set(self._cat_map[label])
+
     def _clear(self):
         defaults = {
             "order_id": "", "product_name": "一般物品",
@@ -940,6 +969,10 @@ class SingleOrderView(tk.Frame):
         for k, v in defaults.items():
             if k in self.fields: self.fields[k].set(v)
         self.result_var.set("")
+        if self._cat_var:
+            self._cat_var.set("")
+            for btn in self._cat_btns.values():
+                btn.configure(bg=CARD, fg=INK)
 
     def _pick_contact(self):
         def on_select(contact):
@@ -1052,9 +1085,15 @@ class SingleOrderView(tk.Frame):
     def _clear_order_fields(self) -> None:
         """建單成功後清除收件人資料與訂單號，保留包裹規格與付款設定。"""
         for key in ("recipient_name", "recipient_phone", "recipient_mobile",
-                    "recipient_address", "order_id", "notes"):
+                    "recipient_address", "order_id"):
             if key in self.fields:
                 self.fields[key].set("")
+        cat = self._cat_var.get() if self._cat_var else ""
+        if cat:
+            self.fields["notes"].set(cat)
+            self.fields["is_freight"].set(self._cat_map[cat])
+        else:
+            self.fields["notes"].set("")
 
     def _print_selected(self) -> None:
         selected = [item for item in self._staging if item["var"].get()]
