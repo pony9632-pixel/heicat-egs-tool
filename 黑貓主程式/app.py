@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.1.7"
+VERSION     = "1.1.8"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -164,14 +164,28 @@ class App(tk.Tk):
                 return w
             return _last_inp[0]  # 注音模式 focus 被 IME 搶走時用上次的欄位
 
+        import subprocess as _sp
+
+        def _pb_paste():
+            try:
+                return _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout.decode("utf-8", errors="replace")
+            except Exception:
+                return ""
+
+        def _pb_copy(text):
+            try:
+                _sp.run(["pbcopy"], input=text.encode("utf-8"), timeout=2)
+            except Exception:
+                pass
+
         def _do_paste():
             w = _fw()
             if not w: return
-            try:
-                clip = w.clipboard_get()
-                try: w.delete("sel.first", "sel.last")
-                except Exception: pass
-                w.insert("insert", clip)
+            clip = _pb_paste()
+            if not clip: return
+            try: w.delete("sel.first", "sel.last")
+            except Exception: pass
+            try: w.insert("insert", clip)
             except Exception: pass
 
         def _do_copy():
@@ -179,8 +193,7 @@ class App(tk.Tk):
             if not w: return
             try:
                 text = w.selection_get()
-                w.clipboard_clear()
-                w.clipboard_append(text)
+                _pb_copy(text)
             except Exception: pass
 
         def _do_cut():
@@ -188,8 +201,7 @@ class App(tk.Tk):
             if not w: return
             try:
                 text = w.selection_get()
-                w.clipboard_clear()
-                w.clipboard_append(text)
+                _pb_copy(text)
                 w.delete("sel.first", "sel.last")
             except Exception: pass
 
