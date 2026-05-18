@@ -575,6 +575,8 @@ class SingleOrderTab(ttk.Frame):
                     msg = f"✓ 建單成功！OBT：{r['obt_number']}"
                     if r["pdf_path"]:
                         msg += f"\nPDF 已儲存：{Path(r['pdf_path']).resolve()}"
+                        import subprocess
+                        subprocess.run(["open", r["pdf_path"]])
                     self.after(0, lambda: self.result_lbl.config(foreground=GREEN))
                 else:
                     raw = r['message']
@@ -731,7 +733,9 @@ class BatchOrderTab(ttk.Frame):
                     msg = resp.get("Message", "")[:60]
                     self.after(0, lambda o=oid, m=msg: self._log(f"✗ {o}: {m}", RED))
 
+            import subprocess
             self.after(0, lambda: self._log("── 完成 ──"))
+            self.after(0, lambda d=output_dir: subprocess.run(["open", d]))
 
         threading.Thread(target=run, daemon=True).start()
 
