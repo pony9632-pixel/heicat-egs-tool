@@ -14,4 +14,4 @@ sender:
   mobile: ""
   zipcode: "100123"          # 6 碼郵遞區號（含縣市代碼）
   address: "台北市○○區○○路○○號○樓"
-  product_type_id: "0006"    # 品名類別（可在設定頁選擇）
+  product_type_id: "0006"    # 品名類別固定為 0006 3C

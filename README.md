@@ -141,7 +141,7 @@ python3 -c "import yaml, pypdf, requests; print('OK')"
 <details>
 <summary><b>建單失敗顯示 E009</b></summary>
 
-到「**設定**」分頁，「**品名類別**」重新選一次再「儲存設定」，重試即可。
+品名類別已固定為 `0006 3C`。請先確認版本為 v1.5.1 以上，並到「**設定**」分頁按「**儲存設定**」讓設定檔回寫固定值後重試。
 
 </details>
 
