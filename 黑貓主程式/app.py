@@ -137,8 +137,10 @@ class App(tk.Tk):
             self._update_bar, text="", bg="#E65100", fg=WHITE,
             font=("Arial", 11, "bold"), cursor="hand2", pady=6)
         self._update_lbl.pack(side="left", padx=14)
-        self._update_lbl.bind("<Button-1>", lambda e: self._open_release())
-        self._release_url = ""
+        self._update_lbl.bind("<Button-1>", lambda e: self._do_update())
+        self._new_version = ""
+        self._zipball_url = ""
+        self._html_url    = ""
 
         # macOS copy-paste fix — map Command shortcuts to tkinter virtual events
         self.event_add("<<Copy>>",      "<Command-c>")
@@ -178,21 +180,87 @@ class App(tk.Tk):
             current = tuple(int(x) for x in VERSION.split("."))
             latest  = tuple(int(x) for x in tag.split("."))
             if latest > current:
-                release_url = data.get("html_url", "")
-                self.after(0, lambda t=tag, u=release_url: self._show_update_banner(t, u))
+                zipball = data.get("zipball_url", "")
+                html    = data.get("html_url", "")
+                self.after(0, lambda t=tag, z=zipball, h=html:
+                           self._show_update_banner(t, z, h))
         except Exception:
             pass  # 網路不通或 API 無回應時靜默忽略
 
-    def _show_update_banner(self, new_version: str, release_url: str):
-        self._release_url = release_url
+    def _show_update_banner(self, new_version: str, zipball_url: str, html_url: str):
+        self._new_version = new_version
+        self._zipball_url = zipball_url
+        self._html_url    = html_url
         self._update_lbl.config(
-            text=f"🔔  發現新版本 v{new_version}！點此前往下載更新  →")
+            text=f"🔔  發現新版本 v{new_version}！點此一鍵更新  →")
         self._update_bar.pack(fill="x", after=self._hdr)
 
-    def _open_release(self):
-        if self._release_url:
-            import webbrowser
-            webbrowser.open(self._release_url)
+    def _do_update(self):
+        if not self._zipball_url:
+            return
+        if not messagebox.askyesno(
+                "確認更新",
+                f"確定要更新到 v{self._new_version}？\n\n"
+                "• config.yaml 與 contacts.json 會保留\n"
+                "• 更新完成後程式自動重新啟動"):
+            return
+
+        self._update_lbl.config(text="⏳  下載更新中，請稍候...")
+        self._update_lbl.unbind("<Button-1>")
+
+        def run():
+            try:
+                import ssl, shutil, tempfile, os
+                import urllib.request as _req
+
+                ssl_ctx = ssl.create_default_context()
+                req = _req.Request(self._zipball_url,
+                                   headers={"User-Agent": "heicat-egs-tool"})
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+                    temp_zip = f.name
+                with _req.urlopen(req, context=ssl_ctx, timeout=60) as resp:
+                    with open(temp_zip, "wb") as f:
+                        shutil.copyfileobj(resp, f)
+
+                self.after(0, lambda: self._update_lbl.config(text="⏳  解壓縮並套用更新..."))
+
+                import zipfile
+                dst_root = Path(__file__).parent.parent
+                preserve = {
+                    str(dst_root / "黑貓主程式" / "config.yaml"),
+                    str(dst_root / "黑貓主程式" / "contacts.json"),
+                }
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    with zipfile.ZipFile(temp_zip, "r") as z:
+                        z.extractall(tmpdir)
+                    top = next(p for p in Path(tmpdir).iterdir() if p.is_dir())
+                    for src in top.rglob("*"):
+                        rel = src.relative_to(top)
+                        dst = dst_root / rel
+                        if src.is_dir():
+                            dst.mkdir(parents=True, exist_ok=True)
+                        elif str(dst) not in preserve:
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(str(src), str(dst))
+
+                os.unlink(temp_zip)
+                self.after(0, self._restart_app)
+
+            except Exception as ex:
+                err = str(ex)
+                self.after(0, lambda m=err: self._update_lbl.config(
+                    text=f"✗ 更新失敗：{m}  （點此手動下載）"))
+                self.after(0, lambda: self._update_lbl.bind(
+                    "<Button-1>",
+                    lambda e: __import__("webbrowser").open(self._html_url)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _restart_app(self):
+        import os, sys
+        messagebox.showinfo("更新完成",
+                            f"已更新至 v{self._new_version}，程式即將重新啟動。")
+        os.execv(sys.executable, [sys.executable, str(Path(__file__))])
 
 
 # ─── config tab ───────────────────────────────────────────────────────────────
