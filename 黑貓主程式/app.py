@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.1.8"
+VERSION     = "1.1.9"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -237,6 +237,22 @@ class App(tk.Tk):
             self.bind_class(_cls, "<Command-v>", _guarded(_do_paste))
             self.bind_class(_cls, "<Command-x>", _guarded(_do_cut))
             self.bind_class(_cls, "<Command-a>", _guarded(_do_select_all))
+
+        # 自訂右鍵選單（取代原生無法貼上的系統選單）
+        def _show_ctx(event):
+            w = event.widget
+            _last_inp[0] = w
+            ctx = tk.Menu(self, tearoff=0)
+            ctx.add_command(label="剪下    ⌘X", command=_do_cut)
+            ctx.add_command(label="複製    ⌘C", command=_do_copy)
+            ctx.add_command(label="貼上    ⌘V", command=_do_paste)
+            ctx.add_separator()
+            ctx.add_command(label="全選    ⌘A", command=_do_select_all)
+            ctx.tk_popup(event.x_root, event.y_root)
+
+        for _cls in ("Entry", "TEntry", "Text"):
+            self.bind_class(_cls, "<Button-2>",         _show_ctx)
+            self.bind_class(_cls, "<Control-Button-1>", _show_ctx)
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=10, pady=10)
