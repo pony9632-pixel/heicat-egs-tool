@@ -139,9 +139,16 @@ def save_pdf(base64_data: str, path: str) -> None:
     print(f"[PDF] 已儲存：{path}")
 
 
+def _skip_sunday(d: date) -> date:
+    if d.weekday() == 6:  # 0=Mon … 6=Sun
+        d += timedelta(days=1)
+    return d
+
+
 def default_shipment_date() -> str:
-    return date.today().strftime("%Y%m%d")
+    return _skip_sunday(date.today()).strftime("%Y%m%d")
 
 
 def default_delivery_date() -> str:
-    return (date.today() + timedelta(days=1)).strftime("%Y%m%d")
+    ship = _skip_sunday(date.today())
+    return _skip_sunday(ship + timedelta(days=1)).strftime("%Y%m%d")

@@ -22,7 +22,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.4.6"
+VERSION     = "1.4.7"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -758,20 +758,30 @@ class SingleOrderView(tk.Frame):
 
         # parcel card
         pc = Card(wrap, padding=22); pc.pack(fill="x", pady=(0, 14))
-        Kicker(pc.body, "包裹明細").pack(anchor="w", pady=(0, 12))
-        gp1 = tk.Frame(pc.body, bg=CARD); gp1.pack(fill="x")
+        pc_hdr = tk.Frame(pc.body, bg=CARD); pc_hdr.pack(fill="x")
+        Kicker(pc_hdr, "包裹明細").pack(side="left")
+        self._pkg_toggle_lbl = tk.Label(pc_hdr, text="▸ 展開",
+            font=F_SMALL, bg=CARD, fg=ACCENT, cursor="hand2")
+        self._pkg_toggle_lbl.pack(side="right")
+        self._pkg_toggle_lbl.bind("<Button-1>", lambda _: self._toggle_pkg_detail())
+        self._pkg_expanded = False
+
+        gp1 = tk.Frame(pc.body, bg=CARD); gp1.pack(fill="x", pady=(12, 0))
         gp1.columnconfigure(0, weight=2); gp1.columnconfigure(1, weight=2)
         self._field(gp1, 0, 0, "訂單編號", "order_id", required=True)
         self._field(gp1, 0, 1, "貨品名稱", "product_name", default="一般物品")
 
-        gp2 = tk.Frame(pc.body, bg=CARD); gp2.pack(fill="x", pady=(12, 0))
+        self._pkg_detail = tk.Frame(pc.body, bg=CARD)
+        # 預設收合，不 pack
+
+        gp2 = tk.Frame(self._pkg_detail, bg=CARD); gp2.pack(fill="x", pady=(12, 0))
         gp2.columnconfigure(0, weight=1); gp2.columnconfigure(1, weight=1)
         self._combo_field(gp2, 0, 0, "尺寸", "spec",
                           list(SPEC_OPTIONS.keys()), default="0001  60 cm")
         self._combo_field(gp2, 0, 1, "溫層", "thermosphere",
                           list(THERMO_OPTIONS.keys()), default="0001 常溫")
 
-        gp3 = tk.Frame(pc.body, bg=CARD); gp3.pack(fill="x", pady=(12, 0))
+        gp3 = tk.Frame(self._pkg_detail, bg=CARD); gp3.pack(fill="x", pady=(12, 0))
         gp3.columnconfigure(0, weight=1); gp3.columnconfigure(1, weight=1); gp3.columnconfigure(2, weight=1)
         self._field(gp3, 0, 0, "出貨日 YYYYMMDD", "shipment_date",
                     default=default_shipment_date(), mono=True)
@@ -881,13 +891,39 @@ class SingleOrderView(tk.Frame):
             self.app.views["contacts"].refresh()
         messagebox.showinfo("已儲存", f"「{name}」已存入通訊錄。")
 
+    def _toggle_pkg_detail(self):
+        if self._pkg_expanded:
+            self._pkg_detail.pack_forget()
+            self._pkg_toggle_lbl.configure(text="▸ 展開")
+            self._pkg_expanded = False
+        else:
+            self._pkg_detail.pack(fill="x")
+            self._pkg_toggle_lbl.configure(text="▾ 收合")
+            self._pkg_expanded = True
+
     def _submit(self):
+        from datetime import datetime as _dt
         values = self._get_values()
         required = {"order_id": "訂單號碼", "recipient_name": "收件人姓名",
                     "recipient_address": "收件人地址", "recipient_phone": "收件人電話"}
         for k, label in required.items():
             if not values.get(k):
                 messagebox.showwarning("缺少必填欄位", f"請填寫「{label}」"); return
+
+        for key, label in [("shipment_date", "出貨日"), ("delivery_date", "配送日")]:
+            val = values.get(key, "")
+            if val:
+                if len(val) != 8 or not val.isdigit():
+                    messagebox.showwarning("日期格式錯誤",
+                        f"「{label}」請輸入 YYYYMMDD 格式（8 位數字）。"); return
+                try:
+                    d = _dt.strptime(val, "%Y%m%d").date()
+                    if d.weekday() == 6:
+                        messagebox.showwarning("日期錯誤",
+                            f"「{label}」不能是星期日（黑貓週日不配送）\n請改選週一至週六。"); return
+                except ValueError:
+                    messagebox.showwarning("日期格式錯誤",
+                        f"「{label}」日期無效，請輸入正確的 YYYYMMDD。"); return
 
         cfg = load_cfg()
         sender = cfg.get("sender") or {}
@@ -1127,6 +1163,10 @@ class ContactsView(tk.Frame):
         head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
         SectionHeader(head, "通訊錄", "收件人管理").pack(side="left")
         ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
+        TwButton(ba, "匯出 CSV", variant="ghost",
+                 command=self._export_csv).pack(side="left", padx=4)
+        TwButton(ba, "匯入 CSV", variant="ghost",
+                 command=self._import_csv).pack(side="left", padx=4)
         TwButton(ba, "＋ 新增聯絡人", variant="primary",
                  command=self._add).pack(side="left", padx=4)
 
@@ -1169,7 +1209,9 @@ class ContactsView(tk.Frame):
             self.list_canvas.configure(scrollregion=self.list_canvas.bbox("all")))
         self.list_canvas.bind("<Configure>", lambda e:
             self.list_canvas.itemconfig(self.list_win, width=e.width))
-        _bind_mousewheel_on_hover(list_holder, self.list_canvas)
+        _bind_mousewheel_on_hover(list_holder,      self.list_canvas)
+        _bind_mousewheel_on_hover(self.list_canvas, self.list_canvas)
+        _bind_mousewheel_on_hover(self.list_body,   self.list_canvas)
 
         # right detail
         self.detail_card = Card(split, padding=20)
@@ -1313,6 +1355,56 @@ class ContactsView(tk.Frame):
         save_contacts(contacts)
         self._selected = contact
         self.refresh()
+
+    def _export_csv(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV 檔案", "*.csv")],
+            title="匯出通訊錄",
+            initialfile="通訊錄.csv",
+        )
+        if not path: return
+        contacts = load_contacts()
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=["name", "phone", "mobile", "address", "notes"])
+            writer.writeheader()
+            for c in contacts:
+                writer.writerow({k: c.get(k, "") for k in ["name", "phone", "mobile", "address", "notes"]})
+        messagebox.showinfo("匯出成功", f"已匯出 {len(contacts)} 筆聯絡人。\n\n{path}")
+
+    def _import_csv(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("CSV 檔案", "*.csv")],
+            title="匯入通訊錄",
+        )
+        if not path: return
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                new_contacts = [dict(r) for r in reader]
+        except Exception as ex:
+            messagebox.showerror("匯入失敗", str(ex)); return
+        if not new_contacts:
+            messagebox.showwarning("匯入失敗", "CSV 檔案沒有資料。"); return
+        existing = load_contacts()
+        ans = messagebox.askyesnocancel(
+            "匯入方式",
+            f"CSV 內有 {len(new_contacts)} 筆聯絡人。\n\n"
+            f"選「是」：附加到現有 {len(existing)} 筆\n"
+            f"選「否」：全部取代\n"
+            f"取消：中止",
+        )
+        if ans is None: return
+        if ans:
+            existing_names = {c.get("name") for c in existing}
+            merged = existing + [c for c in new_contacts if c.get("name") not in existing_names]
+            merged.sort(key=lambda c: c.get("name", ""))
+            save_contacts(merged)
+        else:
+            new_contacts.sort(key=lambda c: c.get("name", ""))
+            save_contacts(new_contacts)
+        self.refresh()
+        messagebox.showinfo("匯入成功", f"已匯入 {len(new_contacts)} 筆聯絡人。")
 
 
 # ─── config view ─────────────────────────────────────────────────────────────
@@ -1554,7 +1646,7 @@ class ContactPickerDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("選擇收件人")
         self.configure(bg=PAPER)
-        self.geometry("680x460")
+        self.geometry("580x400")
         self.grab_set()
         self.on_select = on_select
         self._build()
