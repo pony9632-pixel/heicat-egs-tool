@@ -23,7 +23,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.2"
+VERSION     = "1.5.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -929,25 +929,25 @@ class SingleOrderView(tk.Frame):
     def _paste_recipient_from_clipboard(self):
         text = self._read_clipboard_text()
         if not text.strip():
-            messagebox.showwarning("剪貼板是空的", "請先複製包含姓名、電話、地址的文字。")
+            messagebox.showwarning("剪貼板是空的", "請先複製包含收件人資料的文字。")
             return
 
         parsed = self._parse_clipboard_recipient(text)
-        if not all(parsed.get(k) for k in ("name", "phone", "address")):
+        to_fill = {k: v for k, v in parsed.items() if v}
+        if not to_fill:
             messagebox.showwarning(
                 "無法辨識收件人資料",
-                "剪貼板內容需要能辨識出姓名、電話、地址。\n\n"
+                "剪貼板內容中找不到可辨識的姓名、電話或地址。\n\n"
                 "例如：\n王小明\n0912345678\n台北市信義區市府路1號"
             )
             return
 
-        current = {
-            "name": self.fields["recipient_name"].get().strip(),
-            "phone": self.fields["recipient_phone"].get().strip(),
-            "mobile": self.fields["recipient_mobile"].get().strip(),
-            "address": self.fields["recipient_address"].get().strip(),
-        }
-        if any(current.values()):
+        field_map = {"name": "recipient_name", "phone": "recipient_phone", "address": "recipient_address"}
+        will_overwrite = any(
+            self.fields[field_map[k]].get().strip()
+            for k in to_fill if k in field_map
+        )
+        if will_overwrite:
             ok = messagebox.askyesno(
                 "覆蓋收件人資料",
                 "目前收件人欄位已有資料，要用剪貼板內容覆蓋嗎？"
@@ -955,13 +955,18 @@ class SingleOrderView(tk.Frame):
             if not ok:
                 return
 
-        self.fields["recipient_name"].set(parsed["name"])
-        self.fields["recipient_phone"].set(parsed["phone"])
-        self.fields["recipient_mobile"].set("")
-        self.fields["recipient_address"].set(parsed["address"])
-        self.result_var.set(
-            f"已從剪貼板帶入：{parsed['name']}／{parsed['phone']}／{parsed['address']}"
-        )
+        filled_parts = []
+        if to_fill.get("name"):
+            self.fields["recipient_name"].set(to_fill["name"])
+            filled_parts.append(to_fill["name"])
+        if to_fill.get("phone"):
+            self.fields["recipient_phone"].set(to_fill["phone"])
+            self.fields["recipient_mobile"].set("")
+            filled_parts.append(to_fill["phone"])
+        if to_fill.get("address"):
+            self.fields["recipient_address"].set(to_fill["address"])
+            filled_parts.append(to_fill["address"])
+        self.result_var.set("已從剪貼板帶入：" + "／".join(filled_parts))
 
     def _read_clipboard_text(self):
         try:
