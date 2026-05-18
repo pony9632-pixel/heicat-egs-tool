@@ -15,29 +15,19 @@
 
 > 如果你的同事已經裝好，跳到 [日常使用](#日常使用)。
 
-### 步驟 1：安裝 Python 3（裝過可跳）
+### 步驟 1：一鍵安裝
 
-到 [python.org/downloads](https://www.python.org/downloads/) 下載安裝，一路按 Continue / Install。
-
-確認方式：開「終端機」（Spotlight 搜尋 `Terminal`）輸入：
-
-```bash
-python3 --version
-```
-
-有顯示 `Python 3.x.x` 就 OK。
-
-### 步驟 2：一鍵安裝
-
-開「**終端機**」，貼上以下指令後按 Enter，等它跑完即可：
+開「**終端機**」（Spotlight 搜尋 `Terminal`），貼上以下指令後按 Enter，等它跑完即可：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pony9632-pixel/heicat-egs-tool/main/install.sh | bash
 ```
 
-腳本會自動下載最新版、安裝套件，完成後自動開啟程式資料夾。
+腳本會自動處理所有事情：Python 3、套件安裝、程式下載，完成後自動開啟程式資料夾。
 
-### 步驟 3：填設定
+> 若出現要求輸入電腦登入密碼的提示，輸入後按 Enter 即可（這是安裝 Homebrew / Python 的正常步驟）。
+
+### 步驟 2：填設定
 
 切到「**設定**」分頁，填：
 - **客戶代號**（黑貓業務給的）
