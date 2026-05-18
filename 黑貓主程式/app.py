@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.1.5"
+VERSION     = "1.1.6"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -147,59 +147,75 @@ class App(tk.Tk):
         self._zipball_url = ""
         self._html_url    = ""
 
-        # macOS copy-paste fix — direct clipboard operations, compatible with all Python versions
-        def _copy(e):
-            try:
-                text = e.widget.selection_get()
-                e.widget.clipboard_clear()
-                e.widget.clipboard_append(text)
-            except Exception:
-                pass
-            return "break"
+        # macOS copy-paste fix
+        # 用 ::tk::mac::* 覆寫系統層級指令，英文和注音輸入法模式下均有效
+        import time as _time
+        _last_t = [0.0]
 
-        def _cut(e):
-            try:
-                text = e.widget.selection_get()
-                e.widget.clipboard_clear()
-                e.widget.clipboard_append(text)
-                e.widget.delete("sel.first", "sel.last")
-            except Exception:
-                pass
-            return "break"
+        def _fw():
+            return self.focus_get()
 
-        def _paste(e):
+        def _do_paste():
+            w = _fw()
+            if not w: return
             try:
-                clip = e.widget.clipboard_get()
-                try: e.widget.delete("sel.first", "sel.last")
+                clip = w.clipboard_get()
+                try: w.delete("sel.first", "sel.last")
                 except Exception: pass
-                e.widget.insert("insert", clip)
-            except Exception:
-                pass
-            return "break"
+                w.insert("insert", clip)
+            except Exception: pass
 
-        def _select_all(e):
+        def _do_copy():
+            w = _fw()
+            if not w: return
             try:
-                if hasattr(e.widget, "select_range"):
-                    e.widget.select_range(0, "end")
+                text = w.selection_get()
+                w.clipboard_clear()
+                w.clipboard_append(text)
+            except Exception: pass
+
+        def _do_cut():
+            w = _fw()
+            if not w: return
+            try:
+                text = w.selection_get()
+                w.clipboard_clear()
+                w.clipboard_append(text)
+                w.delete("sel.first", "sel.last")
+            except Exception: pass
+
+        def _do_select_all():
+            w = _fw()
+            if not w: return
+            try:
+                if hasattr(w, "select_range"):
+                    w.select_range(0, "end")
                 else:
-                    e.widget.tag_add("sel", "1.0", "end")
-            except Exception:
-                pass
-            return "break"
+                    w.tag_add("sel", "1.0", "end")
+            except Exception: pass
 
-        def _undo(e):
-            try:
-                e.widget.edit_undo()
-            except Exception:
-                pass
-            return "break"
+        # 系統層（注音模式也能觸發）
+        self.tk.createcommand("::tk::mac::Paste",     _do_paste)
+        self.tk.createcommand("::tk::mac::Copy",      _do_copy)
+        self.tk.createcommand("::tk::mac::Cut",       _do_cut)
+        self.tk.createcommand("::tk::mac::SelectAll", _do_select_all)
+
+        # 一般按鍵層（英文模式備援）— 用時間戳防止與系統層重複觸發
+        def _guarded(fn):
+            def handler(e):
+                now = _time.time()
+                if now - _last_t[0] < 0.05:
+                    return "break"
+                _last_t[0] = now
+                fn()
+                return "break"
+            return handler
 
         for _cls in ("Entry", "TEntry", "Text"):
-            self.bind_class(_cls, "<Command-c>", _copy)
-            self.bind_class(_cls, "<Command-v>", _paste)
-            self.bind_class(_cls, "<Command-x>", _cut)
-            self.bind_class(_cls, "<Command-z>", _undo)
-            self.bind_class(_cls, "<Command-a>", _select_all)
+            self.bind_class(_cls, "<Command-c>", _guarded(_do_copy))
+            self.bind_class(_cls, "<Command-v>", _guarded(_do_paste))
+            self.bind_class(_cls, "<Command-x>", _guarded(_do_cut))
+            self.bind_class(_cls, "<Command-a>", _guarded(_do_select_all))
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=10, pady=10)
