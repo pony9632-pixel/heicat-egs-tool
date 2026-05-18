@@ -1158,7 +1158,7 @@ class ContactsView(tk.Frame):
 
     def _build(self):
         wrap = tk.Frame(self, bg=PAPER)
-        wrap.pack(fill="both", expand=True, padx=28, pady=24)
+        wrap.pack(fill="x", expand=False, padx=28, pady=24)
 
         head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
         SectionHeader(head, "通訊錄", "收件人管理").pack(side="left")
@@ -1171,9 +1171,8 @@ class ContactsView(tk.Frame):
                  command=self._add).pack(side="left", padx=4)
 
         # split: list (left) + detail (right)
-        split = tk.Frame(wrap, bg=PAPER); split.pack(fill="both", expand=True)
+        split = tk.Frame(wrap, bg=PAPER); split.pack(fill="x", expand=False)
         split.columnconfigure(0, weight=2); split.columnconfigure(1, weight=1)
-        split.rowconfigure(0, weight=1)
 
         # left list
         lcard = Card(split, padding=0)
@@ -1195,9 +1194,9 @@ class ContactsView(tk.Frame):
 
         # list
         list_holder = tk.Frame(lcard.inner, bg=CARD)
-        list_holder.pack(fill="both", expand=True)
-        self.list_canvas = tk.Canvas(list_holder, bg=CARD, highlightthickness=0)
-        self.list_canvas.pack(side="left", fill="both", expand=True)
+        list_holder.pack(fill="x")
+        self.list_canvas = tk.Canvas(list_holder, bg=CARD, highlightthickness=0, height=420)
+        self.list_canvas.pack(side="left", fill="x", expand=False)
         vsb = ttk.Scrollbar(list_holder, orient="vertical",
                              command=self.list_canvas.yview,
                              style="Tw.Vertical.TScrollbar")
