@@ -1,0 +1,17 @@
+# 黑貓 EGS 企業建單工具 — 設定檔範本
+# 複製此檔案為 config.yaml，填入正確資料後存檔
+
+# 企業帳號（黑貓給的客戶代號）
+username: "YOUR_CUSTOMER_ID"
+
+# API 授權碼（黑貓給的 Token）
+api_token: "YOUR_API_TOKEN"
+
+# 寄件人資料（你公司／門市的資訊）
+sender:
+  name: "STUDIO A 門市名稱"
+  tel: "02-XXXX-XXXX"
+  mobile: ""
+  zipcode: "100123"          # 6 碼郵遞區號（含縣市代碼）
+  address: "台北市○○區○○路○○號○樓"
+  product_type_id: "0006"    # 品名類別（可在設定頁選擇）
