@@ -1,6 +1,7 @@
 # 敏感設定（含 API 金鑰，不進版控）
 黑貓主程式/config.yaml
 黑貓主程式/auth_state.json
+黑貓主程式/contacts.json
 
 # PDF 輸出（客戶資料）
 黑貓單號/
