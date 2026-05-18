@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.1.2"
+VERSION     = "1.1.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -144,13 +144,21 @@ class App(tk.Tk):
         self._zipball_url = ""
         self._html_url    = ""
 
-        # macOS copy-paste fix — map Command shortcuts to tkinter virtual events
-        self.event_add("<<Copy>>",      "<Command-c>")
-        self.event_add("<<Paste>>",     "<Command-v>")
-        self.event_add("<<Cut>>",       "<Command-x>")
-        self.event_add("<<Undo>>",      "<Command-z>")
-        self.event_add("<<Redo>>",      "<Command-y>")
-        self.event_add("<<SelectAll>>", "<Command-a>")
+        # macOS copy-paste fix — override class bindings so each keypress fires exactly once
+        def _mac(event, ve):
+            try:
+                event.widget.event_generate(ve)
+            except Exception:
+                pass
+            return "break"
+
+        for _cls in ("Entry", "TEntry", "Text"):
+            self.bind_class(_cls, "<Command-c>", lambda e: _mac(e, "<<Copy>>"))
+            self.bind_class(_cls, "<Command-v>", lambda e: _mac(e, "<<Paste>>"))
+            self.bind_class(_cls, "<Command-x>", lambda e: _mac(e, "<<Cut>>"))
+            self.bind_class(_cls, "<Command-z>", lambda e: _mac(e, "<<Undo>>"))
+            self.bind_class(_cls, "<Command-y>", lambda e: _mac(e, "<<Redo>>"))
+            self.bind_class(_cls, "<Command-a>", lambda e: _mac(e, "<<SelectAll>>"))
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=10, pady=10)
