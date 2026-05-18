@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.2.0"
+VERSION     = "1.3.0"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -97,12 +97,104 @@ class App(tk.Tk):
         self.title("黑貓宅急便 企業建單工具")
         self.resizable(True, True)
         self.configure(bg=WHITE)
-        # 依螢幕高度決定視窗大小，盡量顯示完整內容
         self.update_idletasks()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         win_w, win_h = min(980, sw - 40), min(sh - 80, 920)
         self.geometry(f"{win_w}x{win_h}")
         self.minsize(860, 800)
+
+        # 先顯示載入畫面，版本確認後才開啟主介面
+        self._splash = tk.Frame(self, bg=WHITE)
+        self._splash.pack(fill="both", expand=True)
+        tk.Label(self._splash, text="🐱  黑貓宅急便 企業建單工具",
+                 bg=WHITE, fg=TEAL, font=("Arial", 20, "bold")).pack(pady=(180, 16))
+        self._splash_lbl = tk.Label(self._splash, text="🔍 確認版本中...",
+                 bg=WHITE, fg="#888", font=("Arial", 12))
+        self._splash_lbl.pack()
+
+        threading.Thread(target=self._startup_check, daemon=True).start()
+
+    # ── startup version check ────────────────────────────────────────────────
+
+    def _startup_check(self):
+        try:
+            import urllib.request as _req, ssl
+            _ctx = ssl.create_default_context()
+            _ctx.check_hostname = False
+            _ctx.verify_mode = ssl.CERT_NONE
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = _req.Request(url, headers={"User-Agent": "heicat-egs-tool"})
+            with _req.urlopen(req, context=_ctx, timeout=5) as r:
+                data = json.loads(r.read())
+            tag = data.get("tag_name", "").lstrip("v")
+            if tag:
+                current = tuple(int(x) for x in VERSION.split("."))
+                latest  = tuple(int(x) for x in tag.split("."))
+                if latest > current:
+                    zipball = data.get("zipball_url", "")
+                    html    = data.get("html_url", "")
+                    self.after(0, lambda t=tag, z=zipball, h=html:
+                               self._do_startup_update(t, z, h))
+                    return
+        except Exception:
+            pass
+        self.after(0, self._init_ui)
+
+    def _do_startup_update(self, new_version: str, zipball_url: str, html_url: str):
+        self._splash_lbl.config(text=f"⏳ 發現新版本 v{new_version}，自動更新中...")
+
+        def run():
+            try:
+                import ssl, shutil, tempfile, os
+                import urllib.request as _req
+
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+                req = _req.Request(zipball_url, headers={"User-Agent": "heicat-egs-tool"})
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+                    temp_zip = f.name
+                with _req.urlopen(req, context=ssl_ctx, timeout=60) as resp:
+                    with open(temp_zip, "wb") as f:
+                        shutil.copyfileobj(resp, f)
+
+                self.after(0, lambda: self._splash_lbl.config(text="⏳ 解壓縮並套用更新..."))
+
+                import zipfile
+                dst_root = Path(__file__).parent.parent
+                preserve = {
+                    str(dst_root / "黑貓主程式" / "config.yaml"),
+                    str(dst_root / "黑貓主程式" / "contacts.json"),
+                }
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    with zipfile.ZipFile(temp_zip, "r") as z:
+                        z.extractall(tmpdir)
+                    top = next(p for p in Path(tmpdir).iterdir() if p.is_dir())
+                    for src in top.rglob("*"):
+                        rel = src.relative_to(top)
+                        dst = dst_root / rel
+                        if src.is_dir():
+                            dst.mkdir(parents=True, exist_ok=True)
+                        elif str(dst) not in preserve:
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(str(src), str(dst))
+
+                os.unlink(temp_zip)
+                self.after(0, self._restart_app)
+            except Exception:
+                # 更新失敗時直接開啟主介面
+                self.after(0, self._init_ui)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _restart_app(self):
+        import os, sys
+        os.execv(sys.executable, [sys.executable, str(Path(__file__))])
+
+    # ── build full UI ────────────────────────────────────────────────────────
+
+    def _init_ui(self):
+        self._splash.destroy()
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -126,32 +218,17 @@ class App(tk.Tk):
                         font=("Arial", 11, "bold"), padding=[10, 6])
 
         # header
-        self._hdr = tk.Frame(self, bg=TEAL, height=50)
-        self._hdr.pack(fill="x")
-        tk.Label(self._hdr, text="  🐱  黑貓宅急便 企業建單工具",
+        hdr = tk.Frame(self, bg=TEAL, height=50)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="  🐱  黑貓宅急便 企業建單工具",
                  bg=TEAL, fg=WHITE, font=("Arial", 14, "bold")).pack(side="left", pady=8)
-        tk.Label(self._hdr, text=f"v{VERSION}",
+        tk.Label(hdr, text=f"v{VERSION}",
                  bg=TEAL, fg="#B2DFDB", font=("Arial", 10)).pack(side="left", pady=8, padx=(6, 0))
-        self._update_status = tk.Label(self._hdr, text="🔍 檢查更新中...",
-                 bg=TEAL, fg="#B2DFDB", font=("Arial", 10))
-        self._update_status.pack(side="right", pady=8, padx=12)
-
-        # update banner (hidden until a new version is found)
-        self._update_bar = tk.Frame(self, bg="#E65100")
-        self._update_lbl = tk.Label(
-            self._update_bar, text="", bg="#E65100", fg=WHITE,
-            font=("Arial", 11, "bold"), cursor="hand2", pady=6)
-        self._update_lbl.pack(side="left", padx=14)
-        self._update_lbl.bind("<Button-1>", lambda e: self._do_update())
-        self._new_version = ""
-        self._zipball_url = ""
-        self._html_url    = ""
 
         # macOS copy-paste fix
-        # 用 ::tk::mac::* 覆寫系統層級指令，英文和注音輸入法模式下均有效
         import time as _time
         _last_t   = [0.0]
-        _last_inp = [None]   # 記住最後一個有 focus 的輸入元件
+        _last_inp = [None]
 
         def _on_focus_in(e):
             if hasattr(e.widget, "insert") and hasattr(e.widget, "clipboard_get"):
@@ -162,7 +239,7 @@ class App(tk.Tk):
             w = self.focus_get()
             if w and hasattr(w, "insert") and hasattr(w, "clipboard_get"):
                 return w
-            return _last_inp[0]  # 注音模式 focus 被 IME 搶走時用上次的欄位
+            return _last_inp[0]
 
         import subprocess as _sp
 
@@ -215,13 +292,11 @@ class App(tk.Tk):
                     w.tag_add("sel", "1.0", "end")
             except Exception: pass
 
-        # 系統層（注音模式也能觸發）
         self.tk.createcommand("::tk::mac::Paste",     _do_paste)
         self.tk.createcommand("::tk::mac::Copy",      _do_copy)
         self.tk.createcommand("::tk::mac::Cut",       _do_cut)
         self.tk.createcommand("::tk::mac::SelectAll", _do_select_all)
 
-        # 一般按鍵層（英文模式備援）— 用時間戳防止與系統層重複觸發
         def _guarded(fn):
             def handler(e):
                 now = _time.time()
@@ -238,10 +313,9 @@ class App(tk.Tk):
             self.bind_class(_cls, "<Command-x>", _guarded(_do_cut))
             self.bind_class(_cls, "<Command-a>", _guarded(_do_select_all))
 
-        # 最後防線：用 keycode 偵測 Cmd+C/V/X/A，不受 IME keysym 轉換影響
         _KC = {9: _do_paste, 8: _do_copy, 7: _do_cut, 0: _do_select_all}
         def _keycode_guard(e):
-            if not (e.state & 8):   # 8 = Command modifier on macOS
+            if not (e.state & 8):
                 return
             fn = _KC.get(e.keycode)
             if fn is None:
@@ -254,7 +328,6 @@ class App(tk.Tk):
             return "break"
         self.bind_all("<KeyPress>", _keycode_guard, add="+")
 
-        # 自訂右鍵選單（取代原生無法貼上的系統選單）
         def _show_ctx(event):
             w = event.widget
             _last_inp[0] = w
@@ -282,128 +355,6 @@ class App(tk.Tk):
         nb.add(self.tab_batch,    text="  批次建單  ")
         nb.add(self.tab_contacts, text="  通訊錄  ")
         nb.add(self.tab_cfg,      text="  設定  ")
-
-        threading.Thread(target=self._check_update, daemon=True).start()
-
-    # ── auto-update ──────────────────────────────────────────────────────────
-
-    def _check_update(self):
-        try:
-            import urllib.request as _req, ssl
-            _ctx = ssl.create_default_context()
-            _ctx.check_hostname = False
-            _ctx.verify_mode = ssl.CERT_NONE
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            request = _req.Request(url, headers={"User-Agent": "heicat-egs-tool"})
-            with _req.urlopen(request, context=_ctx, timeout=5) as r:
-                data = json.loads(r.read())
-            tag = data.get("tag_name", "").lstrip("v")
-            if not tag:
-                return
-            current = tuple(int(x) for x in VERSION.split("."))
-            latest  = tuple(int(x) for x in tag.split("."))
-            if latest > current:
-                zipball = data.get("zipball_url", "")
-                html    = data.get("html_url", "")
-                self.after(0, lambda t=tag, z=zipball, h=html:
-                           self._show_update_banner(t, z, h))
-            else:
-                self.after(0, lambda: self._update_status.config(
-                    text="✓ 已是最新版"))
-                self.after(4000, lambda: self._update_status.config(text=""))
-        except Exception:
-            self.after(0, lambda: self._update_status.config(text=""))
-
-    def _show_update_banner(self, new_version: str, zipball_url: str, html_url: str):
-        self._new_version = new_version
-        self._zipball_url = zipball_url
-        self._html_url    = html_url
-        # 啟動時直接彈出詢問視窗
-        if messagebox.askyesno(
-                "🔔 發現新版本",
-                f"發現新版本 v{new_version}！\n\n"
-                "• config.yaml 與 contacts.json 會保留\n"
-                "• 更新完成後程式自動重新啟動\n\n"
-                "要立即更新嗎？",
-                default="yes"):
-            self._run_update()
-        else:
-            # 選擇稍後，保留頂部 banner 提醒
-            self._update_lbl.config(
-                text=f"🔔  發現新版本 v{new_version}！點此一鍵更新  →")
-            self._update_bar.pack(fill="x", after=self._hdr)
-
-    def _do_update(self):
-        if not self._zipball_url:
-            return
-        if not messagebox.askyesno(
-                "確認更新",
-                f"確定要更新到 v{self._new_version}？\n\n"
-                "• config.yaml 與 contacts.json 會保留\n"
-                "• 更新完成後程式自動重新啟動"):
-            return
-        self._run_update()
-
-    def _run_update(self):
-        self._update_lbl.config(text="⏳  下載更新中，請稍候...")
-        self._update_lbl.unbind("<Button-1>")
-        self._update_bar.pack(fill="x", after=self._hdr)
-
-        def run():
-            try:
-                import ssl, shutil, tempfile, os
-                import urllib.request as _req
-
-                ssl_ctx = ssl.create_default_context()
-                ssl_ctx.check_hostname = False
-                ssl_ctx.verify_mode = ssl.CERT_NONE
-                req = _req.Request(self._zipball_url,
-                                   headers={"User-Agent": "heicat-egs-tool"})
-                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
-                    temp_zip = f.name
-                with _req.urlopen(req, context=ssl_ctx, timeout=60) as resp:
-                    with open(temp_zip, "wb") as f:
-                        shutil.copyfileobj(resp, f)
-
-                self.after(0, lambda: self._update_lbl.config(text="⏳  解壓縮並套用更新..."))
-
-                import zipfile
-                dst_root = Path(__file__).parent.parent
-                preserve = {
-                    str(dst_root / "黑貓主程式" / "config.yaml"),
-                    str(dst_root / "黑貓主程式" / "contacts.json"),
-                }
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    with zipfile.ZipFile(temp_zip, "r") as z:
-                        z.extractall(tmpdir)
-                    top = next(p for p in Path(tmpdir).iterdir() if p.is_dir())
-                    for src in top.rglob("*"):
-                        rel = src.relative_to(top)
-                        dst = dst_root / rel
-                        if src.is_dir():
-                            dst.mkdir(parents=True, exist_ok=True)
-                        elif str(dst) not in preserve:
-                            dst.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(str(src), str(dst))
-
-                os.unlink(temp_zip)
-                self.after(0, self._restart_app)
-
-            except Exception as ex:
-                err = str(ex)
-                self.after(0, lambda m=err: self._update_lbl.config(
-                    text=f"✗ 更新失敗：{m}  （點此手動下載）"))
-                self.after(0, lambda: self._update_lbl.bind(
-                    "<Button-1>",
-                    lambda e: __import__("webbrowser").open(self._html_url)))
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _restart_app(self):
-        import os, sys
-        messagebox.showinfo("更新完成",
-                            f"已更新至 v{self._new_version}，程式即將重新啟動。")
-        os.execv(sys.executable, [sys.executable, str(Path(__file__))])
 
 
 # ─── config tab ───────────────────────────────────────────────────────────────
