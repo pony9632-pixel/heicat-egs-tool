@@ -22,7 +22,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.4.1"
+VERSION     = "1.4.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -228,9 +228,9 @@ class App(tk.Tk):
         m.pack(side="left", padx=(0, 12))
         info = tk.Frame(mark, bg=PAPER)
         info.pack(side="left")
-        tk.Label(info, text="Tidewater", font=(FONT_FAMILY, 22, "bold"),
+        tk.Label(info, text="STUDIO A", font=(FONT_FAMILY, 22, "bold"),
                  bg=PAPER, fg=INK).pack(anchor="w")
-        tk.Label(info, text="宅配建單工具", font=F_SMALL,
+        tk.Label(info, text="黑貓宅急便工具", font=F_SMALL,
                  bg=PAPER, fg=MUTED).pack(anchor="w")
 
         self._splash_lbl = tk.Label(self._splash, text="確認版本中…",
@@ -364,7 +364,7 @@ class App(tk.Tk):
         hdr = tk.Frame(self, bg=RAIL, height=44)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        tk.Label(hdr, text="Tidewater · 宅配建單工具",
+        tk.Label(hdr, text="STUDIO A 黑貓宅急便工具",
                  bg=RAIL, fg=INK2, font=F_BOLD).pack(side="left", padx=16)
         tk.Label(hdr, text=f"v{VERSION}",
                  bg=RAIL, fg=MUTED, font=F_TINY).pack(side="right", padx=16)
@@ -558,8 +558,8 @@ class Sidebar(tk.Frame):
         m.pack(side="left", padx=(0, 10))
         info = tk.Frame(brand, bg=RAIL)
         info.pack(side="left")
-        tk.Label(info, text="Tidewater", font=F_BOLD, bg=RAIL, fg=INK).pack(anchor="w")
-        tk.Label(info, text="宅配建單工具", font=F_TINY, bg=RAIL, fg=MUTED).pack(anchor="w")
+        tk.Label(info, text="STUDIO A", font=F_BOLD, bg=RAIL, fg=INK).pack(anchor="w")
+        tk.Label(info, text="黑貓宅急便工具", font=F_TINY, bg=RAIL, fg=MUTED).pack(anchor="w")
 
         # nav items
         nav = tk.Frame(self, bg=RAIL)
