@@ -130,6 +130,8 @@ class App(tk.Tk):
         self._hdr.pack(fill="x")
         tk.Label(self._hdr, text="  🐱  黑貓宅急便 企業建單工具",
                  bg=TEAL, fg=WHITE, font=("Arial", 14, "bold")).pack(side="left", pady=8)
+        tk.Label(self._hdr, text=f"v{VERSION}",
+                 bg=TEAL, fg="#B2DFDB", font=("Arial", 10)).pack(side="left", pady=8, padx=(6, 0))
 
         # update banner (hidden until a new version is found)
         self._update_bar = tk.Frame(self, bg="#E65100")
