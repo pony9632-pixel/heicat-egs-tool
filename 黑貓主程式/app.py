@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.3.3"
+VERSION     = "1.3.4"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -341,7 +341,9 @@ class App(tk.Tk):
 
         _KC = {9: _do_paste, 8: _do_copy, 7: _do_cut, 0: _do_select_all}
         def _keycode_guard(e):
-            fn = _KC.get(e.keycode)
+            kc = e.keycode
+            # 英文模式 keycode 直接命中；注音模式 Tk 認不出 keysym，會把硬體 keycode 塞到最高 byte
+            fn = _KC.get(kc) or _KC.get((kc >> 24) & 0xFF)
             if fn is None:
                 return
             now = _time.time()
