@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.1.3"
+VERSION     = "1.1.4"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -179,10 +179,13 @@ class App(tk.Tk):
 
     def _check_update(self):
         try:
-            import urllib.request as _req
+            import urllib.request as _req, ssl
+            _ctx = ssl.create_default_context()
+            _ctx.check_hostname = False
+            _ctx.verify_mode = ssl.CERT_NONE
             url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
             request = _req.Request(url, headers={"User-Agent": "heicat-egs-tool"})
-            with _req.urlopen(request, timeout=5) as r:
+            with _req.urlopen(request, context=_ctx, timeout=5) as r:
                 data = json.loads(r.read())
             tag = data.get("tag_name", "").lstrip("v")
             if not tag:
@@ -238,6 +241,8 @@ class App(tk.Tk):
                 import urllib.request as _req
 
                 ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
                 req = _req.Request(self._zipball_url,
                                    headers={"User-Agent": "heicat-egs-tool"})
                 with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
