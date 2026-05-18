@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.3.0"
+VERSION     = "1.3.1"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -256,10 +256,23 @@ class App(tk.Tk):
                 pass
 
         def _do_paste():
-            w = _fw()
-            if not w: return
             clip = _pb_paste()
             if not clip: return
+            w = _fw()
+            if not w: return
+            # Sync macOS clipboard into Tk so <<Paste>> picks it up
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(clip)
+            except Exception:
+                pass
+            # Use Tk's built-in paste event — handles IME preedit state correctly
+            try:
+                w.event_generate("<<Paste>>")
+                return
+            except Exception:
+                pass
+            # Fallback: direct insert
             try: w.delete("sel.first", "sel.last")
             except Exception: pass
             try: w.insert("insert", clip)
@@ -292,10 +305,15 @@ class App(tk.Tk):
                     w.tag_add("sel", "1.0", "end")
             except Exception: pass
 
-        self.tk.createcommand("::tk::mac::Paste",     _do_paste)
-        self.tk.createcommand("::tk::mac::Copy",      _do_copy)
-        self.tk.createcommand("::tk::mac::Cut",       _do_cut)
-        self.tk.createcommand("::tk::mac::SelectAll", _do_select_all)
+        # Wrap in after(0) so paste runs after the key event + IME processing finishes
+        def _mac_paste():      self.after(0, _do_paste)
+        def _mac_copy():       self.after(0, _do_copy)
+        def _mac_cut():        self.after(0, _do_cut)
+        def _mac_select_all(): self.after(0, _do_select_all)
+        self.tk.createcommand("::tk::mac::Paste",     _mac_paste)
+        self.tk.createcommand("::tk::mac::Copy",      _mac_copy)
+        self.tk.createcommand("::tk::mac::Cut",       _mac_cut)
+        self.tk.createcommand("::tk::mac::SelectAll", _mac_select_all)
 
         def _guarded(fn):
             def handler(e):
@@ -315,8 +333,6 @@ class App(tk.Tk):
 
         _KC = {9: _do_paste, 8: _do_copy, 7: _do_cut, 0: _do_select_all}
         def _keycode_guard(e):
-            if not (e.state & 8):
-                return
             fn = _KC.get(e.keycode)
             if fn is None:
                 return
@@ -326,7 +342,14 @@ class App(tk.Tk):
             _last_t[0] = now
             fn()
             return "break"
-        self.bind_all("<KeyPress>", _keycode_guard, add="+")
+        # <Command-KeyPress>: Tk's native modifier matching (works regardless of state bit value)
+        self.bind_all("<Command-KeyPress>", _keycode_guard, add="+")
+        # Legacy fallback with explicit state bit check
+        def _keycode_guard_state(e):
+            if not (e.state & 8):
+                return
+            return _keycode_guard(e)
+        self.bind_all("<KeyPress>", _keycode_guard_state, add="+")
 
         def _show_ctx(event):
             w = event.widget
