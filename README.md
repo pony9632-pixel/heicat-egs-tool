@@ -23,7 +23,7 @@
 開啟「終端機」（Spotlight 搜尋 Terminal），貼上以下指令執行：
 
 ```bash
-pip3 install pyyaml pypdf
+python3 -m pip install pyyaml pypdf
 ```
 
 ### 4. 啟動程式
@@ -67,7 +67,7 @@ PDF 檔案會自動存到 `黑貓單號/` 資料夾，檔名格式為 `訂單號
 ## 常見問題
 
 **Q：雙擊 `啟動黑貓工具.command` 沒有反應或立刻關閉？**  
-請確認步驟 2、3 都完成（Python 已安裝、套件已安裝）。
+請確認步驟 2、3 都完成（Python 已安裝、套件已安裝）。安裝套件請務必用 `python3 -m pip install pyyaml pypdf`，不要用 `pip3`。
 
 **Q：建單失敗，出現 E009？**  
 請到「設定」頁重新選擇「品名類別」後儲存，再重試。
