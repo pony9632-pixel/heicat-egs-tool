@@ -22,7 +22,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.4.3"
+VERSION     = "1.4.4"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -217,9 +217,23 @@ def _bind_mousewheel_on_hover(hover_widget, canvas):
 
 # ─── main window ─────────────────────────────────────────────────────────────
 
+def _ensure_launcher_executable():
+    """每次啟動都檢查 啟動黑貓工具.command 是否可執行，避免自動更新或解壓導致權限消失。"""
+    import stat, os
+    launcher = Path(__file__).parent / "啟動黑貓工具.command"
+    try:
+        if launcher.exists():
+            mode = launcher.stat().st_mode
+            if not (mode & stat.S_IXUSR):
+                os.chmod(str(launcher), mode | 0o755)
+    except Exception:
+        pass
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        _ensure_launcher_executable()
         self.title("黑貓宅急便 企業建單工具")
         self.configure(bg=PAPER)
         self.update_idletasks()
