@@ -22,7 +22,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.4.4"
+VERSION     = "1.4.5"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -752,7 +752,7 @@ class SingleOrderView(tk.Frame):
         gp2 = tk.Frame(pc.body, bg=CARD); gp2.pack(fill="x", pady=(12, 0))
         gp2.columnconfigure(0, weight=1); gp2.columnconfigure(1, weight=1)
         self._combo_field(gp2, 0, 0, "尺寸", "spec",
-                          list(SPEC_OPTIONS.keys()), default="0002  90 cm")
+                          list(SPEC_OPTIONS.keys()), default="0001  60 cm")
         self._combo_field(gp2, 0, 1, "溫層", "thermosphere",
                           list(THERMO_OPTIONS.keys()), default="0001 常溫")
 
@@ -825,7 +825,7 @@ class SingleOrderView(tk.Frame):
         defaults = {
             "order_id": "", "product_name": "一般物品",
             "recipient_name": "", "recipient_phone": "", "recipient_mobile": "",
-            "recipient_address": "", "spec": "0002  90 cm",
+            "recipient_address": "", "spec": "0001  60 cm",
             "thermosphere": "0001 常溫", "delivery_time": "01 不指定",
             "shipment_date": default_shipment_date(),
             "delivery_date": default_delivery_date(),
