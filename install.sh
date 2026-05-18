@@ -20,18 +20,38 @@ if [[ "$(uname)" != "Darwin" ]]; then
     exit 1
 fi
 
-# ── 2. 確認 Python 3 ─────────────────────────────────────────────────────────
+# ── 2. 確認 Python 3（沒有就自動安裝）────────────────────────────────────────
 echo "🔍 檢查 Python 3..."
 if ! command -v python3 &>/dev/null; then
+    echo "⚠️  找不到 Python 3，嘗試自動安裝..."
     echo ""
-    echo "❌ 找不到 Python 3，請先完成以下步驟再重新執行安裝："
+
+    if ! command -v brew &>/dev/null; then
+        echo "📦 先安裝 Homebrew（macOS 套件管理器）..."
+        echo "   （過程中可能會要求輸入你的電腦登入密碼，這是正常的）"
+        echo ""
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+        # Apple Silicon (M1/M2/M3) 的 Homebrew 裝在 /opt/homebrew
+        if [[ -f /opt/homebrew/bin/brew ]]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+        fi
+        echo ""
+        echo "✅ Homebrew 安裝完成"
+    else
+        echo "✅ Homebrew 已存在"
+    fi
+
     echo ""
-    echo "   1. 前往 https://www.python.org/downloads/"
-    echo "   2. 下載並安裝 Python 3（一路按 Continue / Install 即可）"
-    echo "   3. 安裝完成後，回到終端機重新貼上安裝指令"
+    echo "📦 安裝 Python 3..."
+    brew install python3
     echo ""
-    open "https://www.python.org/downloads/" 2>/dev/null || true
-    exit 1
+
+    # 再確認一次
+    if ! command -v python3 &>/dev/null; then
+        echo "❌ Python 3 安裝後仍無法偵測，請重新開啟終端機後再執行一次安裝指令。"
+        exit 1
+    fi
 fi
 echo "✅ $(python3 --version) 已就緒"
 echo ""
