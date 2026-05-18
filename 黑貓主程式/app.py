@@ -25,7 +25,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.4"
+VERSION     = "1.5.5"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -1049,20 +1049,23 @@ class SingleOrderView(tk.Frame):
         self._staging.clear()
         self._refresh_staging_ui()
 
+    def _clear_order_fields(self) -> None:
+        """建單成功後清除收件人資料與訂單號，保留包裹規格與付款設定。"""
+        for key in ("recipient_name", "recipient_phone", "recipient_mobile",
+                    "recipient_address", "order_id", "notes"):
+            if key in self.fields:
+                self.fields[key].set("")
+
     def _print_selected(self) -> None:
         selected = [item for item in self._staging if item["var"].get()]
         if not selected:
             messagebox.showwarning("未選取", "請先勾選要列印的單據。")
             return
-        if len(selected) > 2:
-            messagebox.showwarning("最多選取 2 筆", "一次最多合併列印 2 筆單據，請減少勾選數量。")
-            return
         try:
             if len(selected) == 1:
                 out_path = selected[0]["pdf_path"]
             else:
-                out_path = self._merge_labels(selected[0]["pdf_path"],
-                                              selected[1]["pdf_path"])
+                out_path = self._merge_labels_multi([i["pdf_path"] for i in selected])
             subprocess.run(["open", out_path])
             for item in selected:
                 self._staging.remove(item)
@@ -1070,16 +1073,21 @@ class SingleOrderView(tk.Frame):
         except Exception as ex:
             messagebox.showerror("列印失敗", str(ex))
 
-    def _merge_labels(self, path1: str, path2: str) -> str:
+    def _merge_labels_multi(self, paths: list) -> str:
+        """每兩筆合成一頁 A4：第一筆在上半，第二筆平移到下半。奇數筆最後一頁留空白下半。"""
         from pypdf import PdfReader, PdfWriter, Transformation
-        r1, r2 = PdfReader(path1), PdfReader(path2)
-        p1, p2 = r1.pages[0], r2.pages[0]
-        w = float(p1.mediabox.width)
-        h = float(p1.mediabox.height)
         writer = PdfWriter()
-        combined = writer.add_blank_page(width=w, height=h * 2)
-        combined.merge_transformed_page(p1, Transformation().translate(0, h))
-        combined.merge_transformed_page(p2, Transformation())
+        for i in range(0, len(paths), 2):
+            r1 = PdfReader(paths[i])
+            p1 = r1.pages[0]
+            w = float(p1.mediabox.width)
+            h = float(p1.mediabox.height)
+            page = writer.add_blank_page(width=w, height=h)
+            page.merge_transformed_page(p1, Transformation())
+            if i + 1 < len(paths):
+                r2 = PdfReader(paths[i + 1])
+                p2 = r2.pages[0]
+                page.merge_transformed_page(p2, Transformation().translate(0, -(h / 2)))
         out = Path(OUTPUT_DIR) / f"combined_{int(time.time())}.pdf"
         Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
         with open(out, "wb") as f:
@@ -1293,6 +1301,7 @@ class SingleOrderView(tk.Frame):
                         self.after(0, lambda obt=r["obt_number"], nm=values["recipient_name"],
                                           oid=values["order_id"], pp=r["pdf_path"]:
                                    self._add_to_staging(obt, nm, oid, pp))
+                        self.after(50, self._clear_order_fields)
                         msg += "\nPDF 已加入待列印清單，選取後按「列印選取」輸出。"
                     self.after(0, lambda: self.result_lbl.configure(fg=OK))
                 else:
