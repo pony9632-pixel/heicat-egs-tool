@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.3.2"
+VERSION     = "1.3.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -256,15 +256,11 @@ class App(tk.Tk):
                 pass
 
         def _do_paste():
-            import sys as _sys
             clip = _pb_paste()
-            print(f"[PASTE] _do_paste called, clip={bool(clip)}, focus={type(self.focus_get()).__name__}, last={type(_last_inp[0]).__name__}", file=_sys.stderr, flush=True)
             if not clip: return
             w = _fw()
-            if not w:
-                print("[PASTE] no target widget!", file=_sys.stderr, flush=True)
-                return
-            # Primary: modify via textvariable — bypasses IME preedit state entirely
+            if not w: return
+            # Modify via textvariable — bypasses IME preedit state (fixes 注音 mode)
             try:
                 pos = int(w.index("insert"))
                 txt = w.get()
@@ -281,17 +277,10 @@ class App(tk.Tk):
                     w.delete(0, "end")
                     w.insert(0, new)
                 w.icursor(new_pos)
-                print("[PASTE] textvariable approach succeeded", file=_sys.stderr, flush=True)
                 return
-            except Exception as _ex:
-                print(f"[PASTE] textvariable failed: {_ex}", file=_sys.stderr, flush=True)
-            # Fallback: event_generate then direct insert
-            try:
-                self.clipboard_clear()
-                self.clipboard_append(clip)
-                w.event_generate("<<Paste>>")
-                return
-            except Exception: pass
+            except Exception:
+                pass
+            # Fallback: direct insert
             try: w.delete("sel.first", "sel.last")
             except Exception: pass
             try: w.insert("insert", clip)
@@ -325,10 +314,7 @@ class App(tk.Tk):
             except Exception: pass
 
         # Wrap in after(0) so paste runs after the key event + IME processing finishes
-        def _mac_paste():
-            import sys as _sys
-            print("[PASTE] ::tk::mac::Paste triggered", file=_sys.stderr, flush=True)
-            self.after(0, _do_paste)
+        def _mac_paste():      self.after(0, _do_paste)
         def _mac_copy():       self.after(0, _do_copy)
         def _mac_cut():        self.after(0, _do_cut)
         def _mac_select_all(): self.after(0, _do_select_all)
@@ -355,8 +341,6 @@ class App(tk.Tk):
 
         _KC = {9: _do_paste, 8: _do_copy, 7: _do_cut, 0: _do_select_all}
         def _keycode_guard(e):
-            import sys as _sys
-            print(f"[PASTE] Command-KeyPress: keycode={e.keycode}, keysym={e.keysym!r}, state={e.state:#x}", file=_sys.stderr, flush=True)
             fn = _KC.get(e.keycode)
             if fn is None:
                 return
