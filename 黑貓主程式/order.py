@@ -47,6 +47,7 @@ TEMPLATE_FIELDS = [
 ]
 
 REQUIRED_FIELDS = {"order_id", "recipient_name", "recipient_address"}
+FIXED_PRODUCT_TYPE_ID = "0006"
 
 
 def generate_template(path: str = "orders_template.csv") -> None:
@@ -124,7 +125,7 @@ def _csv_row_to_api_order(row: dict, sender: dict) -> dict:
         "IsCollection": is_collection,
         "IsSwipe": "N",
         "IsDeclare": "N",
-        "ProductTypeId": sender.get("product_type_id", ""),
+        "ProductTypeId": FIXED_PRODUCT_TYPE_ID,
         "ProductName": row.get("product_name") or "一般物品",
         "Remark": row.get("notes") or "",
         "CollectionAmount": row.get("collection_amount") or "0",

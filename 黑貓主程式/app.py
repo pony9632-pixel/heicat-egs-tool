@@ -8,6 +8,7 @@ import base64
 import csv
 import io
 import json
+import re
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -22,7 +23,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH = "contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.4.7"
+VERSION     = "1.5.1"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -91,6 +92,8 @@ PRODUCT_TYPE_OPTIONS = {
     "0014 印刷品":         "0014",
     "0015 其他":           "0015",
 }
+FIXED_PRODUCT_TYPE_LABEL = "0006 3C"
+FIXED_PRODUCT_TYPE_ID    = "0006"
 
 
 # ─── persistence helpers ─────────────────────────────────────────────────────
@@ -739,6 +742,8 @@ class SingleOrderView(tk.Frame):
         SectionHeader(head, "新建寄件單", "建立單筆寄件").pack(side="left")
         ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
         TwButton(ba, "清除", variant="ghost", command=self._clear).pack(side="left", padx=4)
+        TwButton(ba, "從剪貼板帶入", variant="default",
+                 command=self._paste_recipient_from_clipboard).pack(side="left", padx=4)
         TwButton(ba, "從通訊錄", variant="default", command=self._pick_contact).pack(side="left", padx=4)
 
         # recipient card
@@ -869,6 +874,173 @@ class SingleOrderView(tk.Frame):
             self.fields["recipient_address"].set(contact.get("address", ""))
         ContactPickerDialog(self, on_select)
 
+    def _paste_recipient_from_clipboard(self):
+        text = self._read_clipboard_text()
+        if not text.strip():
+            messagebox.showwarning("剪貼板是空的", "請先複製包含姓名、電話、地址的文字。")
+            return
+
+        parsed = self._parse_clipboard_recipient(text)
+        if not all(parsed.get(k) for k in ("name", "phone", "address")):
+            messagebox.showwarning(
+                "無法辨識收件人資料",
+                "剪貼板內容需要能辨識出姓名、電話、地址。\n\n"
+                "例如：\n王小明\n0912345678\n台北市信義區市府路1號"
+            )
+            return
+
+        current = {
+            "name": self.fields["recipient_name"].get().strip(),
+            "phone": self.fields["recipient_phone"].get().strip(),
+            "mobile": self.fields["recipient_mobile"].get().strip(),
+            "address": self.fields["recipient_address"].get().strip(),
+        }
+        if any(current.values()):
+            ok = messagebox.askyesno(
+                "覆蓋收件人資料",
+                "目前收件人欄位已有資料，要用剪貼板內容覆蓋嗎？"
+            )
+            if not ok:
+                return
+
+        self.fields["recipient_name"].set(parsed["name"])
+        self.fields["recipient_phone"].set(parsed["phone"])
+        self.fields["recipient_mobile"].set("")
+        self.fields["recipient_address"].set(parsed["address"])
+        self.result_var.set(
+            f"已從剪貼板帶入：{parsed['name']}／{parsed['phone']}／{parsed['address']}"
+        )
+
+    def _read_clipboard_text(self):
+        try:
+            return self.clipboard_get()
+        except Exception:
+            pass
+        if _IS_MAC:
+            try:
+                import subprocess as _sp
+                return _sp.run(
+                    ["pbpaste"], capture_output=True, timeout=2
+                ).stdout.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+        return ""
+
+    def _parse_clipboard_recipient(self, text):
+        raw = text.replace("\u3000", " ").replace("：", ":")
+        raw = re.sub(r"[\u200b-\u200f\ufeff]", "", raw)
+        raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [ln.strip(" \t,，;；") for ln in raw.split("\n") if ln.strip()]
+
+        parsed = {"name": "", "phone": "", "address": ""}
+        label_to_key = {
+            "收件人姓名": "name", "收件姓名": "name", "收件人": "name",
+            "姓名": "name", "名字": "name", "客戶姓名": "name",
+            "收件人電話": "phone", "收件電話": "phone", "電話": "phone",
+            "手機": "phone", "行動電話": "phone", "聯絡電話": "phone", "連絡電話": "phone",
+            "收件人地址": "address", "收件地址": "address", "地址": "address",
+            "住址": "address", "配送地址": "address",
+        }
+        label_names = sorted(label_to_key, key=len, reverse=True)
+        label_alt = "|".join(re.escape(x) for x in label_names)
+        inline_label_re = re.compile(
+            rf"({label_alt})\s*:\s*(.*?)(?=\s*(?:{label_alt})\s*:|$)",
+            flags=re.I | re.S,
+        )
+        for m in inline_label_re.finditer(raw):
+            key = label_to_key.get(m.group(1))
+            val = m.group(2).strip(" \t\n,，;；")
+            if key and val:
+                parsed[key] = self._normalize_phone(val) if key == "phone" else val
+
+        line_label_re = re.compile(rf"^({label_alt})\s*:\s*(.+)$", flags=re.I)
+        leftovers = []
+
+        for line in lines:
+            m = line_label_re.match(line)
+            if m:
+                key = label_to_key.get(m.group(1))
+                val = m.group(2).strip(" \t,，;；")
+                if key and val and not parsed[key]:
+                    parsed[key] = self._normalize_phone(val) if key == "phone" else val
+            else:
+                leftovers.append(line)
+
+        if not parsed["phone"]:
+            phone_match = self._find_phone(raw)
+            if phone_match:
+                parsed["phone"] = self._normalize_phone(phone_match.group(0))
+
+        unlabeled_lines = []
+        for line in leftovers:
+            without_phone = self._remove_phone_text(line).strip(" \t,，;；")
+            if without_phone:
+                unlabeled_lines.append(without_phone)
+
+        if not parsed["address"]:
+            parsed["address"] = self._guess_address(unlabeled_lines, raw)
+
+        if not parsed["name"]:
+            parsed["name"] = self._guess_name(unlabeled_lines, parsed["address"])
+
+        return {k: v.strip() for k, v in parsed.items()}
+
+    def _find_phone(self, text):
+        phone_re = re.compile(r"(?:\+?886[-\s]?)?0?\d[\d\s\-()]{7,16}\d")
+        for m in phone_re.finditer(text):
+            digits = re.sub(r"\D", "", m.group(0))
+            if digits.startswith("886"):
+                digits = "0" + digits[3:]
+            if 9 <= len(digits) <= 10 and digits.startswith("0"):
+                return m
+        return None
+
+    def _remove_phone_text(self, text):
+        m = self._find_phone(text)
+        if not m:
+            return text
+        return (text[:m.start()] + " " + text[m.end():]).strip()
+
+    def _normalize_phone(self, value):
+        digits = re.sub(r"\D", "", value or "")
+        if digits.startswith("886"):
+            digits = "0" + digits[3:]
+        return digits
+
+    def _guess_address(self, lines, full_text):
+        address_keywords = "縣市區鄉鎮村里路街大道段巷弄號樓室"
+        for line in reversed(lines):
+            m = self._find_address_start(line)
+            if m:
+                return line[m.start():].strip(" \t,，;；")
+            if any(ch in line for ch in address_keywords) and len(line) >= 6:
+                return line
+
+        compact = self._remove_phone_text(full_text.replace("\n", " ")).strip()
+        m = self._find_address_start(compact)
+        if m:
+            return compact[m.start():].strip(" \t,，;；")
+        return ""
+
+    def _find_address_start(self, text):
+        start_re = re.compile(
+            r"新北市|桃園市|高雄市|基隆市|新竹市|嘉義市|(?:台|臺)?(?:北|中|南|東)市|"
+            r"(?:新竹|苗栗|彰化|南投|雲林|嘉義|屏東|宜蘭|花蓮|台東|臺東|澎湖|金門|連江)縣"
+        )
+        return start_re.search(text)
+
+    def _guess_name(self, lines, address):
+        for line in lines:
+            if address and line == address:
+                continue
+            candidate = line
+            if address and address in candidate:
+                candidate = candidate.replace(address, "").strip(" \t,，;；")
+            candidate = self._remove_phone_text(candidate).strip(" \t,，;；")
+            if candidate and len(candidate) <= 20:
+                return candidate
+        return ""
+
     def _save_to_contacts(self):
         name = self.fields["recipient_name"].get().strip()
         phone = self.fields["recipient_phone"].get().strip()
@@ -949,7 +1121,7 @@ class SingleOrderView(tk.Frame):
                 else:
                     raw = r['message']
                     if "E009" in raw:
-                        raw += "\n→ 請至「設定」頁重新選擇「品名類別」"
+                        raw += "\n→ 品名類別已固定為 0006 3C，請確認版本為 v1.5.1 以上並在「設定」頁儲存設定後重試。"
                     msg = f"✗ 建單失敗：{raw}"
                     self.after(0, lambda: self.result_lbl.configure(fg=ERR))
                 self.after(0, lambda: self.result_var.set(msg))
@@ -1497,11 +1669,11 @@ class ConfigView(tk.Frame):
         # Product type
         pt_cell = tk.Frame(sc.body, bg=CARD); pt_cell.pack(fill="x", pady=(12, 0))
         field_label(pt_cell, "品名類別", hint="會印在託運單上").pack(fill="x", pady=(0, 6))
-        self.pt_var = tk.StringVar()
+        self.pt_var = tk.StringVar(value=FIXED_PRODUCT_TYPE_LABEL)
         self.vars["sender.product_type_id"] = self.pt_var
         ttk.Combobox(pt_cell, textvariable=self.pt_var,
-                     values=list(PRODUCT_TYPE_OPTIONS.keys()),
-                     state="readonly", style="Tw.TCombobox", font=F_NORM).pack(fill="x")
+                     values=[FIXED_PRODUCT_TYPE_LABEL],
+                     state="disabled", style="Tw.TCombobox", font=F_NORM).pack(fill="x")
 
         ba2 = tk.Frame(sc.body, bg=CARD); ba2.pack(fill="x", pady=(14, 0))
         TwButton(ba2, "儲存寄件人", variant="primary", command=self._save).pack(side="left")
@@ -1526,7 +1698,6 @@ class ConfigView(tk.Frame):
     def _load(self):
         cfg = load_cfg()
         sender = cfg.get("sender") or {}
-        _code_to_label = {v: k for k, v in PRODUCT_TYPE_OPTIONS.items()}
         for key, var in self.vars.items():
             if "." in key:
                 _, field = key.split(".", 1)
@@ -1534,7 +1705,7 @@ class ConfigView(tk.Frame):
             else:
                 val = cfg.get(key, "")
             if key == "sender.product_type_id":
-                val = _code_to_label.get(str(val), val)
+                val = FIXED_PRODUCT_TYPE_LABEL
             var.set(val)
         # 字體大小：把目前 config 的值對應回標籤
         try:
@@ -1560,7 +1731,7 @@ class ConfigView(tk.Frame):
         for key, var in self.vars.items():
             val = var.get()
             if key == "sender.product_type_id":
-                val = PRODUCT_TYPE_OPTIONS.get(val, val)
+                val = FIXED_PRODUCT_TYPE_ID
             if "." in key:
                 _, field = key.split(".", 1)
                 sender[field] = val

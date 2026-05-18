@@ -15,15 +15,7 @@
 
 > 如果你的同事已經裝好，跳到 [日常使用](#日常使用)。
 
-### 步驟 1：下載
-
-點以下連結，按 **「Source code (zip)」** 下載：
-
-**👉 [最新版下載](https://github.com/pony9632-pixel/heicat-egs-tool/releases/latest)**
-
-下載完成後解壓縮，整個資料夾拖到「桌面」或任何你方便找到的地方。
-
-### 步驟 2：安裝 Python 3（裝過可跳）
+### 步驟 1：安裝 Python 3（裝過可跳）
 
 到 [python.org/downloads](https://www.python.org/downloads/) 下載安裝，一路按 Continue / Install。
 
@@ -35,24 +27,17 @@ python3 --version
 
 有顯示 `Python 3.x.x` 就 OK。
 
-### 步驟 3：安裝套件
+### 步驟 2：一鍵安裝
 
-在終端機貼上：
+開「**終端機**」，貼上以下指令後按 Enter，等它跑完即可：
 
 ```bash
-python3 -m pip install pyyaml pypdf requests
+curl -fsSL https://raw.githubusercontent.com/pony9632-pixel/heicat-egs-tool/main/install.sh | bash
 ```
 
-按 Enter，等它跑完。
+腳本會自動下載最新版、安裝套件，完成後自動開啟程式資料夾。
 
-### 步驟 4：第一次啟動
-
-進到剛剛解壓縮的資料夾，**雙擊** `黑貓主程式/啟動黑貓工具.command`。
-
-> ⚠️ 第一次可能跳「無法打開，因為來自未識別的開發者」：  
-> **系統設定 → 隱私權與安全性** → 拉到下面找到「`啟動黑貓工具.command` 已封鎖」→ 點「**仍要打開**」。
-
-### 步驟 5：填設定
+### 步驟 3：填設定
 
 切到「**設定**」分頁，填：
 - **客戶代號**（黑貓業務給的）
@@ -62,6 +47,9 @@ python3 -m pip install pyyaml pypdf requests
 按「**儲存設定**」→ 按「**測試 API 連線**」確認顯示 ● 連線正常。
 
 完成！可以開始建單了。
+
+> ⚠️ 第一次雙擊 `啟動黑貓工具.command` 若出現「無法打開，因為來自未識別的開發者」：  
+> **系統設定 → 隱私權與安全性** → 找到被封鎖項目 → 點「**仍要打開**」。
 
 ---
 
@@ -141,7 +129,7 @@ python3 -c "import yaml, pypdf, requests; print('OK')"
 <details>
 <summary><b>建單失敗顯示 E009</b></summary>
 
-到「**設定**」分頁，「**品名類別**」重新選一次再「儲存設定」，重試即可。
+品名類別已固定為 `0006 3C`。請先確認版本為 v1.5.1 以上，並到「**設定**」分頁按「**儲存設定**」讓設定檔回寫固定值後重試。
 
 </details>
 
