@@ -21,7 +21,7 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 CONFIG_PATH = "config.yaml"
 OUTPUT_DIR  = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.1.4"
+VERSION     = "1.1.5"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 SPEC_OPTIONS   = {"0001  60cm": "0001", "0002  90cm": "0002", "0003 120cm": "0003", "0004 150cm": "0004"}
@@ -132,6 +132,9 @@ class App(tk.Tk):
                  bg=TEAL, fg=WHITE, font=("Arial", 14, "bold")).pack(side="left", pady=8)
         tk.Label(self._hdr, text=f"v{VERSION}",
                  bg=TEAL, fg="#B2DFDB", font=("Arial", 10)).pack(side="left", pady=8, padx=(6, 0))
+        self._update_status = tk.Label(self._hdr, text="🔍 檢查更新中...",
+                 bg=TEAL, fg="#B2DFDB", font=("Arial", 10))
+        self._update_status.pack(side="right", pady=8, padx=12)
 
         # update banner (hidden until a new version is found)
         self._update_bar = tk.Frame(self, bg="#E65100")
@@ -144,21 +147,59 @@ class App(tk.Tk):
         self._zipball_url = ""
         self._html_url    = ""
 
-        # macOS copy-paste fix — override class bindings so each keypress fires exactly once
-        def _mac(event, ve):
+        # macOS copy-paste fix — direct clipboard operations, compatible with all Python versions
+        def _copy(e):
             try:
-                event.widget.event_generate(ve)
+                text = e.widget.selection_get()
+                e.widget.clipboard_clear()
+                e.widget.clipboard_append(text)
+            except Exception:
+                pass
+            return "break"
+
+        def _cut(e):
+            try:
+                text = e.widget.selection_get()
+                e.widget.clipboard_clear()
+                e.widget.clipboard_append(text)
+                e.widget.delete("sel.first", "sel.last")
+            except Exception:
+                pass
+            return "break"
+
+        def _paste(e):
+            try:
+                clip = e.widget.clipboard_get()
+                try: e.widget.delete("sel.first", "sel.last")
+                except Exception: pass
+                e.widget.insert("insert", clip)
+            except Exception:
+                pass
+            return "break"
+
+        def _select_all(e):
+            try:
+                if hasattr(e.widget, "select_range"):
+                    e.widget.select_range(0, "end")
+                else:
+                    e.widget.tag_add("sel", "1.0", "end")
+            except Exception:
+                pass
+            return "break"
+
+        def _undo(e):
+            try:
+                e.widget.edit_undo()
             except Exception:
                 pass
             return "break"
 
         for _cls in ("Entry", "TEntry", "Text"):
-            self.bind_class(_cls, "<Command-c>", lambda e: _mac(e, "<<Copy>>"))
-            self.bind_class(_cls, "<Command-v>", lambda e: _mac(e, "<<Paste>>"))
-            self.bind_class(_cls, "<Command-x>", lambda e: _mac(e, "<<Cut>>"))
-            self.bind_class(_cls, "<Command-z>", lambda e: _mac(e, "<<Undo>>"))
-            self.bind_class(_cls, "<Command-y>", lambda e: _mac(e, "<<Redo>>"))
-            self.bind_class(_cls, "<Command-a>", lambda e: _mac(e, "<<SelectAll>>"))
+            self.bind_class(_cls, "<Command-c>", _copy)
+            self.bind_class(_cls, "<Command-v>", _paste)
+            self.bind_class(_cls, "<Command-x>", _cut)
+            self.bind_class(_cls, "<Command-z>", _undo)
+            self.bind_class(_cls, "<Command-a>", _select_all)
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=10, pady=10)
@@ -197,8 +238,12 @@ class App(tk.Tk):
                 html    = data.get("html_url", "")
                 self.after(0, lambda t=tag, z=zipball, h=html:
                            self._show_update_banner(t, z, h))
+            else:
+                self.after(0, lambda: self._update_status.config(
+                    text="✓ 已是最新版"))
+                self.after(4000, lambda: self._update_status.config(text=""))
         except Exception:
-            pass  # 網路不通或 API 無回應時靜默忽略
+            self.after(0, lambda: self._update_status.config(text=""))
 
     def _show_update_banner(self, new_version: str, zipball_url: str, html_url: str):
         self._new_version = new_version
