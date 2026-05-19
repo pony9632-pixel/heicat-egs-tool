@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.7.5"
+VERSION     = "1.7.6"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3650,24 +3650,45 @@ class FreightView(tk.Frame):
         self._render_rows()
 
     def _on_error(self, msg: str):
-        # API endpoint may not be enabled for this account
-        self._status_lbl.config(
-            text=f"✗ 查詢失敗：{msg[:120]}", fg=ERR)
-        self._summary_lbl.config(text="查詢失敗", fg=MUTED)
-        # Show fallback hint in list area
+        is_500 = "500" in msg
+        if is_500:
+            short = "EGS 伺服器拒絕請求（HTTP 500）— 此帳號可能尚未開通費用查詢 API"
+        else:
+            short = msg[:100]
+        self._status_lbl.config(text=f"✗ {short}", fg=ERR)
+        self._summary_lbl.config(text="—", fg=MUTED)
+
         for w in self._list_body.winfo_children():
             w.destroy()
-        hint = tk.Frame(self._list_body, bg=CARD); hint.pack(pady=40, padx=20)
-        tk.Label(hint, text="無法取得費用資料",
-                 font=(FONT_FAMILY, _sz(14), "bold"), bg=CARD, fg=INK).pack()
-        tk.Label(hint,
-                 text="此功能需要 EGS 帳戶開通「客戶交易明細查詢」權限。\n"
-                      "如需查詢，請前往黑貓 EGS 企業網站手動查詢。",
-                 font=F_SMALL, bg=CARD, fg=MUTED, justify="center").pack(pady=(8, 16))
-        TwButton(hint, "開啟 EGS 網站", variant="ghost",
+
+        hint = tk.Frame(self._list_body, bg=CARD)
+        hint.pack(expand=True, fill="both")
+        inner = tk.Frame(hint, bg=CARD)
+        inner.place(relx=0.5, rely=0.45, anchor="center")
+
+        tk.Label(inner, text="💳", font=(FONT_FAMILY, _sz(28)), bg=CARD).pack()
+        tk.Label(inner, text="費用查詢 API 未開通",
+                 font=(FONT_FAMILY, _sz(15), "bold"), bg=CARD, fg=INK).pack(pady=(8, 4))
+
+        if is_500:
+            detail = (
+                "黑貓 EGS API（api.suda.com.tw）回傳 HTTP 500，\n"
+                "表示此帳號尚未開通「客戶交易明細查詢」端點。\n\n"
+                "請洽黑貓業務代表申請開通，或至 EGS 企業網站手動查詢。"
+            )
+        else:
+            detail = f"錯誤詳情：{msg[:160]}\n\n請確認網路連線與 API 設定是否正確。"
+
+        tk.Label(inner, text=detail,
+                 font=F_SMALL, bg=CARD, fg=INK3, justify="center").pack(pady=(0, 20))
+
+        btn_row = tk.Frame(inner, bg=CARD); btn_row.pack()
+        TwButton(btn_row, "前往 EGS 企業網站", variant="primary",
                  command=lambda: subprocess.run(
-                     ["open", "https://www.t-cat.com.tw/business/"]
-                 )).pack()
+                     ["open", "https://www.suda.com.tw/"]
+                 )).pack(side="left", padx=(0, 8))
+        TwButton(btn_row, "重新查詢", variant="ghost",
+                 command=self._query).pack(side="left")
 
     def _render_rows(self):
         for w in self._list_body.winfo_children():
