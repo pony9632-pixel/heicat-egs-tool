@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "2.1.1"
+VERSION     = "2.1.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -2535,7 +2535,13 @@ class TrackingView(tk.Frame):
             btn.bind("<Button-1>", lambda e, _f=fid: self._set_filter(_f))
             self._filter_btns[fid] = btn
         self._result_count = tk.Label(tab_bar, text="", font=F_TINY, bg=CARD, fg=MUTED)
-        self._result_count.pack(side="right", padx=14)
+        self._result_count.pack(side="right", padx=(0, 14))
+        refresh_btn = tk.Label(tab_bar, text="↻", font=(FONT_FAMILY, _sz(14)),
+                               bg=CARD, fg=MUTED, cursor="hand2", padx=4)
+        refresh_btn.pack(side="right", padx=(0, 2))
+        refresh_btn.bind("<Button-1>", lambda e: self.refresh())
+        refresh_btn.bind("<Enter>", lambda e: refresh_btn.config(fg=INK))
+        refresh_btn.bind("<Leave>", lambda e: refresh_btn.config(fg=MUTED))
         Hairline(tcard.body).pack(fill="x")
 
         # column header
