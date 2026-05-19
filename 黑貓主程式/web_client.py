@@ -254,6 +254,133 @@ class TakkyubinWebClient:
             "notes":             _after_label("備註"),
         }
 
+    def _obt_export_html(self) -> str:
+        """
+        Navigate to 線上印單 → 匯出託運單資料 page.
+        Tries several known FuncNo values and the navigation link text.
+        Raises RuntimeError on failure.
+        """
+        # Try common FuncNo values for the OBT export / list page
+        # FuncNo=167 = SudaPaymentDetail (fee query)
+        # FuncNo=101~199 = 物流 functions — try candidates
+        candidates_func = ["101", "102", "103", "104", "105", "110", "115", "120",
+                           "150", "160", "161", "162", "163", "164", "165", "166",
+                           "168", "170", "175", "180"]
+        # Also try known direct page names
+        candidates_url  = [
+            f"{BASE}/SudaOBTQuery.aspx",
+            f"{BASE}/SudaOBTExport.aspx",
+            f"{BASE}/SudaObtList.aspx",
+            f"{BASE}/OBTQuery.aspx",
+            f"{BASE}/ExportOBT.aspx",
+        ]
+
+        # First: scan nav HTML for the menu item text
+        try:
+            nav_html = self._req(f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N")
+            # Look for any href near "匯出託運單" text
+            m = re.search(r'href="([^"]+)"[^>]*>[^<]*匯出託運單[^<]*<', nav_html, re.I | re.S)
+            if not m:
+                # Try the pattern FuncNo=xxx inside onClick / href attributes
+                for fn_m in re.finditer(r'FuncNo=(\d+)', nav_html):
+                    candidates_func.insert(0, fn_m.group(1))  # prepend found FuncNos
+            if m:
+                href = m.group(1).strip()
+                url = href if href.startswith("http") else f"{BASE}/{href.lstrip('/')}"
+                html = self._req(url)
+                if "匯出" in html or "託運單" in html:
+                    return html
+        except Exception:
+            pass
+
+        # Try FuncNo redirects
+        for fn in dict.fromkeys(candidates_func):  # deduplicated, order preserved
+            try:
+                html = self._req(f"{BASE}/RedirectFunc.aspx?FuncNo={fn}")
+                if "Login.aspx" in html or "txtUserID" in html:
+                    continue
+                if ("匯出" in html or "ExportOBT" in html.lower()) and "託運單" in html:
+                    return html
+            except Exception:
+                continue
+
+        # Try direct URLs
+        for url in candidates_url:
+            try:
+                html = self._req(url)
+                if "Login.aspx" in html or "txtUserID" in html:
+                    continue
+                if "託運單" in html:
+                    return html
+            except Exception:
+                continue
+
+        raise RuntimeError("找不到匯出託運單資料頁面，請確認已登入且帳號有此功能權限。")
+
+    def query_obt_list(self, start_date: str, end_date: str) -> list[dict]:
+        """
+        Query 匯出託運單資料 (線上印單) to get OBT list with FULL recipient info.
+        start_date / end_date: YYYYMMDD (will be converted to YYYY/MM/DD for the form).
+        Returns list of dicts:
+          obt, order_id, shipment_date, cod_amount, product_name,
+          recipient_name, phone_last3, mobile_last3, recipient_address,
+          thermosphere, spec, notes
+        Returns [] on any error.
+        """
+        # Convert YYYYMMDD → YYYY/MM/DD
+        def _fmt(d: str) -> str:
+            return f"{d[:4]}/{d[4:6]}/{d[6:]}" if len(d) == 8 else d
+
+        try:
+            page_html = self._obt_export_html()
+        except Exception:
+            return []
+
+        tokens = self._tokens(page_html)
+        if not tokens:
+            return []
+
+        # Find search button value
+        btn_m = (re.search(r'<input[^>]*name="btnQuery"[^>]*value="([^"]*)"', page_html, re.I)
+              or re.search(r'<input[^>]*value="([^"]*)"[^>]*name="btnQuery"', page_html, re.I)
+              or re.search(r'<input[^>]*type="submit"[^>]*value="([^"]*)"', page_html, re.I))
+        btn_name  = "btnQuery"
+        btn_value = btn_m.group(1) if btn_m else "查詢"
+
+        # Find date field names from the form
+        ds_m = re.search(r'<input[^>]*name="([^"]*[Dd]ate[Ss][^"]*)"', page_html, re.I) \
+            or re.search(r'<input[^>]*name="([^"]*[Ss]tart[^"]*)"', page_html, re.I) \
+            or re.search(r'<input[^>]*name="(txt[Ss][^"]*)"', page_html, re.I)
+        de_m = re.search(r'<input[^>]*name="([^"]*[Dd]ate[Ee][^"]*)"', page_html, re.I) \
+            or re.search(r'<input[^>]*name="([^"]*[Ee]nd[^"]*)"', page_html, re.I) \
+            or re.search(r'<input[^>]*name="(txt[Ee][^"]*)"', page_html, re.I)
+
+        start_field = ds_m.group(1) if ds_m else "txtDateS"
+        end_field   = de_m.group(1) if de_m else "txtDateE"
+
+        # Find the page's own URL from a form action, or reuse the redirect URL
+        action_m = re.search(r'<form[^>]+action="([^"]*)"', page_html, re.I)
+        if action_m:
+            action = action_m.group(1).strip()
+            form_url = action if action.startswith("http") else f"{BASE}/{action.lstrip('/')}"
+        else:
+            form_url = f"{BASE}/SudaOBTQuery.aspx"
+
+        post_data = urllib.parse.urlencode({
+            **tokens,
+            "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
+            start_field: _fmt(start_date),
+            end_field:   _fmt(end_date),
+            btn_name:    btn_value,
+        }, encoding="utf-8").encode("utf-8")
+
+        try:
+            result_html = self._req(form_url, post_data)
+        except Exception:
+            return []
+
+        return _parse_obt_table(result_html)
+
     def get_account_options(self) -> list[tuple[str,str]]:
         """Return [(value, label), ...] from UC_UserList1$ddlUserList after login."""
         try:
@@ -362,4 +489,44 @@ def _parse_table(html: str) -> list[dict]:
         rec = {_COL_KEYS[i]: row[i].replace("\xa0","").strip()
                for i in range(min(len(_COL_KEYS), len(row)))}
         out.append(rec)
+    return out
+
+
+# Column mapping for 匯出託運單資料 (線上印單) table
+# Columns from screenshot: 出貨日, 訂單編號, 託運單號, 代收金額, 物品名稱,
+#   收件人姓名, 電話後三碼, 手機後三碼, 收件人地址, 溫層, 規格, 備註
+_OBT_LIST_HEADER_KEYS = {
+    "出貨日":    "shipment_date",
+    "訂單編號":  "order_id",
+    "託運單號":  "obt",
+    "代收金額":  "cod_amount",
+    "物品名稱":  "product_name",
+    "收件人姓名":"recipient_name",
+    "電話後三碼":"phone_last3",
+    "手機後三碼":"mobile_last3",
+    "收件人地址":"recipient_address",
+    "溫層":      "thermosphere",
+    "規格":      "spec",
+    "備註":      "notes",
+}
+
+def _parse_obt_table(html: str) -> list[dict]:
+    """Parse 匯出託運單資料 table — dynamic header detection."""
+    p = _TP(); p.feed(html)
+    out = []; col_keys = []
+    for row in p.rows:
+        if not row: continue
+        cells = [c.replace("\xa0", "").strip() for c in row]
+        # Detect header row
+        if not col_keys:
+            joined = " ".join(cells)
+            if "託運單號" in joined or "收件人姓名" in joined or "出貨日" in joined:
+                col_keys = [_OBT_LIST_HEADER_KEYS.get(c, c) for c in cells]
+            continue
+        # Skip all-empty rows or rows shorter than 3
+        if all(c == "" for c in cells) or len(cells) < 3:
+            continue
+        rec = {col_keys[i]: cells[i] for i in range(min(len(col_keys), len(cells)))}
+        if rec.get("obt") or rec.get("shipment_date"):
+            out.append(rec)
     return out
