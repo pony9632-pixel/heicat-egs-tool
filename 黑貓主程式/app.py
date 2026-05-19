@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "2.0.3"
+VERSION     = "2.0.4"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -2714,7 +2714,7 @@ class TrackingView(tk.Frame):
 
         import datetime, threading
         today = datetime.date.today()
-        start = today.strftime("%Y%m%d")   # 同步今天
+        start = (today - datetime.timedelta(days=2)).strftime("%Y%m%d")  # 近3天
         end   = today.strftime("%Y%m%d")
 
         cfg     = load_cfg()
