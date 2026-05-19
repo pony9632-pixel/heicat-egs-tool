@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.7.9"
+VERSION     = "1.8.0"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3670,7 +3670,8 @@ class FreightView(tk.Frame):
 
         if img_bytes:
             try:
-                img = tk.PhotoImage(data=img_bytes)
+                import base64 as _b64
+                img = tk.PhotoImage(data=_b64.b64encode(img_bytes).decode())
                 tk.Label(f, image=img, bg=PAPER).pack(pady=(0, 8))
                 dlg._img = img  # prevent GC
             except Exception:

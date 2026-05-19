@@ -50,19 +50,31 @@ class TakkyubinWebClient:
 
     def get_login_page(self) -> tuple[dict, bytes]:
         """Returns (tokens, captcha_image_bytes). captcha_bytes may be empty."""
+        import time
         html = self._req(f"{BASE}/Login.aspx")
         tokens = self._tokens(html)
         captcha_bytes = b""
-        # Find captcha image src (various patterns)
-        for pat in [r'src="([^"]*[Cc]aptcha[^"]*)"',
-                    r'src="([^"]*[Vv]alidat[^"]*\.(?:jpg|gif|png|aspx)[^"]*)"']:
+        # JS sets: captcha.src = 'OCR_Validate.aspx?r=' + (new Date()).getTime()
+        # Try that known URL first, then fall back to scanning img src attributes
+        ts = int(time.time() * 1000)
+        candidates = [f"{BASE}/OCR_Validate.aspx?r={ts}"]
+        # Also scan for any img src matching captcha-like patterns
+        for pat in [r'src=["\']([^"\']*[Cc]aptcha[^"\']*)["\']',
+                    r'src=["\']([^"\']*[Vv]alidat[^"\']*\.(?:jpg|gif|png|aspx)[^"\']*)["\']',
+                    r'src=["\']([^"\']*OCR[^"\']*)["\']']:
             m = re.search(pat, html, re.I)
             if m:
                 src = m.group(1)
-                img_url = src if src.startswith("http") else f"{BASE}/{src.lstrip('/')}"
-                try: captcha_bytes = self._get_bytes(img_url)
-                except Exception: pass
-                break
+                url = src if src.startswith("http") else f"{BASE}/{src.lstrip('/')}"
+                if url not in candidates:
+                    candidates.append(url)
+        for img_url in candidates:
+            try:
+                captcha_bytes = self._get_bytes(img_url)
+                if captcha_bytes:
+                    break
+            except Exception:
+                pass
         return tokens, captcha_bytes
 
     def login(self, username: str, password: str, captcha: str, tokens: dict) -> bool:
