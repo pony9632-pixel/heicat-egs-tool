@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.7.2"
+VERSION     = "1.7.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -1139,6 +1139,10 @@ class Sidebar(tk.Frame):
     def refresh_sender(self):
         self._render_sender()
 
+    def update_badge(self, key: str, n: int):
+        if key in self._items:
+            self._items[key].set_badge(n)
+
 
 class NavItem(tk.Frame):
     def __init__(self, master, label, kbd, icon, on_click):
@@ -1159,11 +1163,26 @@ class NavItem(tk.Frame):
                             font=(MONO_FAMILY, _sz(9)),
                             bg=RAIL, fg=MUTED2, padx=8)
         self.kbd.pack(side="right")
+        # badge (hidden by default, shown when count > 0)
+        self.badge_lbl = tk.Label(self.inner, text="",
+                                  font=(MONO_FAMILY, _sz(9), "bold"),
+                                  bg=ACCENT, fg="#FFFFFF",
+                                  padx=5, pady=1, relief="flat", borderwidth=0)
         for w in (self.inner, self.icn, self.lbl, self.kbd):
             w.bind("<Button-1>", lambda e: self._on_click())
             w.bind("<Enter>", self._hover)
             w.bind("<Leave>", self._unhover)
             w.configure(cursor="hand2")
+        self.badge_lbl.bind("<Button-1>", lambda e: self._on_click())
+        self.badge_lbl.configure(cursor="hand2")
+
+    def set_badge(self, n: int):
+        if n > 0:
+            self.badge_lbl.configure(text=str(n))
+            if not self.badge_lbl.winfo_ismapped():
+                self.badge_lbl.pack(side="right", before=self.kbd, padx=(0, 4))
+        else:
+            self.badge_lbl.pack_forget()
 
     def _all(self): return (self.inner, self.icn, self.lbl, self.kbd)
 
@@ -1641,6 +1660,7 @@ class SingleOrderView(tk.Frame):
         })
         if "print_queue" in self.app.views:
             self.app.views["print_queue"].refresh()
+        self.app.sidebar.update_badge("print_queue", len(self.app._staging))
 
     def _clear_for_next(self) -> None:
         self._clear_order_fields()
@@ -2654,8 +2674,8 @@ class PrintQueueView(tk.Frame):
         tcard = Card(wrap, padding=0)
         tcard.pack(fill="both", expand=True)
 
-        # header row
-        hdr = tk.Frame(tcard.inner, bg=PAPER2)
+        # header row  (use tcard.body, not tcard.inner, to avoid blank expand conflict)
+        hdr = tk.Frame(tcard.body, bg=PAPER2)
         hdr.pack(fill="x")
         # checkbox column
         self._all_var = tk.BooleanVar(value=False)
@@ -2666,10 +2686,10 @@ class PrintQueueView(tk.Frame):
         for txt, w in [("建單時間", 8), ("訂單編號", 14), ("收件人", 14), ("貨運單號", 16), ("", 0)]:
             tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
                      width=w if w else 1, anchor="w", padx=8, pady=9).pack(side="left")
-        Hairline(tcard.inner).pack(fill="x")
+        Hairline(tcard.body).pack(fill="x")
 
         # scrollable list
-        lf = tk.Frame(tcard.inner, bg=CARD)
+        lf = tk.Frame(tcard.body, bg=CARD)
         lf.pack(fill="both", expand=True)
         canvas = tk.Canvas(lf, bg=CARD, highlightthickness=0)
         vsb = ttk.Scrollbar(lf, orient="vertical", command=canvas.yview,
@@ -2709,6 +2729,8 @@ class PrintQueueView(tk.Frame):
 
         staging = self.app._staging
         self._count_lbl.config(text=f"共 {len(staging)} 筆")
+        if hasattr(self.app, "sidebar"):
+            self.app.sidebar.update_badge("print_queue", len(staging))
 
         if not staging:
             tk.Label(self._list_body,
