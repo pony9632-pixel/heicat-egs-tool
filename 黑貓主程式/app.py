@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.7.0"
+VERSION     = "1.7.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -516,22 +516,26 @@ class App(tk.Tk):
         self.content_host = tk.Frame(right, bg=PAPER)
         self.content_host.pack(fill="both", expand=True)
 
+        self._staging = []   # app-level staging list shared across views
+
         self.views = {
-            "single":   SingleOrderView(self.content_host, self),
-            "batch":    BatchOrderView(self.content_host, self),
-            "tracking": TrackingView(self.content_host, self),
-            "contacts": ContactsView(self.content_host, self),
-            "settings": ConfigView(self.content_host, self),
+            "single":      SingleOrderView(self.content_host, self),
+            "print_queue": PrintQueueView(self.content_host, self),
+            "batch":       BatchOrderView(self.content_host, self),
+            "tracking":    TrackingView(self.content_host, self),
+            "contacts":    ContactsView(self.content_host, self),
+            "settings":    ConfigView(self.content_host, self),
         }
         for v in self.views.values():
             v.place(relx=0, rely=0, relwidth=1, relheight=1)
 
         self.show_view("single")
         self.bind_all("<Command-1>", lambda e: self.show_view("single"))
-        self.bind_all("<Command-2>", lambda e: self.show_view("batch"))
-        self.bind_all("<Command-3>", lambda e: self.show_view("tracking"))
-        self.bind_all("<Command-4>", lambda e: self.show_view("contacts"))
-        self.bind_all("<Command-5>", lambda e: self.show_view("settings"))
+        self.bind_all("<Command-2>", lambda e: self.show_view("print_queue"))
+        self.bind_all("<Command-3>", lambda e: self.show_view("batch"))
+        self.bind_all("<Command-4>", lambda e: self.show_view("tracking"))
+        self.bind_all("<Command-5>", lambda e: self.show_view("contacts"))
+        self.bind_all("<Command-6>", lambda e: self.show_view("settings"))
 
     def show_view(self, name):
         v = self.views.get(name)
@@ -1013,11 +1017,12 @@ def _load_logo(px: int = 36):
 # ─── sidebar ─────────────────────────────────────────────────────────────────
 
 _NAV_ITEMS = [
-    ("single",   "建立寄件單",  "1", "📤"),
-    ("batch",    "批次建單",    "2", "☰"),
-    ("tracking", "貨運查詢",    "3", "⊙"),
-    ("contacts", "通訊錄",      "4", "⊞"),
-    ("settings", "設定",        "5", "⚙"),
+    ("single",      "建立寄件單",   "1", "📤"),
+    ("print_queue", "待列印貨運單", "2", "🖨"),
+    ("batch",       "批次建單",     "3", "☰"),
+    ("tracking",    "貨運查詢",     "4", "⊙"),
+    ("contacts",    "通訊錄",       "5", "⊞"),
+    ("settings",    "設定",         "6", "⚙"),
 ]
 
 class Sidebar(tk.Frame):
@@ -1188,11 +1193,12 @@ class NavItem(tk.Frame):
 # ─── top bar ─────────────────────────────────────────────────────────────────
 
 _VIEW_NAMES = {
-    "single":   "建立寄件單",
-    "batch":    "批次建單",
-    "tracking": "貨運查詢",
-    "contacts": "通訊錄",
-    "settings": "設定",
+    "single":      "建立寄件單",
+    "print_queue": "待列印貨運單",
+    "batch":       "批次建單",
+    "tracking":    "貨運查詢",
+    "contacts":    "通訊錄",
+    "settings":    "設定",
 }
 
 class TopBar(tk.Frame):
@@ -1282,7 +1288,6 @@ class SingleOrderView(tk.Frame):
         self.fields = {}
         self._field_widgets = {}
         self._ac_popup = None
-        self._staging = []   # list of {order_id, name, obt, pdf_path, var}
         self._print_btn = None
         self._staging_card = None
         self._staging_list_frame = None
@@ -1451,28 +1456,16 @@ class SingleOrderView(tk.Frame):
                  command=self._submit, width=20).pack(side="left")
         self._next_btn = TwButton(sbtn, "建立下一筆  →", variant="ghost",
                                   command=self._clear_for_next)
-        # initially hidden; shown after first successful submit
+        self._go_print_btn = TwButton(sbtn, "前往待列印貨運單  →", variant="ghost",
+                                      command=lambda: self.app.show_view("print_queue"))
+        # both buttons initially hidden; shown after first successful submit
 
         self.result_var = tk.StringVar()
         self.result_lbl = tk.Label(wrap, textvariable=self.result_var,
             bg=PAPER, fg=INK2, font=F_SMALL, wraplength=820, justify="left")
         self.result_lbl.pack(fill="x", pady=(14, 0))
 
-        # staging card — hidden until first order is created
-        self._staging_card = Card(wrap, padding=18)
-        sc = self._staging_card.body
-        sh = tk.Frame(sc, bg=CARD); sh.pack(fill="x", pady=(0, 10))
-        Kicker(sh, "待列印清單").pack(side="left")
-        TwButton(sh, "全選", variant="ghost",
-                 command=self._select_all_staging).pack(side="left", padx=(10, 0))
-        TwButton(sh, "清除全部", variant="ghost",
-                 command=self._clear_staging).pack(side="right")
-        self._staging_list_frame = tk.Frame(sc, bg=CARD)
-        self._staging_list_frame.pack(fill="x")
-        sf = tk.Frame(sc, bg=CARD); sf.pack(fill="x", pady=(12, 0))
-        self._print_btn = TwButton(sf, "列印選取 (0)", variant="primary",
-                                   command=self._print_selected)
-        self._print_btn.pack(side="right")
+        # (staging display moved to 待列印貨運單 view)
 
     def _field(self, parent, r, c, label, key, required=False, default="", mono=False, hint=None):
         cell = tk.Frame(parent, bg=_frame_bg(parent))
@@ -1638,51 +1631,22 @@ class SingleOrderView(tk.Frame):
             pass
 
     def _add_to_staging(self, obt: str, name: str, order_id: str, pdf_path: str) -> None:
-        var = tk.BooleanVar(value=False)
-        var.trace_add("write", lambda *_: self._update_print_btn())
-        self._staging.append({"order_id": order_id, "name": name,
-                               "obt": obt, "pdf_path": pdf_path, "var": var})
-        self._refresh_staging_ui()
-
-    def _refresh_staging_ui(self) -> None:
-        for w in self._staging_list_frame.winfo_children():
-            w.destroy()
-        if not self._staging:
-            self._staging_card.pack_forget()
-            return
-        if not self._staging_card.winfo_ismapped():
-            self._staging_card.pack(fill="x", pady=(14, 0))
-        for item in self._staging:
-            row = tk.Frame(self._staging_list_frame, bg=CARD)
-            row.pack(fill="x", pady=(0, 4))
-            tk.Checkbutton(row, variable=item["var"], bg=CARD,
-                           activebackground=CARD, cursor="hand2").pack(side="left")
-            tk.Label(row, text=item["order_id"], font=F_MONO, bg=CARD,
-                     fg=INK, width=16, anchor="w").pack(side="left", padx=(4, 8))
-            tk.Label(row, text=item["name"], font=F_NORM, bg=CARD,
-                     fg=INK, width=16, anchor="w").pack(side="left", padx=(0, 8))
-            tk.Label(row, text=item["obt"], font=F_MONO, bg=CARD,
-                     fg=MUTED, anchor="w").pack(side="left")
-        self._update_print_btn()
-
-    def _update_print_btn(self) -> None:
-        if not self._print_btn:
-            return
-        n = sum(1 for item in self._staging if item["var"].get())
-        self._print_btn.set_text(f"列印選取 ({n})")
-
-    def _select_all_staging(self) -> None:
-        for item in self._staging:
-            item["var"].set(True)
-
-    def _clear_staging(self) -> None:
-        self._staging.clear()
-        self._refresh_staging_ui()
+        import datetime
+        self.app._staging.append({
+            "order_id": order_id,
+            "name": name,
+            "obt": obt,
+            "pdf_path": pdf_path,
+            "created_at": datetime.datetime.now().strftime("%H:%M"),
+        })
+        if "print_queue" in self.app.views:
+            self.app.views["print_queue"].refresh()
 
     def _clear_for_next(self) -> None:
         self._clear_order_fields()
         self.result_var.set("")
         self._next_btn.pack_forget()
+        self._go_print_btn.pack_forget()
 
     def _clear_order_fields(self) -> None:
         """建單成功後清除收件人資料與訂單號，保留包裹規格與付款設定。"""
@@ -1696,44 +1660,6 @@ class SingleOrderView(tk.Frame):
             self.fields["is_freight"].set(self._cat_map[cat])
         else:
             self.fields["notes"].set("")
-
-    def _print_selected(self) -> None:
-        selected = [item for item in self._staging if item["var"].get()]
-        if not selected:
-            messagebox.showwarning("未選取", "請先勾選要列印的單據。")
-            return
-        try:
-            if len(selected) == 1:
-                out_path = selected[0]["pdf_path"]
-            else:
-                out_path = self._merge_labels_multi([i["pdf_path"] for i in selected])
-            subprocess.run(["open", out_path])
-            for item in selected:
-                self._staging.remove(item)
-            self._refresh_staging_ui()
-        except Exception as ex:
-            messagebox.showerror("列印失敗", str(ex))
-
-    def _merge_labels_multi(self, paths: list) -> str:
-        """每兩筆合成一頁 A4：第一筆在上半，第二筆平移到下半。奇數筆最後一頁留空白下半。"""
-        from pypdf import PdfReader, PdfWriter, Transformation
-        writer = PdfWriter()
-        for i in range(0, len(paths), 2):
-            r1 = PdfReader(paths[i])
-            p1 = r1.pages[0]
-            w = float(p1.mediabox.width)
-            h = float(p1.mediabox.height)
-            page = writer.add_blank_page(width=w, height=h)
-            page.merge_transformed_page(p1, Transformation())
-            if i + 1 < len(paths):
-                r2 = PdfReader(paths[i + 1])
-                p2 = r2.pages[0]
-                page.merge_transformed_page(p2, Transformation().translate(0, -(h / 2)))
-        out = Path(OUTPUT_DIR) / f"combined_{int(time.time())}.pdf"
-        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-        with open(out, "wb") as f:
-            writer.write(f)
-        return str(out)
 
     def _read_clipboard_text(self):
         try:
@@ -2053,6 +1979,7 @@ class SingleOrderView(tk.Frame):
                         msg += "\nPDF 已加入待列印清單，選取後按「列印選取」輸出。"
                     self.after(0, lambda: self.result_lbl.configure(fg=OK))
                     self.after(0, lambda: self._next_btn.pack(side="left", padx=(10, 0)))
+                    self.after(0, lambda: self._go_print_btn.pack(side="left", padx=(10, 0)))
                 else:
                     raw = r['message']
                     if "E009" in raw:
@@ -2700,6 +2627,204 @@ class TrackingView(tk.Frame):
             messagebox.showinfo("清除完成", f"已刪除 {removed} 筆兩週前的紀錄。")
         else:
             messagebox.showinfo("無需清除", "沒有兩週前的紀錄。")
+
+
+# ─── print queue view ────────────────────────────────────────────────────────
+
+class PrintQueueView(tk.Frame):
+    """Displays all built shipping orders waiting to be printed."""
+    def __init__(self, master, app):
+        super().__init__(master, bg=PAPER)
+        self.app = app
+        self._vars: list[tk.BooleanVar] = []
+        self._build()
+
+    def _build(self):
+        wrap = tk.Frame(self, bg=PAPER)
+        wrap.pack(fill="both", expand=True, padx=28, pady=24)
+
+        # header
+        head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
+        SectionHeader(head, "待列印", "待列印貨運單").pack(side="left")
+        ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
+        TwButton(ba, "清除已列印", variant="ghost",
+                 command=self._clear_all).pack(side="left", padx=4)
+
+        # table card
+        tcard = Card(wrap, padding=0)
+        tcard.pack(fill="both", expand=True)
+
+        # header row
+        hdr = tk.Frame(tcard.inner, bg=PAPER2)
+        hdr.pack(fill="x")
+        # checkbox column
+        self._all_var = tk.BooleanVar(value=False)
+        hdr_chk = tk.Checkbutton(hdr, variable=self._all_var, command=self._toggle_all,
+                                  bg=PAPER2, activebackground=PAPER2,
+                                  relief="flat", bd=0, highlightthickness=0)
+        hdr_chk.pack(side="left", padx=(12, 0))
+        for txt, w in [("建單時間", 8), ("訂單編號", 14), ("收件人", 14), ("貨運單號", 16), ("", 0)]:
+            tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
+                     width=w if w else 1, anchor="w", padx=8, pady=9).pack(side="left")
+        Hairline(tcard.inner).pack(fill="x")
+
+        # scrollable list
+        lf = tk.Frame(tcard.inner, bg=CARD)
+        lf.pack(fill="both", expand=True)
+        canvas = tk.Canvas(lf, bg=CARD, highlightthickness=0)
+        vsb = ttk.Scrollbar(lf, orient="vertical", command=canvas.yview,
+                            style="Tw.Vertical.TScrollbar")
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=vsb.set)
+        self._list_body = tk.Frame(canvas, bg=CARD)
+        self._list_win = canvas.create_window((0, 0), window=self._list_body, anchor="nw")
+        self._list_body.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+            lambda e: canvas.itemconfig(self._list_win, width=e.width))
+        self._scroll_canvas = canvas
+        _bind_mousewheel_on_hover(self._list_body, canvas)
+        _bind_mousewheel_on_hover(canvas, canvas)
+
+        # footer
+        ft = tk.Frame(wrap, bg=PAPER); ft.pack(fill="x", pady=(12, 0))
+        TwButton(ft, "全選", variant="ghost",
+                 command=self._select_all).pack(side="left", padx=(0, 6))
+        self._count_lbl = tk.Label(ft, text="共 0 筆", font=F_TINY, bg=PAPER, fg=MUTED)
+        self._count_lbl.pack(side="left")
+        self._print_btn = TwButton(ft, "列印選取 (0)", variant="primary",
+                                   command=self._print_selected)
+        self._print_btn.pack(side="right")
+
+        self.refresh()
+
+    def on_show(self):
+        self.refresh()
+
+    def refresh(self):
+        for w in self._list_body.winfo_children():
+            w.destroy()
+        self._vars.clear()
+
+        staging = self.app._staging
+        self._count_lbl.config(text=f"共 {len(staging)} 筆")
+
+        if not staging:
+            tk.Label(self._list_body,
+                     text="尚無待列印貨運單\n（建立寄件單後會自動出現在這裡）",
+                     bg=CARD, fg=MUTED, font=F_SMALL, justify="center").pack(pady=60)
+            self._update_print_btn()
+            return
+
+        for i, item in enumerate(staging):
+            var = tk.BooleanVar(value=False)
+            var.trace_add("write", lambda *_: self._update_print_btn())
+            self._vars.append(var)
+            self._make_row(item, var, i < len(staging) - 1)
+
+        tk.Frame(self._list_body, bg=CARD, height=12).pack()
+        self._update_print_btn()
+
+    def _make_row(self, item: dict, var: tk.BooleanVar, divider: bool):
+        row = tk.Frame(self._list_body, bg=CARD)
+        row.pack(fill="x")
+        inner = tk.Frame(row, bg=CARD)
+        inner.pack(fill="x", padx=4, pady=10)
+
+        tk.Checkbutton(inner, variable=var, bg=CARD, activebackground=CARD,
+                       cursor="hand2", relief="flat", bd=0,
+                       highlightthickness=0).pack(side="left", padx=(8, 4))
+
+        tk.Label(inner, text=item.get("created_at", "—"), font=F_TINY, bg=CARD, fg=MUTED,
+                 width=8, anchor="w").pack(side="left", padx=(4, 0))
+        tk.Label(inner, text=item.get("order_id", "—"), font=F_MONO, bg=CARD, fg=INK,
+                 width=14, anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(inner, text=item.get("name", "—"), font=F_NORM, bg=CARD, fg=INK,
+                 width=14, anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(inner, text=item.get("obt", "—"), font=F_MONO, bg=CARD, fg=MUTED,
+                 width=16, anchor="w").pack(side="left", padx=(8, 0))
+
+        btns = tk.Frame(inner, bg=CARD)
+        btns.pack(side="right", padx=(4, 8))
+        TwButton(btns, "開啟 PDF", variant="ghost",
+                 command=lambda p=item.get("pdf_path",""):
+                     subprocess.run(["open", p]) if p else None).pack(side="left", padx=(0, 4))
+        TwButton(btns, "移除", variant="ghost",
+                 command=lambda it=item: self._remove(it)).pack(side="left")
+
+        if divider:
+            Hairline(self._list_body).pack(fill="x")
+
+    def _update_print_btn(self):
+        n = sum(1 for v in self._vars if v.get())
+        self._print_btn.set_text(f"列印選取 ({n})")
+
+    def _toggle_all(self):
+        on = self._all_var.get()
+        for v in self._vars:
+            v.set(on)
+
+    def _select_all(self):
+        self._all_var.set(True)
+        for v in self._vars:
+            v.set(True)
+
+    def _remove(self, item: dict):
+        try:
+            self.app._staging.remove(item)
+        except ValueError:
+            pass
+        self.refresh()
+
+    def _clear_all(self):
+        if not self.app._staging:
+            return
+        if messagebox.askyesno("清除全部", f"確定要清除全部 {len(self.app._staging)} 筆待列印貨運單？"):
+            self.app._staging.clear()
+            self.refresh()
+
+    def _print_selected(self):
+        selected_items = [self.app._staging[i] for i, v in enumerate(self._vars) if v.get()]
+        if not selected_items:
+            messagebox.showwarning("未選取", "請先勾選要列印的單據。")
+            return
+        try:
+            paths = [it["pdf_path"] for it in selected_items if it.get("pdf_path")]
+            if not paths:
+                messagebox.showwarning("無 PDF", "選取的貨運單沒有 PDF 檔案。")
+                return
+            if len(paths) == 1:
+                out_path = paths[0]
+            else:
+                out_path = self._merge_labels_multi(paths)
+            subprocess.run(["open", out_path])
+            for it in selected_items:
+                try: self.app._staging.remove(it)
+                except ValueError: pass
+            self.refresh()
+        except Exception as ex:
+            messagebox.showerror("列印失敗", str(ex))
+
+    def _merge_labels_multi(self, paths: list) -> str:
+        from pypdf import PdfReader, PdfWriter, Transformation
+        writer = PdfWriter()
+        for i in range(0, len(paths), 2):
+            r1 = PdfReader(paths[i])
+            p1 = r1.pages[0]
+            w = float(p1.mediabox.width)
+            h = float(p1.mediabox.height)
+            page = writer.add_blank_page(width=w, height=h)
+            page.merge_transformed_page(p1, Transformation())
+            if i + 1 < len(paths):
+                r2 = PdfReader(paths[i + 1])
+                p2 = r2.pages[0]
+                page.merge_transformed_page(p2, Transformation().translate(0, -(h / 2)))
+        out = Path(OUTPUT_DIR) / f"combined_{int(time.time())}.pdf"
+        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        with open(out, "wb") as f:
+            writer.write(f)
+        return str(out)
 
 
 # ─── contacts view ───────────────────────────────────────────────────────────
