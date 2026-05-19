@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.8.8"
+VERSION     = "1.8.9"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3579,13 +3579,13 @@ class FreightView(tk.Frame):
         # ── results table (Treeview) ──────────────────────────────────────────
         rcard = Card(wrap, padding=0); rcard.pack(fill="both", expand=True)
         _COLS = [
-            ("pickup_date",   "集貨日期", 110, "center"),
-            ("pickup_place",  "集貨所",   130, "w"),
-            ("delivery_date", "配完日期", 110, "center"),
-            ("delivery_place","配完所",   130, "w"),
-            ("order_id",      "訂單編號", 100, "w"),
-            ("obt",           "託運單號", 150, "w"),
-            ("freight",       "運費(元)", 80,  "e"),
+            ("pickup_date",   "集貨日期", 140, "center"),
+            ("pickup_place",  "集貨所",   160, "w"),
+            ("delivery_date", "配完日期", 140, "center"),
+            ("delivery_place","配完所",   160, "w"),
+            ("order_id",      "訂單編號", 120, "w"),
+            ("obt",           "託運單號", 170, "w"),
+            ("freight",       "運費(元)", 100, "w"),
         ]
         cols = tuple(c for c,*_ in _COLS)
         tf = tk.Frame(rcard.body, bg=CARD); tf.pack(fill="both", expand=True)
