@@ -19,6 +19,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 import yaml
 
 from api_client import SudaClient, save_pdf, default_shipment_date, default_delivery_date, _skip_sunday
+from web_client import TakkyubinWebClient
 from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS, _csv_row_to_api_order
 
 CONFIG_PATH   = "config.yaml"
@@ -37,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.7.8"
+VERSION     = "1.7.9"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3338,6 +3339,34 @@ class ConfigView(tk.Frame):
 
         self.maximized_var = tk.BooleanVar()
 
+        # ── web login card ────────────────────────────────────────────────────
+        wc = Card(wrap, padding=22); wc.pack(fill="x", pady=(0, 14))
+        Kicker(wc.body, "契客專區登入").pack(anchor="w", pady=(0, 12))
+        wg = tk.Frame(wc.body, bg=CARD); wg.pack(fill="x")
+        wg.columnconfigure(0, weight=1); wg.columnconfigure(1, weight=1)
+        for ci, (lbl, key) in enumerate([("客戶代號 (帳號)", "web_username"),
+                                          ("密碼", "web_password")]):
+            cell = tk.Frame(wg, bg=CARD)
+            cell.grid(row=0, column=ci, sticky="ew", padx=(0 if ci==0 else 8, 0))
+            tk.Label(cell, text=lbl, font=F_TINY, bg=CARD, fg=MUTED).pack(anchor="w", pady=(0,3))
+            show = "*" if "password" in key else None
+            v = tk.StringVar(); self.vars[key] = v
+            e = tk.Entry(cell, textvariable=self.vars[key],
+                         font=F_NORM, relief="flat", bg=HAIR3, fg=INK,
+                         insertbackground=INK, show=show,
+                         highlightthickness=1, highlightbackground=HAIR)
+            e.pack(fill="x", ipady=5)
+        act_cell = tk.Frame(wc.body, bg=CARD); act_cell.pack(fill="x", pady=(10, 0))
+        tk.Label(act_cell, text="客戶帳號（查詢用，通常與客戶代號相同，12碼）",
+                 font=F_TINY, bg=CARD, fg=MUTED).pack(anchor="w", pady=(0,3))
+        _wact_var = tk.StringVar(); self.vars["web_account"] = _wact_var
+        tk.Entry(act_cell, textvariable=self.vars["web_account"],
+                 font=(MONO_FAMILY, _sz(11)), relief="flat", bg=HAIR3, fg=INK,
+                 insertbackground=INK,
+                 highlightthickness=1, highlightbackground=HAIR).pack(fill="x", ipady=5)
+        TwButton(wc.body, "儲存登入資訊", variant="primary",
+                 command=self._save).pack(anchor="w", pady=(12, 0))
+
         # Preferences card (toggles)
         prefc = Card(wrap, padding=0); prefc.pack(fill="x", pady=(0, 14))
         tk.Frame(prefc.inner, bg=CARD, height=1).pack(fill="x")
@@ -3479,13 +3508,14 @@ class ConfigView(tk.Frame):
 # ─── freight fee view ────────────────────────────────────────────────────────
 
 class FreightView(tk.Frame):
-    """運費明細查詢 — 我的寄件費用 / 到付收件費用"""
+    """運費明細查詢 — 透過契客專區網頁查詢交易明細"""
 
     def __init__(self, master, app):
         super().__init__(master, bg=PAPER)
         self.app = app
         self._results: list[dict] = []
-        self._mode = "send"  # "send" or "recv"
+        self._mode = "send"
+        self._web: TakkyubinWebClient | None = None
         self._build()
 
     def _build(self):
@@ -3513,18 +3543,15 @@ class FreightView(tk.Frame):
             btn.bind("<Button-1>", lambda e, m=mid: self._set_mode(m))
             self._mode_btns[mid] = btn
 
-        # date row + quick buttons + query button
+        # date row
         date_row = tk.Frame(qc.body, bg=CARD); date_row.pack(fill="x", pady=(0, 8))
-
         tk.Label(date_row, text="開始日期", font=F_TINY, bg=CARD, fg=MUTED).pack(side="left")
-        self._start_var = tk.StringVar(
-            value=(_d.today() - _td(days=6)).strftime("%Y%m%d"))
+        self._start_var = tk.StringVar(value=(_d.today() - _td(days=6)).strftime("%Y%m%d"))
         tk.Entry(date_row, textvariable=self._start_var,
                  font=(MONO_FAMILY, _sz(11)), width=10, relief="flat",
                  bg=HAIR3, fg=INK, insertbackground=INK,
                  highlightthickness=1, highlightbackground=HAIR).pack(
                      side="left", padx=(6, 16), ipady=4)
-
         tk.Label(date_row, text="結束日期", font=F_TINY, bg=CARD, fg=MUTED).pack(side="left")
         self._end_var = tk.StringVar(value=_d.today().strftime("%Y%m%d"))
         tk.Entry(date_row, textvariable=self._end_var,
@@ -3532,52 +3559,37 @@ class FreightView(tk.Frame):
                  bg=HAIR3, fg=INK, insertbackground=INK,
                  highlightthickness=1, highlightbackground=HAIR).pack(
                      side="left", padx=(6, 16), ipady=4)
-
-        # quick date buttons
-        quick_frame = tk.Frame(date_row, bg=CARD); quick_frame.pack(side="left", padx=(0, 14))
-        for qlabel, qdays in [("今天", 0), ("近7天", 6), ("近30天", 29)]:
-            def _make_quick(d=qdays):
+        qf = tk.Frame(date_row, bg=CARD); qf.pack(side="left", padx=(0, 14))
+        for ql, qd in [("今天", 0), ("近7天", 6), ("近30天", 29)]:
+            def _make(d=qd):
                 def _fn():
                     from datetime import date as _dd, timedelta as _tt
-                    e = _dd.today()
-                    s = e - _tt(days=d)
+                    e = _dd.today(); s = e - _tt(days=d)
                     self._start_var.set(s.strftime("%Y%m%d"))
                     self._end_var.set(e.strftime("%Y%m%d"))
                 return _fn
-            ql = tk.Label(quick_frame, text=qlabel, font=F_TINY,
-                          bg=HAIR3, fg=INK2, padx=8, pady=4, cursor="hand2", relief="flat")
-            ql.pack(side="left", padx=(0, 4))
-            ql.bind("<Button-1>", lambda e, fn=_make_quick(): fn())
-
-        TwButton(date_row, "查詢", variant="primary",
-                 command=self._query).pack(side="left")
-
-        self._status_lbl = tk.Label(qc.body, text="輸入日期後點「查詢」",
+            lb = tk.Label(qf, text=ql, font=F_TINY, bg=HAIR3, fg=INK2,
+                          padx=8, pady=4, cursor="hand2", relief="flat")
+            lb.pack(side="left", padx=(0, 4))
+            lb.bind("<Button-1>", lambda e, fn=_make(): fn())
+        TwButton(date_row, "查詢", variant="primary", command=self._query).pack(side="left")
+        self._status_lbl = tk.Label(qc.body, text="請先在「設定」頁填入契客專區帳號密碼，再點查詢",
                                     font=F_TINY, bg=CARD, fg=MUTED)
         self._status_lbl.pack(anchor="w")
 
         # ── results card ─────────────────────────────────────────────────────
         rcard = Card(wrap, padding=0); rcard.pack(fill="both", expand=True)
-
-        self._summary_lbl = tk.Label(rcard.body,
-                                     text="尚無查詢資料",
+        self._summary_lbl = tk.Label(rcard.body, text="尚無查詢資料",
                                      font=F_SMALL, bg=PAPER2, fg=MUTED,
                                      pady=10, anchor="w", padx=16)
         self._summary_lbl.pack(fill="x")
         Hairline(rcard.body).pack(fill="x")
-
-        # column header
         hdr = tk.Frame(rcard.body, bg=PAPER2); hdr.pack(fill="x")
-        _hdr_cols = [
-            ("集貨日期", 12), ("集貨所", 10), ("配完日期", 12), ("配完所", 10),
-            ("訂單編號", 14), ("託運單號", 16), ("運費(元)", 8), ("附加服務金", 9), ("類型", 10),
-        ]
-        for txt, w in _hdr_cols:
+        for txt, w in [("集貨日期",12),("集貨所",10),("配完日期",12),("配完所",10),
+                       ("訂單編號",14),("託運單號",16),("運費(元)",8),("附加服務金",9),("類型",10)]:
             tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
                      width=w, anchor="w", padx=8, pady=8).pack(side="left")
         Hairline(rcard.body).pack(fill="x")
-
-        # scrollable list
         lf = tk.Frame(rcard.body, bg=CARD); lf.pack(fill="both", expand=True)
         canvas = tk.Canvas(lf, bg=CARD, highlightthickness=0)
         vsb = ttk.Scrollbar(lf, orient="vertical", command=canvas.yview,
@@ -3600,19 +3612,113 @@ class FreightView(tk.Frame):
         self._mode = mode
         for mid, btn in self._mode_btns.items():
             sel = mid == mode
-            btn.configure(bg=ACCENT if sel else HAIR3,
-                          fg="#FFFFFF" if sel else INK2)
+            btn.configure(bg=ACCENT if sel else HAIR3, fg="#FFFFFF" if sel else INK2)
         self._render_rows()
 
     def _query(self):
         import re
         start = self._start_var.get().strip()
         end   = self._end_var.get().strip()
-        for v, lbl in [(start, "開始日期"), (end, "結束日期")]:
+        for v, lbl in [(start,"開始日期"),(end,"結束日期")]:
             if not re.match(r"^\d{8}$", v):
-                messagebox.showwarning("格式錯誤",
-                    f"{lbl} 請輸入 YYYYMMDD 格式（8 位數字）")
-                return
+                messagebox.showwarning("格式錯誤", f"{lbl} 請輸入 YYYYMMDD（8位數字）"); return
+        cfg = load_cfg()
+        username = cfg.get("web_username","").strip()
+        password = cfg.get("web_password","").strip()
+        account  = cfg.get("web_account","").strip()
+        if not username or not password:
+            messagebox.showwarning("尚未設定",
+                "請先到「設定」頁填入契客專區的客戶代號與密碼。"); return
+        if not account:
+            account = username  # fallback
+
+        # Check session
+        need_login = (self._web is None) or (not self._web.is_logged_in())
+        if need_login:
+            self._do_login(username, password, account, start, end)
+        else:
+            self._do_query(account, start, end)
+
+    def _do_login(self, username: str, password: str,
+                  account: str, start: str, end: str):
+        """Show CAPTCHA dialog then login in background."""
+        self._status_lbl.config(text="正在載入驗證碼…", fg=MUTED)
+        self._web = TakkyubinWebClient()
+
+        def fetch():
+            try:
+                tokens, img_bytes = self._web.get_login_page()
+                self.after(0, lambda: self._show_captcha(
+                    tokens, img_bytes, username, password, account, start, end))
+            except Exception as ex:
+                self.after(0, lambda: self._status_lbl.config(
+                    text=f"✗ 無法載入登入頁：{ex}", fg=ERR))
+        import threading; threading.Thread(target=fetch, daemon=True).start()
+
+    def _show_captcha(self, tokens: dict, img_bytes: bytes,
+                      username: str, password: str,
+                      account: str, start: str, end: str):
+        """Show a small dialog for CAPTCHA input."""
+        dlg = tk.Toplevel(self)
+        dlg.title("驗證碼登入")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        f = tk.Frame(dlg, bg=PAPER, padx=24, pady=20); f.pack()
+
+        tk.Label(f, text="請輸入驗證碼後登入", font=(FONT_FAMILY, _sz(13), "bold"),
+                 bg=PAPER, fg=INK).pack(pady=(0, 12))
+
+        if img_bytes:
+            try:
+                img = tk.PhotoImage(data=img_bytes)
+                tk.Label(f, image=img, bg=PAPER).pack(pady=(0, 8))
+                dlg._img = img  # prevent GC
+            except Exception:
+                tk.Label(f, text="（無法顯示驗證碼圖片，請查看瀏覽器）",
+                         bg=PAPER, fg=MUTED, font=F_SMALL).pack(pady=(0, 8))
+        else:
+            tk.Label(f, text="（無法載入驗證碼圖片）",
+                     bg=PAPER, fg=MUTED, font=F_SMALL).pack(pady=(0, 8))
+
+        cap_var = tk.StringVar()
+        e = tk.Entry(f, textvariable=cap_var, font=(MONO_FAMILY, _sz(14)),
+                     width=10, justify="center", relief="flat",
+                     bg=HAIR3, fg=INK, insertbackground=INK,
+                     highlightthickness=1, highlightbackground=HAIR)
+        e.pack(ipady=6, pady=(0, 14)); e.focus_set()
+
+        msg_lbl = tk.Label(f, text="", font=F_SMALL, bg=PAPER, fg=ERR)
+        msg_lbl.pack()
+
+        def _submit():
+            code = cap_var.get().strip()
+            if not code:
+                msg_lbl.config(text="請輸入驗證碼"); return
+            msg_lbl.config(text="登入中…", fg=MUTED)
+            dlg.update()
+            def do_login():
+                try:
+                    ok = self._web.login(username, password, code, tokens)
+                    if ok:
+                        self.after(0, dlg.destroy)
+                        self.after(0, lambda: self._do_query(account, start, end))
+                    else:
+                        self.after(0, lambda: msg_lbl.config(
+                            text="登入失敗，請確認帳號密碼與驗證碼", fg=ERR))
+                except Exception as ex:
+                    self.after(0, lambda: msg_lbl.config(text=f"錯誤：{ex}", fg=ERR))
+            import threading; threading.Thread(target=do_login, daemon=True).start()
+
+        btn_row = tk.Frame(f, bg=PAPER); btn_row.pack(pady=(8, 0))
+        tk.Button(btn_row, text="確認登入", command=_submit,
+                  font=(FONT_FAMILY, _sz(12)), bg=ACCENT, fg="#FFFFFF",
+                  relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left", padx=(0,8))
+        tk.Button(btn_row, text="取消", command=dlg.destroy,
+                  font=(FONT_FAMILY, _sz(12)), bg=HAIR3, fg=INK2,
+                  relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left")
+        e.bind("<Return>", lambda _: _submit())
+
+    def _do_query(self, account: str, start: str, end: str):
         self._status_lbl.config(text="查詢中…", fg=MUTED)
         self._results = []
         self._render_rows()
@@ -3620,130 +3726,95 @@ class FreightView(tk.Frame):
 
         def run():
             try:
-                cfg = load_cfg()
-                client = make_client(cfg)
-                resp = client.query_freight(start, end)
-                data = resp.get("Data") or []
-                if not isinstance(data, list):
-                    data = []
-                ep = resp.get("_endpoint_used", "")
-                self.after(0, lambda d=data, ep=ep: self._on_result(d, start, end, ep))
+                data = self._web.query_payment(start, end, account)
+                self.after(0, lambda: self._on_result(data, start, end))
+            except RuntimeError as ex:
+                if "session_expired" in str(ex):
+                    self._web = None
+                    self.after(0, lambda: self._status_lbl.config(
+                        text="工作階段已過期，請重新查詢", fg=WARN))
+                else:
+                    self.after(0, lambda msg=str(ex): self._on_error(msg))
             except Exception as ex:
                 self.after(0, lambda msg=str(ex): self._on_error(msg))
+        import threading; threading.Thread(target=run, daemon=True).start()
 
-        import threading
-        threading.Thread(target=run, daemon=True).start()
-
-    def _on_result(self, data: list, start: str, end: str, endpoint: str = ""):
+    def _on_result(self, data: list, start: str, end: str):
         self._results = data
         n = len(data)
         try:
-            total = sum(int(r.get("FreightAmount") or r.get("Freight") or 0)
-                        for r in data)
-        except Exception:
-            total = 0
+            total = sum(int(r.get("freight","0") or 0) for r in data)
+        except Exception: total = 0
         s = f"{start[:4]}/{start[4:6]}/{start[6:]}"
-        e = f"{end[:4]}/{end[4:6]}/{end[6:]}"
+        e_str = f"{end[:4]}/{end[4:6]}/{end[6:]}"
         self._summary_lbl.config(
-            text=f"  {s} ～ {e}   共 {n} 筆，運費計 {total:,} 元",
-            fg=INK)
-        ep_hint = f"  （端點：{endpoint}）" if endpoint else ""
-        self._status_lbl.config(text=f"✓ 查詢完成，共 {n} 筆{ep_hint}", fg=OK)
+            text=f"  {s} ～ {e_str}   共 {n} 筆，運費計 {total:,} 元", fg=INK)
+        self._status_lbl.config(text=f"✓ 查詢完成，共 {n} 筆", fg=OK)
         self._render_rows()
 
     def _on_error(self, msg: str):
-        self._status_lbl.config(text="✗ 所有端點均無法取得資料", fg=ERR)
+        self._status_lbl.config(text="✗ 查詢失敗，詳見下方", fg=ERR)
         self._summary_lbl.config(text="—", fg=MUTED)
-
-        for w in self._list_body.winfo_children():
-            w.destroy()
-
+        for w in self._list_body.winfo_children(): w.destroy()
         tk.Frame(self._list_body, bg=CARD, height=32).pack()
-        tk.Label(self._list_body, text="找不到可用的費用查詢 API 端點",
+        tk.Label(self._list_body, text="查詢失敗",
                  font=(FONT_FAMILY, _sz(14), "bold"), bg=CARD, fg=INK).pack()
         tk.Label(self._list_body,
-                 text="程式已嘗試多個端點名稱，均回傳錯誤。\n"
-                      "請複製下方錯誤詳情，傳給黑貓業務確認正確端點名稱。",
+                 text="請確認網路連線，或重新登入後再試。",
                  font=F_SMALL, bg=CARD, fg=INK3, justify="center").pack(pady=(8, 12))
-
-        # 可複製的錯誤文字框
         err_frame = tk.Frame(self._list_body, bg=HAIR3, padx=16, pady=12)
         err_frame.pack(fill="x", padx=32, pady=(0, 16))
-        err_box = tk.Text(err_frame, height=6,
-                          font=(MONO_FAMILY, _sz(10)),
-                          bg=HAIR3, fg=INK2, relief="flat",
-                          wrap="word", bd=0)
-        err_box.insert("1.0", msg)
-        err_box.configure(state="disabled")
-        err_box.pack(fill="x")
-
+        err_box = tk.Text(err_frame, height=4, font=(MONO_FAMILY, _sz(10)),
+                          bg=HAIR3, fg=INK2, relief="flat", wrap="word", bd=0)
+        err_box.insert("1.0", msg); err_box.configure(state="disabled"); err_box.pack(fill="x")
         btn_row = tk.Frame(self._list_body, bg=CARD); btn_row.pack(pady=(0, 24))
-        TwButton(btn_row, "重新查詢", variant="primary",
-                 command=self._query).pack(side="left", padx=(0, 8))
-        TwButton(btn_row, "前往 EGS 企業網站", variant="ghost",
-                 command=lambda: subprocess.run(
-                     ["open", "https://www.suda.com.tw/"]
-                 )).pack(side="left")
+        TwButton(btn_row, "重新登入查詢", variant="primary",
+                 command=self._query).pack(side="left", padx=(0,8))
 
     def _render_rows(self):
-        for w in self._list_body.winfo_children():
-            w.destroy()
-
-        # filter by mode
+        for w in self._list_body.winfo_children(): w.destroy()
         if self._mode == "send":
             rows = [r for r in self._results
-                    if str(r.get("IsFreight", "N")).upper() != "Y"]
+                    if r.get("shipment_type","") not in ("到付",) and
+                       r.get("is_cash","") != "Y"]
         else:
             rows = [r for r in self._results
-                    if str(r.get("IsFreight", "N")).upper() == "Y"]
-
+                    if r.get("shipment_type","") == "到付" or r.get("is_cash","") == "Y"]
+        # If can't distinguish, show all
+        if not rows and self._results:
+            rows = self._results
         if not rows:
-            msg = "尚無資料" if not self._results else "此分類無資料"
-            tk.Label(self._list_body, text=msg,
+            tk.Label(self._list_body,
+                     text="尚無資料" if not self._results else "此分類無資料",
                      bg=CARD, fg=MUTED, font=F_SMALL, justify="center").pack(pady=60)
             return
-
         for i, r in enumerate(rows):
             row = tk.Frame(self._list_body, bg=CARD); row.pack(fill="x")
             inner = tk.Frame(row, bg=CARD); inner.pack(fill="x", padx=4, pady=8)
-
-            fee_raw = r.get("FreightAmount") or r.get("Freight") or "—"
-            try: fee_str = f"{int(fee_raw):,}"
-            except Exception: fee_str = str(fee_raw)
-
-            add_raw = r.get("AdditionalFee") or r.get("AddFee") or "—"
-            try: add_str = f"{int(add_raw):,}"
-            except Exception: add_str = str(add_raw)
-
+            try: fee_s = f"{int(r.get('freight','0') or 0):,}"
+            except Exception: fee_s = r.get("freight","—")
+            try: add_s = f"{int(r.get('add_fee','0') or 0):,}"
+            except Exception: add_s = r.get("add_fee","—")
             tags = []
-            if r.get("IsCash") == "Y" or r.get("IsCollection") == "Y":
-                tags.append("收現")
-            if r.get("IsReturn") == "Y":
-                tags.append("退貨")
-            if r.get("IsSameDay") == "Y":
-                tags.append("當配")
-            if r.get("IsFreight") == "Y":
-                tags.append("到付")
-            type_str = "、".join(tags) if tags else (r.get("ShipmentType") or "—")
-
+            if r.get("is_cash") == "Y": tags.append("收現")
+            if r.get("is_return") == "Y": tags.append("退貨")
+            if r.get("is_same_day") == "Y": tags.append("當配")
+            type_s = r.get("shipment_type","") or ("、".join(tags) if tags else "—")
             col_data = [
-                (r.get("CollectionDate") or r.get("PickupDate") or "—",   12, F_MONO,  INK2),
-                (r.get("CollectionPlace") or r.get("PickupPlace") or "—", 10, F_NORM,  INK),
-                (r.get("DeliveryDate") or "—",                            12, F_MONO,  INK2),
-                (r.get("DeliveryPlace") or "—",                           10, F_NORM,  INK),
-                (r.get("OrderId") or r.get("CustomerOrderId") or "—",     14, F_MONO,  INK),
-                (r.get("OBTNumber") or r.get("WaybillNo") or "—",         16, F_MONO,  MUTED),
-                (fee_str,                                                   8, F_MONO,  INK),
-                (add_str,                                                   9, F_MONO,  MUTED),
-                (type_str,                                                 10, F_NORM,  INK3),
+                (r.get("pickup_date","—"),   12, F_MONO, INK2),
+                (r.get("pickup_place","—"),  10, F_NORM, INK),
+                (r.get("delivery_date","—"), 12, F_MONO, INK2),
+                (r.get("delivery_place","—"),10, F_NORM, INK),
+                (r.get("order_id","—"),      14, F_MONO, INK),
+                (r.get("obt","—"),           16, F_MONO, MUTED),
+                (fee_s,                       8, F_MONO, INK),
+                (add_s,                       9, F_MONO, MUTED),
+                (type_s,                     10, F_NORM, INK3),
             ]
             for text, w, font, fg in col_data:
                 tk.Label(inner, text=str(text), font=font, bg=CARD, fg=fg,
                          width=w, anchor="w", padx=8).pack(side="left")
-
-            if i < len(rows) - 1:
-                Hairline(self._list_body).pack(fill="x")
-
+            if i < len(rows)-1: Hairline(self._list_body).pack(fill="x")
         tk.Frame(self._list_body, bg=CARD, height=12).pack()
 
 
