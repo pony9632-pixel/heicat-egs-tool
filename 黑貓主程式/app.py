@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.6.8"
+VERSION     = "1.6.9"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -2105,6 +2105,22 @@ class BatchOrderView(tk.Frame):
 
 # ─── t-cat status query ──────────────────────────────────────────────────────
 
+def _status_fg(status: str) -> str:
+    """Return foreground colour for a given status string."""
+    # 官方貨態一覽表（黑貓宅急便）
+    _OK   = {"順利送達"}                           # 已完成，綠色
+    _ERR  = {"取消取件", "無效單號", "查無紀錄",
+             "無法解析"}                            # 異常，紅色
+    _ERR_KW = ("未順利", "失敗", "錯誤")           # 含這些字也算紅色
+    if status in _OK:
+        return OK
+    if status in _ERR or any(k in status for k in _ERR_KW):
+        return ERR
+    if status in ("—", "查詢中…"):
+        return MUTED
+    return WARN   # 其餘進行中貨態（已集貨/轉運中/配送中/暫置/調查…）橙色
+
+
 def _fetch_obt_status(obt: str) -> str:
     """
     向黑貓官網查詢單一 OBT 的最新配送狀態。
@@ -2177,16 +2193,17 @@ def _fetch_obt_status(obt: str) -> str:
     if not text:
         return "查無紀錄"
 
-    # 精確比對：找 "{OBT} 目前狀態 {value}" 格式
+    # 精確比對：找 "{OBT} 目前狀態 {value} 資料登入時間" 格式
+    # 擷取到「資料登入」之前的所有文字作為狀態（支援多字狀態）
     m_obt = re.search(
-        re.escape(obt.strip()) + r"\s+目前狀態\s+([^\s]+(?:\s+[^\s]+){0,2}?)(?:\s+資料登入|$)",
+        re.escape(obt.strip()) + r"\s+目前狀態\s+(.+?)\s+資料登入",
         text
     )
     if m_obt:
         return m_obt.group(1).strip()
 
-    # 若找不到，直接抓第一個「目前狀態 {value}」
-    m_st = re.search(r"目前狀態\s+([一-鿿\w]+)", text)
+    # fallback：抓第一個「目前狀態 {value} 資料登入」
+    m_st = re.search(r"目前狀態\s+(.+?)\s+資料登入", text)
     if m_st:
         return m_st.group(1).strip()
 
@@ -2300,16 +2317,7 @@ class TrackingView(tk.Frame):
         queried = r.get("queried_at", "")
 
         # colour by status
-        if any(k in status for k in ("送達", "完成", "完了", "集貨")):
-            s_fg = OK
-        elif status in ("查詢中…",):
-            s_fg = MUTED
-        elif status in ("查無紀錄", "無效單號", "無法解析") or "失敗" in status or "錯誤" in status:
-            s_fg = ERR
-        elif status != "—":
-            s_fg = WARN
-        else:
-            s_fg = MUTED
+        s_fg = _status_fg(status)
 
         row = tk.Frame(self._list_body, bg=CARD)
         row.pack(fill="x", pady=(0, 1))
@@ -2368,15 +2376,7 @@ class TrackingView(tk.Frame):
         import datetime
         lbl = self._status_labels.get(obt)
         if lbl and lbl.winfo_exists():
-            if any(k in status for k in ("送達", "完成", "完了", "集貨")):
-                fg = OK
-            elif status in ("查無紀錄", "無效單號", "無法解析") or "失敗" in status or "錯誤" in status:
-                fg = ERR
-            elif status not in ("—", "查詢中…"):
-                fg = WARN
-            else:
-                fg = MUTED
-            lbl.config(text=status, fg=fg)
+            lbl.config(text=status, fg=_status_fg(status))
 
         # persist
         now = datetime.datetime.now().isoformat(timespec="seconds")
