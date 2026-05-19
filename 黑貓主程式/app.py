@@ -26,7 +26,7 @@ CONTACTS_PATH         = "contacts.json"
 DEFAULT_CONTACTS_PATH = "default_contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.7"
+VERSION     = "1.5.8"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -230,13 +230,22 @@ def field_label(master, text, required=False, hint=None):
 
 
 def _bind_mousewheel_on_hover(hover_widget, canvas):
-    """游標進入 hover_widget 時才把 wheel 綁到 canvas，離開時解綁。
-    避免多個 view 用 bind_all 互相搶 wheel 事件。"""
+    """游標在 hover_widget 範圍內時把 wheel 綁到 canvas，離開時解綁。
+    用 bounding-box 判斷，避免移入子元件觸發 Leave 而中斷捲動。"""
     def _on_wheel(e):
         canvas.yview_scroll(int(-1 * (e.delta / 3)), "units")
     def _on_enter(_):
         canvas.bind_all("<MouseWheel>", _on_wheel)
-    def _on_leave(_):
+    def _on_leave(e):
+        try:
+            wx = hover_widget.winfo_rootx()
+            wy = hover_widget.winfo_rooty()
+            ww = hover_widget.winfo_width()
+            wh = hover_widget.winfo_height()
+            if wx <= e.x_root < wx + ww and wy <= e.y_root < wy + wh:
+                return  # 還在元件範圍內（只是移進子元件），不解綁
+        except Exception:
+            pass
         canvas.unbind_all("<MouseWheel>")
     hover_widget.bind("<Enter>", _on_enter)
     hover_widget.bind("<Leave>", _on_leave)
@@ -268,6 +277,8 @@ class App(tk.Tk):
         win_w, win_h = min(1180, sw - 40), min(sh - 80, 880)
         self.geometry(f"{win_w}x{win_h}")
         self.minsize(1000, 720)
+        if load_cfg().get("start_maximized", False):
+            self.after(200, lambda: self.state("zoomed"))
 
         # splash
         self._splash = tk.Frame(self, bg=PAPER)
@@ -408,8 +419,11 @@ class App(tk.Tk):
             foreground=[("selected", INK)])
 
         style.configure("Tw.Vertical.TScrollbar",
-            background=PAPER, troughcolor=PAPER, bordercolor=PAPER,
-            arrowcolor=MUTED, lightcolor=PAPER, darkcolor=PAPER)
+            background="#2C2C2C", troughcolor="#E8E3D8", bordercolor=PAPER,
+            arrowcolor="#2C2C2C", lightcolor="#2C2C2C", darkcolor="#1A1A1A",
+            gripcount=0, relief="flat")
+        style.map("Tw.Vertical.TScrollbar",
+            background=[("active", "#111111"), ("pressed", "#000000")])
 
         # mac copy/paste
         self._install_mac_clipboard()
@@ -456,6 +470,14 @@ class App(tk.Tk):
         v.lift()
         if hasattr(v, "on_show"): v.on_show()
         self.sidebar.set_active(name)
+        # 切換頁面時立刻把 MouseWheel 綁到該頁的主 canvas，
+        # 讓使用者在視窗任何地方都能捲動
+        if hasattr(v, "_scroll_canvas"):
+            c = v._scroll_canvas
+            self.bind_all("<MouseWheel>",
+                          lambda e, _c=c: _c.yview_scroll(int(-1 * (e.delta / 3)), "units"))
+        else:
+            self.unbind_all("<MouseWheel>")
 
     # ── macOS clipboard fix (preserved from original) ─────────────────────────
 
@@ -751,6 +773,7 @@ class SingleOrderView(tk.Frame):
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
 
         # mouse wheel — 只在游標進入時綁定，避免和其他分頁的 canvas 互相搶
+        self._scroll_canvas = canvas
         _bind_mousewheel_on_hover(self, canvas)
 
         wrap = tk.Frame(body, bg=PAPER)
@@ -1612,6 +1635,7 @@ class ContactsView(tk.Frame):
             self.list_canvas.configure(scrollregion=self.list_canvas.bbox("all")))
         self.list_canvas.bind("<Configure>", lambda e:
             self.list_canvas.itemconfig(self.list_win, width=e.width))
+        self._scroll_canvas = self.list_canvas
         _bind_mousewheel_on_hover(list_holder,      self.list_canvas)
         _bind_mousewheel_on_hover(self.list_canvas, self.list_canvas)
         _bind_mousewheel_on_hover(self.list_body,   self.list_canvas)
@@ -1841,6 +1865,7 @@ class ConfigView(tk.Frame):
         body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
 
+        self._scroll_canvas = canvas
         _bind_mousewheel_on_hover(self, canvas)
 
         wrap = tk.Frame(body, bg=PAPER)
@@ -1923,6 +1948,18 @@ class ConfigView(tk.Frame):
         TwButton(ba3, "套用並重新啟動", variant="primary",
                  command=self._apply_font_scale).pack(side="left")
 
+        Hairline(apc.body).pack(fill="x", pady=(16, 0))
+        mz_cell = tk.Frame(apc.body, bg=CARD); mz_cell.pack(fill="x", pady=(12, 0))
+        self.maximized_var = tk.BooleanVar()
+        tk.Checkbutton(
+            mz_cell, text="預設全視窗開啟（下次啟動生效）",
+            variable=self.maximized_var,
+            font=F_NORM, bg=CARD, fg=INK,
+            activebackground=CARD, activeforeground=INK,
+            selectcolor=CARD, relief="flat",
+            command=self._save_maximized,
+        ).pack(anchor="w")
+
         # status text
         self.status = tk.Label(wrap, text="", bg=PAPER, font=F_SMALL, anchor="w")
         self.status.pack(fill="x", pady=(8, 0))
@@ -1947,6 +1984,12 @@ class ConfigView(tk.Frame):
         cur_label = next((k for k, v in FONT_SCALE_OPTIONS.items()
                           if abs(v - cur_scale) < 1e-3), "標準")
         self.fs_var.set(cur_label)
+        self.maximized_var.set(bool(cfg.get("start_maximized", False)))
+
+    def _save_maximized(self):
+        cfg = load_cfg()
+        cfg["start_maximized"] = bool(self.maximized_var.get())
+        save_cfg(cfg)
 
     def _apply_font_scale(self):
         label = self.fs_var.get()
