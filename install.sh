@@ -71,44 +71,57 @@ fi
 echo "✅ 版本：${LATEST_TAG}"
 echo ""
 
-# ── 4. 下載 ──────────────────────────────────────────────────────────────────
-echo "📥 下載中（請稍候）..."
-# 用 PID 產生唯一路徑，完全避開 mktemp 在 macOS 的相容性問題
-TMP_ZIP="/tmp/heicat_install_$$.zip"
-TMP_DIR="/tmp/heicat_dir_$$"
-rm -f "$TMP_ZIP"           # 清除可能殘留的舊檔
-rm -rf "$TMP_DIR"
-mkdir -p "$TMP_DIR"
-curl -fsSL -L "$ZIPBALL_URL" -o "$TMP_ZIP"
-echo "✅ 下載完成"
+# ── 4 + 5. 下載、解壓、安裝（全部用 Python，避開 unzip 中文路徑問題）─────────
+echo "📥 下載並安裝中（請稍候）..."
+python3 -c "
+import urllib.request, zipfile, os, shutil, ssl, sys
+
+zipball_url = '$ZIPBALL_URL'
+install_dir = '$INSTALL_DIR'
+
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+
+tmp_zip = '/tmp/heicat_install_$$.zip'
+tmp_dir = '/tmp/heicat_dir_$$'
+
+# 下載
+req = urllib.request.Request(zipball_url, headers={'User-Agent': 'heicat-install'})
+with urllib.request.urlopen(req, context=ctx, timeout=60) as r, open(tmp_zip, 'wb') as f:
+    shutil.copyfileobj(r, f)
+
+# 解壓
+if os.path.exists(tmp_dir):
+    shutil.rmtree(tmp_dir)
+os.makedirs(tmp_dir)
+with zipfile.ZipFile(tmp_zip, 'r') as z:
+    z.extractall(tmp_dir)
+
+# 找到 GitHub zip 多一層的前綴資料夾
+top = next(p for p in os.scandir(tmp_dir) if p.is_dir())
+src = os.path.join(top.path, '黑貓主程式')
+
+# 安裝
+if os.path.isdir(install_dir):
+    dst = os.path.join(install_dir, '黑貓主程式')
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+else:
+    os.makedirs(install_dir, exist_ok=True)
+    shutil.copytree(src, os.path.join(install_dir, '黑貓主程式'))
+
+# 清理
+os.unlink(tmp_zip)
+shutil.rmtree(tmp_dir)
+print('installed')
+"
+echo "✅ 程式已安裝至：$INSTALL_DIR"
 echo ""
-
-# ── 5. 解壓縮並安裝 ───────────────────────────────────────────────────────────
-echo "📂 安裝中..."
-# 用 Python 解壓，避免系統 unzip 無法處理中文資料夾名稱的問題
-python3 - "$TMP_ZIP" "$TMP_DIR" <<'PYEOF'
-import sys, zipfile
-zip_path, out_dir = sys.argv[1], sys.argv[2]
-with zipfile.ZipFile(zip_path, "r") as z:
-    z.extractall(out_dir)
-PYEOF
-
-# GitHub zip 會多一層前綴資料夾（如 pony9632-pixel-heicat-egs-tool-abc1234/）
-EXTRACTED_DIR=$(ls -d "$TMP_DIR"/*/ | head -1)
-
-if [[ -d "$INSTALL_DIR" ]]; then
-    echo "⚠️  偵測到已安裝的舊版本，更新程式中（你的設定與通訊錄不受影響）..."
-    rm -rf "$INSTALL_DIR/黑貓主程式"
-    cp -r "${EXTRACTED_DIR}黑貓主程式" "$INSTALL_DIR/"
-else
-    mkdir -p "$INSTALL_DIR"
-    cp -r "${EXTRACTED_DIR}黑貓主程式" "$INSTALL_DIR/"
-fi
 
 # 設定執行權限
 chmod +x "$INSTALL_DIR/黑貓主程式/啟動黑貓工具.command"
-echo "✅ 程式已安裝至：$INSTALL_DIR"
-echo ""
 
 # ── 6. 安裝 Python 套件 ───────────────────────────────────────────────────────
 echo "📦 安裝 Python 套件..."
@@ -116,11 +129,7 @@ python3 -m pip install --quiet --upgrade pyyaml "pypdf>=4.0" "requests>=2.31"
 echo "✅ 套件安裝完成"
 echo ""
 
-# ── 7. 清理暫存 ───────────────────────────────────────────────────────────────
-rm -f "$TMP_ZIP"
-rm -rf "$TMP_DIR"
-
-# ── 8. 完成 ──────────────────────────────────────────────────────────────────
+# ── 7. 完成 ──────────────────────────────────────────────────────────────────
 echo "============================================"
 echo "  ✅ 安裝完成！"
 echo "============================================"
