@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "2.1.0"
+VERSION     = "2.1.1"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -2610,7 +2610,8 @@ class TrackingView(tk.Frame):
 
         filt = self._filter
         shown = [r for r in self._records
-                 if filt == "all" or self._status_tone(r.get("status","—")) == filt]
+                 if (filt == "all" and self._status_tone(r.get("status","—")) != "ok")
+                 or (filt != "all" and self._status_tone(r.get("status","—")) == filt)]
 
         self._result_count.config(text=f"顯示 {len(shown)} 筆")
 
