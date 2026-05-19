@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.7.7"
+VERSION     = "1.7.8"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3652,35 +3652,32 @@ class FreightView(tk.Frame):
         self._render_rows()
 
     def _on_error(self, msg: str):
-        self._status_lbl.config(text="✗ 所有端點均無法取得資料，詳見下方", fg=ERR)
+        self._status_lbl.config(text="✗ 所有端點均無法取得資料", fg=ERR)
         self._summary_lbl.config(text="—", fg=MUTED)
 
         for w in self._list_body.winfo_children():
             w.destroy()
 
-        hint = tk.Frame(self._list_body, bg=CARD)
-        hint.pack(expand=True, fill="both")
-        inner = tk.Frame(hint, bg=CARD)
-        inner.place(relx=0.5, rely=0.42, anchor="center")
-
-        tk.Label(inner, text="💳", font=(FONT_FAMILY, _sz(28)), bg=CARD).pack()
-        tk.Label(inner, text="找不到可用的費用查詢 API 端點",
-                 font=(FONT_FAMILY, _sz(15), "bold"), bg=CARD, fg=INK).pack(pady=(8, 4))
-        tk.Label(inner,
+        tk.Frame(self._list_body, bg=CARD, height=32).pack()
+        tk.Label(self._list_body, text="找不到可用的費用查詢 API 端點",
+                 font=(FONT_FAMILY, _sz(14), "bold"), bg=CARD, fg=INK).pack()
+        tk.Label(self._list_body,
                  text="程式已嘗試多個端點名稱，均回傳錯誤。\n"
-                      "請截圖下方錯誤詳情，傳給黑貓業務確認正確端點名稱。",
-                 font=F_SMALL, bg=CARD, fg=INK3, justify="center").pack(pady=(0, 12))
+                      "請複製下方錯誤詳情，傳給黑貓業務確認正確端點名稱。",
+                 font=F_SMALL, bg=CARD, fg=INK3, justify="center").pack(pady=(8, 12))
 
-        # 顯示詳細錯誤訊息（可複製）
-        err_box = tk.Text(inner, height=5, width=60,
+        # 可複製的錯誤文字框
+        err_frame = tk.Frame(self._list_body, bg=HAIR3, padx=16, pady=12)
+        err_frame.pack(fill="x", padx=32, pady=(0, 16))
+        err_box = tk.Text(err_frame, height=6,
                           font=(MONO_FAMILY, _sz(10)),
                           bg=HAIR3, fg=INK2, relief="flat",
-                          wrap="word", bd=0, padx=8, pady=6)
+                          wrap="word", bd=0)
         err_box.insert("1.0", msg)
         err_box.configure(state="disabled")
-        err_box.pack(pady=(0, 16))
+        err_box.pack(fill="x")
 
-        btn_row = tk.Frame(inner, bg=CARD); btn_row.pack()
+        btn_row = tk.Frame(self._list_body, bg=CARD); btn_row.pack(pady=(0, 24))
         TwButton(btn_row, "重新查詢", variant="primary",
                  command=self._query).pack(side="left", padx=(0, 8))
         TwButton(btn_row, "前往 EGS 企業網站", variant="ghost",
