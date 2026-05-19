@@ -131,6 +131,18 @@ class SudaClient:
         with urllib.request.urlopen(req, context=_ssl_ctx, timeout=15) as r:
             return r.read()
 
+    def query_freight(self, start_date: str, end_date: str) -> dict:
+        """
+        查詢客戶交易明細（運費）。
+        start_date / end_date: YYYYMMDD
+        """
+        payload = {
+            **self._auth(),
+            "StartDate": start_date,
+            "EndDate": end_date,
+        }
+        return _post("CustomerTransactionDetail", payload)
+
 
 def save_pdf(base64_data: str, path: str) -> None:
     import base64

@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.7.4"
+VERSION     = "1.7.5"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -523,6 +523,7 @@ class App(tk.Tk):
             "print_queue": PrintQueueView(self.content_host, self),
             "batch":       BatchOrderView(self.content_host, self),
             "tracking":    TrackingView(self.content_host, self),
+            "freight":     FreightView(self.content_host, self),
             "contacts":    ContactsView(self.content_host, self),
             "settings":    ConfigView(self.content_host, self),
         }
@@ -534,8 +535,9 @@ class App(tk.Tk):
         self.bind_all("<Command-2>", lambda e: self.show_view("print_queue"))
         self.bind_all("<Command-3>", lambda e: self.show_view("batch"))
         self.bind_all("<Command-4>", lambda e: self.show_view("tracking"))
-        self.bind_all("<Command-5>", lambda e: self.show_view("contacts"))
-        self.bind_all("<Command-6>", lambda e: self.show_view("settings"))
+        self.bind_all("<Command-5>", lambda e: self.show_view("freight"))
+        self.bind_all("<Command-6>", lambda e: self.show_view("contacts"))
+        self.bind_all("<Command-7>", lambda e: self.show_view("settings"))
 
     def show_view(self, name):
         v = self.views.get(name)
@@ -1021,8 +1023,9 @@ _NAV_ITEMS = [
     ("print_queue", "待列印貨運單", "2", "🖨"),
     ("batch",       "批次建單",     "3", "☰"),
     ("tracking",    "貨運查詢",     "4", "⊙"),
-    ("contacts",    "通訊錄",       "5", "⊞"),
-    ("settings",    "設定",         "6", "⚙"),
+    ("freight",     "費用查詢",     "5", "💳"),
+    ("contacts",    "通訊錄",       "6", "⊞"),
+    ("settings",    "設定",         "7", "⚙"),
 ]
 
 class Sidebar(tk.Frame):
@@ -1216,6 +1219,7 @@ _VIEW_NAMES = {
     "print_queue": "待列印貨運單",
     "batch":       "批次建單",
     "tracking":    "貨運查詢",
+    "freight":     "費用查詢",
     "contacts":    "通訊錄",
     "settings":    "設定",
 }
@@ -3470,6 +3474,261 @@ class ConfigView(tk.Frame):
                 self.after(0, lambda e=ex: self.api_status.config(text="● 錯誤", fg=ERR))
                 self.after(0, lambda e=ex: self.status.config(text=f"✗ 錯誤：{e}", fg=ERR))
         threading.Thread(target=run, daemon=True).start()
+
+
+# ─── freight fee view ────────────────────────────────────────────────────────
+
+class FreightView(tk.Frame):
+    """運費明細查詢 — 我的寄件費用 / 到付收件費用"""
+
+    def __init__(self, master, app):
+        super().__init__(master, bg=PAPER)
+        self.app = app
+        self._results: list[dict] = []
+        self._mode = "send"  # "send" or "recv"
+        self._build()
+
+    def _build(self):
+        from datetime import date as _d, timedelta as _td
+        wrap = tk.Frame(self, bg=PAPER)
+        wrap.pack(fill="both", expand=True, padx=28, pady=24)
+
+        # ── header ────────────────────────────────────────────────────────────
+        head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
+        SectionHeader(head, "費用查詢", "運費明細查詢").pack(side="left")
+
+        # ── query card ────────────────────────────────────────────────────────
+        qc = Card(wrap, padding=20); qc.pack(fill="x", pady=(0, 14))
+
+        # mode tabs
+        tabs_row = tk.Frame(qc.body, bg=CARD); tabs_row.pack(fill="x", pady=(0, 14))
+        self._mode_btns = {}
+        for mid, mlabel in [("send", "我的寄件費用"), ("recv", "到付收件費用")]:
+            btn = tk.Label(tabs_row, text=mlabel,
+                           font=(FONT_FAMILY, _sz(12), "bold"),
+                           bg=ACCENT if mid == "send" else HAIR3,
+                           fg="#FFFFFF" if mid == "send" else INK2,
+                           padx=14, pady=6, cursor="hand2", relief="flat")
+            btn.pack(side="left", padx=(0, 6))
+            btn.bind("<Button-1>", lambda e, m=mid: self._set_mode(m))
+            self._mode_btns[mid] = btn
+
+        # date row + quick buttons + query button
+        date_row = tk.Frame(qc.body, bg=CARD); date_row.pack(fill="x", pady=(0, 8))
+
+        tk.Label(date_row, text="開始日期", font=F_TINY, bg=CARD, fg=MUTED).pack(side="left")
+        self._start_var = tk.StringVar(
+            value=(_d.today() - _td(days=6)).strftime("%Y%m%d"))
+        tk.Entry(date_row, textvariable=self._start_var,
+                 font=(MONO_FAMILY, _sz(11)), width=10, relief="flat",
+                 bg=HAIR3, fg=INK, insertbackground=INK,
+                 highlightthickness=1, highlightbackground=HAIR).pack(
+                     side="left", padx=(6, 16), ipady=4)
+
+        tk.Label(date_row, text="結束日期", font=F_TINY, bg=CARD, fg=MUTED).pack(side="left")
+        self._end_var = tk.StringVar(value=_d.today().strftime("%Y%m%d"))
+        tk.Entry(date_row, textvariable=self._end_var,
+                 font=(MONO_FAMILY, _sz(11)), width=10, relief="flat",
+                 bg=HAIR3, fg=INK, insertbackground=INK,
+                 highlightthickness=1, highlightbackground=HAIR).pack(
+                     side="left", padx=(6, 16), ipady=4)
+
+        # quick date buttons
+        quick_frame = tk.Frame(date_row, bg=CARD); quick_frame.pack(side="left", padx=(0, 14))
+        for qlabel, qdays in [("今天", 0), ("近7天", 6), ("近30天", 29)]:
+            def _make_quick(d=qdays):
+                def _fn():
+                    from datetime import date as _dd, timedelta as _tt
+                    e = _dd.today()
+                    s = e - _tt(days=d)
+                    self._start_var.set(s.strftime("%Y%m%d"))
+                    self._end_var.set(e.strftime("%Y%m%d"))
+                return _fn
+            ql = tk.Label(quick_frame, text=qlabel, font=F_TINY,
+                          bg=HAIR3, fg=INK2, padx=8, pady=4, cursor="hand2", relief="flat")
+            ql.pack(side="left", padx=(0, 4))
+            ql.bind("<Button-1>", lambda e, fn=_make_quick(): fn())
+
+        TwButton(date_row, "查詢", variant="primary",
+                 command=self._query).pack(side="left")
+
+        self._status_lbl = tk.Label(qc.body, text="輸入日期後點「查詢」",
+                                    font=F_TINY, bg=CARD, fg=MUTED)
+        self._status_lbl.pack(anchor="w")
+
+        # ── results card ─────────────────────────────────────────────────────
+        rcard = Card(wrap, padding=0); rcard.pack(fill="both", expand=True)
+
+        self._summary_lbl = tk.Label(rcard.body,
+                                     text="尚無查詢資料",
+                                     font=F_SMALL, bg=PAPER2, fg=MUTED,
+                                     pady=10, anchor="w", padx=16)
+        self._summary_lbl.pack(fill="x")
+        Hairline(rcard.body).pack(fill="x")
+
+        # column header
+        hdr = tk.Frame(rcard.body, bg=PAPER2); hdr.pack(fill="x")
+        _hdr_cols = [
+            ("集貨日期", 12), ("集貨所", 10), ("配完日期", 12), ("配完所", 10),
+            ("訂單編號", 14), ("託運單號", 16), ("運費(元)", 8), ("附加服務金", 9), ("類型", 10),
+        ]
+        for txt, w in _hdr_cols:
+            tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
+                     width=w, anchor="w", padx=8, pady=8).pack(side="left")
+        Hairline(rcard.body).pack(fill="x")
+
+        # scrollable list
+        lf = tk.Frame(rcard.body, bg=CARD); lf.pack(fill="both", expand=True)
+        canvas = tk.Canvas(lf, bg=CARD, highlightthickness=0)
+        vsb = ttk.Scrollbar(lf, orient="vertical", command=canvas.yview,
+                             style="Tw.Vertical.TScrollbar")
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=vsb.set)
+        self._list_body = tk.Frame(canvas, bg=CARD)
+        self._list_win = canvas.create_window((0, 0), window=self._list_body, anchor="nw")
+        self._list_body.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+            lambda e: canvas.itemconfig(self._list_win, width=e.width))
+        _bind_mousewheel_on_hover(self._list_body, canvas)
+        _bind_mousewheel_on_hover(canvas, canvas)
+
+    # ── internals ──────────────────────────────────────────────────────────────
+
+    def _set_mode(self, mode: str):
+        self._mode = mode
+        for mid, btn in self._mode_btns.items():
+            sel = mid == mode
+            btn.configure(bg=ACCENT if sel else HAIR3,
+                          fg="#FFFFFF" if sel else INK2)
+        self._render_rows()
+
+    def _query(self):
+        import re
+        start = self._start_var.get().strip()
+        end   = self._end_var.get().strip()
+        for v, lbl in [(start, "開始日期"), (end, "結束日期")]:
+            if not re.match(r"^\d{8}$", v):
+                messagebox.showwarning("格式錯誤",
+                    f"{lbl} 請輸入 YYYYMMDD 格式（8 位數字）")
+                return
+        self._status_lbl.config(text="查詢中…", fg=MUTED)
+        self._results = []
+        self._render_rows()
+        self._summary_lbl.config(text="查詢中…", fg=MUTED)
+
+        def run():
+            try:
+                cfg = load_cfg()
+                client = make_client(cfg)
+                resp = client.query_freight(start, end)
+                data = resp.get("Data") or []
+                if not isinstance(data, list):
+                    data = []
+                self.after(0, lambda: self._on_result(data, start, end))
+            except Exception as ex:
+                self.after(0, lambda msg=str(ex): self._on_error(msg))
+
+        import threading
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_result(self, data: list, start: str, end: str):
+        self._results = data
+        n = len(data)
+        try:
+            total = sum(int(r.get("FreightAmount") or r.get("Freight") or 0)
+                        for r in data)
+        except Exception:
+            total = 0
+        s = f"{start[:4]}/{start[4:6]}/{start[6:]}"
+        e = f"{end[:4]}/{end[4:6]}/{end[6:]}"
+        self._summary_lbl.config(
+            text=f"  {s} ～ {e}   共 {n} 筆，運費計 {total:,} 元",
+            fg=INK)
+        self._status_lbl.config(text=f"✓ 查詢完成，共 {n} 筆", fg=OK)
+        self._render_rows()
+
+    def _on_error(self, msg: str):
+        # API endpoint may not be enabled for this account
+        self._status_lbl.config(
+            text=f"✗ 查詢失敗：{msg[:120]}", fg=ERR)
+        self._summary_lbl.config(text="查詢失敗", fg=MUTED)
+        # Show fallback hint in list area
+        for w in self._list_body.winfo_children():
+            w.destroy()
+        hint = tk.Frame(self._list_body, bg=CARD); hint.pack(pady=40, padx=20)
+        tk.Label(hint, text="無法取得費用資料",
+                 font=(FONT_FAMILY, _sz(14), "bold"), bg=CARD, fg=INK).pack()
+        tk.Label(hint,
+                 text="此功能需要 EGS 帳戶開通「客戶交易明細查詢」權限。\n"
+                      "如需查詢，請前往黑貓 EGS 企業網站手動查詢。",
+                 font=F_SMALL, bg=CARD, fg=MUTED, justify="center").pack(pady=(8, 16))
+        TwButton(hint, "開啟 EGS 網站", variant="ghost",
+                 command=lambda: subprocess.run(
+                     ["open", "https://www.t-cat.com.tw/business/"]
+                 )).pack()
+
+    def _render_rows(self):
+        for w in self._list_body.winfo_children():
+            w.destroy()
+
+        # filter by mode
+        if self._mode == "send":
+            rows = [r for r in self._results
+                    if str(r.get("IsFreight", "N")).upper() != "Y"]
+        else:
+            rows = [r for r in self._results
+                    if str(r.get("IsFreight", "N")).upper() == "Y"]
+
+        if not rows:
+            msg = "尚無資料" if not self._results else "此分類無資料"
+            tk.Label(self._list_body, text=msg,
+                     bg=CARD, fg=MUTED, font=F_SMALL, justify="center").pack(pady=60)
+            return
+
+        for i, r in enumerate(rows):
+            row = tk.Frame(self._list_body, bg=CARD); row.pack(fill="x")
+            inner = tk.Frame(row, bg=CARD); inner.pack(fill="x", padx=4, pady=8)
+
+            fee_raw = r.get("FreightAmount") or r.get("Freight") or "—"
+            try: fee_str = f"{int(fee_raw):,}"
+            except Exception: fee_str = str(fee_raw)
+
+            add_raw = r.get("AdditionalFee") or r.get("AddFee") or "—"
+            try: add_str = f"{int(add_raw):,}"
+            except Exception: add_str = str(add_raw)
+
+            tags = []
+            if r.get("IsCash") == "Y" or r.get("IsCollection") == "Y":
+                tags.append("收現")
+            if r.get("IsReturn") == "Y":
+                tags.append("退貨")
+            if r.get("IsSameDay") == "Y":
+                tags.append("當配")
+            if r.get("IsFreight") == "Y":
+                tags.append("到付")
+            type_str = "、".join(tags) if tags else (r.get("ShipmentType") or "—")
+
+            col_data = [
+                (r.get("CollectionDate") or r.get("PickupDate") or "—",   12, F_MONO,  INK2),
+                (r.get("CollectionPlace") or r.get("PickupPlace") or "—", 10, F_NORM,  INK),
+                (r.get("DeliveryDate") or "—",                            12, F_MONO,  INK2),
+                (r.get("DeliveryPlace") or "—",                           10, F_NORM,  INK),
+                (r.get("OrderId") or r.get("CustomerOrderId") or "—",     14, F_MONO,  INK),
+                (r.get("OBTNumber") or r.get("WaybillNo") or "—",         16, F_MONO,  MUTED),
+                (fee_str,                                                   8, F_MONO,  INK),
+                (add_str,                                                   9, F_MONO,  MUTED),
+                (type_str,                                                 10, F_NORM,  INK3),
+            ]
+            for text, w, font, fg in col_data:
+                tk.Label(inner, text=str(text), font=font, bg=CARD, fg=fg,
+                         width=w, anchor="w", padx=8).pack(side="left")
+
+            if i < len(rows) - 1:
+                Hairline(self._list_body).pack(fill="x")
+
+        tk.Frame(self._list_body, bg=CARD, height=12).pack()
 
 
 # ─── dialogs ─────────────────────────────────────────────────────────────────
