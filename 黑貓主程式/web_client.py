@@ -167,22 +167,24 @@ class TakkyubinWebClient:
         # --- Additional pages via ASP.NET __doPostBack pagination ---
         for page_num in range(2, 50):  # safety cap at 50 pages
             next_arg = f"Page${page_num}"
-            # Find doPostBack target for this page number
             links = re.findall(r"__doPostBack\('([^']+)','(Page\$\d+)'\)", cur_html)
             target = next((t for t, a in links if a == next_arg), None)
             if not target:
                 break  # no more pages
-            page_tokens = self._tokens(cur_html)
-            page_post = urllib.parse.urlencode({
-                **page_tokens,
-                "__EVENTTARGET": target, "__EVENTARGUMENT": next_arg,
-                "__LASTFOCUS": "", **keep,
-            }, encoding="utf-8").encode("utf-8")
-            cur_html = self._req(post_url, page_post)
-            new_rows = _parse_table(cur_html)
-            if not new_rows:
-                break
-            all_rows.extend(new_rows)
+            try:
+                page_tokens = self._tokens(cur_html)
+                page_post = urllib.parse.urlencode({
+                    **page_tokens,
+                    "__EVENTTARGET": target, "__EVENTARGUMENT": next_arg,
+                    "__LASTFOCUS": "", **keep,
+                }, encoding="utf-8").encode("utf-8")
+                cur_html = self._req(post_url, page_post)
+                new_rows = _parse_table(cur_html)
+                if not new_rows:
+                    break
+                all_rows.extend(new_rows)
+            except Exception:
+                break  # network error on this page — return what we have
 
         return all_rows
 

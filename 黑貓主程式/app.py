@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.8.5"
+VERSION     = "1.8.6"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3562,14 +3562,19 @@ class FreightView(tk.Frame):
                                     font=F_TINY, bg=CARD, fg=MUTED)
         self._status_lbl.pack(anchor="w")
 
-        # ── summary stat cards（4 張）────────────────────────────────────────
-        sc_row = tk.Frame(wrap, bg=PAPER); sc_row.pack(fill="x", pady=(0, 10))
-        self._stat_my_n    = self._make_stat_card(sc_row, "我方付費（9開頭）筆數", "—", "筆",  col=0)
-        self._stat_my_fee  = self._make_stat_card(sc_row, "我方付費金額",          "—", "元",  col=1)
-        self._stat_th_n    = self._make_stat_card(sc_row, "對方到付（5開頭）筆數", "—", "筆",  col=2)
-        self._stat_th_fee  = self._make_stat_card(sc_row, "對方到付金額",          "—", "元",  col=3)
-        for col in range(4):
-            sc_row.columnconfigure(col, weight=1, uniform="sc")
+        # ── summary stat cards（6 張，2 列）──────────────────────────────────
+        sc_row1 = tk.Frame(wrap, bg=PAPER); sc_row1.pack(fill="x", pady=(0, 8))
+        self._stat_my_n    = self._make_stat_card(sc_row1, "我方付費（9開頭）筆數", "—", "筆", col=0)
+        self._stat_my_fee  = self._make_stat_card(sc_row1, "我方付費金額",          "—", "元", col=1)
+        self._stat_th_n    = self._make_stat_card(sc_row1, "對方到付（5開頭）筆數", "—", "筆", col=2)
+        self._stat_th_fee  = self._make_stat_card(sc_row1, "對方到付金額",          "—", "元", col=3)
+        for c in range(4): sc_row1.columnconfigure(c, weight=1, uniform="sc1")
+
+        sc_row2 = tk.Frame(wrap, bg=PAPER); sc_row2.pack(fill="x", pady=(0, 10))
+        self._stat_total_n   = self._make_stat_card(sc_row2, "合計筆數", "—", "筆", col=0)
+        self._stat_total_fee = self._make_stat_card(sc_row2, "合計運費", "—", "元", col=1)
+        sc_row2.columnconfigure(0, weight=1, uniform="sc2")
+        sc_row2.columnconfigure(1, weight=1, uniform="sc2")
 
         # ── results table (Treeview) ──────────────────────────────────────────
         rcard = Card(wrap, padding=0); rcard.pack(fill="both", expand=True)
@@ -3631,12 +3636,15 @@ class FreightView(tk.Frame):
         if not account:
             account = username  # fallback
 
-        # Check session
-        need_login = (self._web is None) or (not self._web.is_logged_in())
-        if need_login:
-            self._do_login(username, password, account, start, end)
-        else:
-            self._do_query(account, start, end)
+        # Check session in background (avoid blocking UI with network call)
+        self._status_lbl.config(text="檢查登入狀態…", fg=MUTED)
+        def _check():
+            need = (self._web is None) or (not self._web.is_logged_in())
+            if need:
+                self.after(0, lambda: self._do_login(username, password, account, start, end))
+            else:
+                self.after(0, lambda: self._do_query(account, start, end))
+        import threading; threading.Thread(target=_check, daemon=True).start()
 
     def _do_login(self, username: str, password: str,
                   account: str, start: str, end: str):
@@ -3751,12 +3759,15 @@ class FreightView(tk.Frame):
         self._stat_th_n.config(text=str(len(th_rows)))
         self._stat_th_fee.config(text=f"{_sum(th_rows):,}")
         n = len(data)
+        self._stat_total_n.config(text=str(n))
+        self._stat_total_fee.config(text=f"{_sum(data):,}")
         self._status_lbl.config(text=f"✓ 查詢完成，共 {n} 筆", fg=OK if n > 0 else WARN)
         self._render_rows()
 
     def _on_error(self, msg: str):
         self._status_lbl.config(text=f"✗ 查詢失敗：{msg[:80]}", fg=ERR)
-        for lbl in (self._stat_my_n, self._stat_my_fee, self._stat_th_n, self._stat_th_fee):
+        for lbl in (self._stat_my_n, self._stat_my_fee, self._stat_th_n, self._stat_th_fee,
+                    self._stat_total_n, self._stat_total_fee):
             lbl.config(text="—")
         for item in self._tree.get_children():
             self._tree.delete(item)
