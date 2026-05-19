@@ -120,21 +120,21 @@ class TakkyubinWebClient:
 
     def get_obt_detail(self, obt: str, start_date: str, end_date: str, account: str) -> dict:
         """
-        Click into the detail row for a specific OBT and parse 電子訂單明細.
-        Returns dict with: recipient_name, recipient_address, sender_name,
-        sender_address, product_name, pickup_date, notes, order_date.
+        Find the OBT's detail page link in the payment list, follow it, and parse
+        電子訂單明細. The detail page loads inside an iframe; we fetch it directly.
+        Returns dict with recipient_name, recipient_address, sender_name, etc.
         Returns empty dict on failure.
         """
         post_url = f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N"
 
-        # Step 1 — run the search query to get the list page with the OBT row
+        # Step 1 — GET the base form then POST the search
         try:
             list_html = self._payment_page_html()
         except Exception:
             return {}
         tokens = self._tokens(list_html)
 
-        # Resolve account
+        # Resolve account dropdown
         m = re.search(r'<select[^>]*name="UC_UserList1\$ddlUserList"[^>]*>(.*?)</select>',
                       list_html, re.S | re.I)
         if m:
@@ -142,8 +142,8 @@ class TakkyubinWebClient:
             if vals and account not in vals:
                 account = vals[0]
 
-        btn_m = re.search(r'<input[^>]*name="btnSearch"[^>]*value="([^"]*)"', list_html, re.I) \
-             or re.search(r'<input[^>]*value="([^"]*)"[^>]*name="btnSearch"', list_html, re.I)
+        btn_m = (re.search(r'<input[^>]*name="btnSearch"[^>]*value="([^"]*)"', list_html, re.I)
+              or re.search(r'<input[^>]*value="([^"]*)"[^>]*name="btnSearch"', list_html, re.I))
         btn_val = btn_m.group(1) if btn_m else "搜尋"
 
         keep = {"txtDateS": start_date, "txtDateE": end_date,
@@ -157,17 +157,18 @@ class TakkyubinWebClient:
         except Exception:
             return {}
 
-        # Step 2 — paginate until we find the row containing the OBT
+        # Step 2 — paginate to find the page that contains the OBT link
+        detail_url = None
         for page_num in range(1, 50):
-            row_idx = self._find_obt_row_index(cur_html, obt)
-            if row_idx is not None:
+            detail_url = self._find_obt_link(cur_html, obt)
+            if detail_url:
                 break
-            # Try next page
+            # Next page
             next_arg = f"Page${page_num + 1}"
-            links = re.findall(r"__doPostBack\('([^']+)','(Page\$\d+)'\)", cur_html)
-            target = next((t for t, a in links if a == next_arg), None)
+            pg_links = re.findall(r"__doPostBack\('([^']+)','(Page\$\d+)'\)", cur_html)
+            target = next((t for t, a in pg_links if a == next_arg), None)
             if not target:
-                return {}  # OBT not found in any page
+                return {}
             page_tokens = self._tokens(cur_html)
             page_post = urllib.parse.urlencode({
                 **page_tokens,
@@ -178,57 +179,48 @@ class TakkyubinWebClient:
                 cur_html = self._req(post_url, page_post)
             except Exception:
                 return {}
-        else:
+
+        if not detail_url:
             return {}
 
-        # Step 3 — find GridView control name and POST Select$N
-        # Look for postback targets that look like a grid
-        grid_targets = re.findall(r"__doPostBack\('([^']+)','Select\$\d+'", cur_html)
-        if not grid_targets:
-            # Try any grid-like postback target
-            all_targets = re.findall(r"__doPostBack\('([^']+)'", cur_html)
-            grid_targets = [t for t in all_targets
-                            if any(k in t.lower() for k in ("grid", "gv", "list", "view"))]
-        grid_name = grid_targets[0] if grid_targets else "GridView1"
-
-        page_tokens = self._tokens(cur_html)
-        select_post = urllib.parse.urlencode({
-            **page_tokens,
-            "__EVENTTARGET": grid_name,
-            "__EVENTARGUMENT": f"Select${row_idx}",
-            "__LASTFOCUS": "", **keep,
-        }, encoding="utf-8").encode("utf-8")
+        # Step 3 — GET the detail page (it loads inside an iframe, but the URL is real)
         try:
-            detail_html = self._req(post_url, select_post)
+            detail_html = self._req(detail_url)
         except Exception:
             return {}
 
         return self._parse_obt_detail(detail_html)
 
     @staticmethod
-    def _find_obt_row_index(html: str, obt: str) -> int | None:
+    def _find_obt_link(html: str, obt: str) -> str | None:
         """
-        Find the 0-based data row index of the OBT inside an ASP.NET GridView HTML.
-        Skips the header row. Returns None if not found.
+        Find the href of the link whose visible text is the OBT number.
+        The link is typically an <a href="...">580033357192</a> inside the table.
+        Returns an absolute URL or None.
         """
-        # Split by <tr> boundaries (case-insensitive)
-        rows = re.split(r'(?i)<tr[\s>]', html)
-        data_idx = 0
-        header_seen = False
-        for row in rows:
-            # Header row detection
-            if not header_seen:
-                if "客戶代號" in row or "集貨日期" in row:
-                    header_seen = True
-                continue
-            # Skip empty / non-data rows
-            stripped = row.replace("\xa0","").strip()
-            if not stripped or "<td" not in row.lower():
-                continue
-            if obt in row:
-                return data_idx
-            data_idx += 1
-        return None
+        # Match <a href="...">OBT</a> — text may have surrounding whitespace
+        obt_esc = re.escape(obt)
+        m = re.search(rf'<a\s[^>]*href="([^"]+)"[^>]*>\s*{obt_esc}\s*</a>', html, re.I)
+        if not m:
+            # Also try: href before or after; and javascript: onclick patterns
+            m = re.search(rf'href="([^"]*[Oo][Bb][Tt][^"]*{obt_esc}[^"]*)"', html, re.I)
+        if not m:
+            return None
+        href = m.group(1).strip()
+        if href.lower().startswith("javascript"):
+            # Try to extract a URL from javascript: window.open('...') or similar
+            url_m = re.search(r"['\"]([^'\"]+\.aspx[^'\"]*)['\"]", href, re.I)
+            if url_m:
+                href = url_m.group(1)
+            else:
+                return None
+        if href.startswith("http"):
+            return href
+        # Relative path — resolve against BASE
+        if href.startswith("/"):
+            base_root = re.match(r"https?://[^/]+", BASE)
+            return (base_root.group(0) if base_root else "") + href
+        return f"{BASE}/{href.lstrip('./')}"
 
     @staticmethod
     def _parse_obt_detail(html: str) -> dict:
