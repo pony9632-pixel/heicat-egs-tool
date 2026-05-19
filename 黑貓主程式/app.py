@@ -22,10 +22,11 @@ from api_client import SudaClient, save_pdf, default_shipment_date, default_deli
 from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS, _csv_row_to_api_order
 
 CONFIG_PATH   = "config.yaml"
-CONTACTS_PATH = "contacts.json"
+CONTACTS_PATH         = "contacts.json"
+DEFAULT_CONTACTS_PATH = "default_contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.6"
+VERSION     = "1.5.7"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -114,6 +115,12 @@ def load_contacts() -> list[dict]:
     if Path(CONTACTS_PATH).exists():
         with open(CONTACTS_PATH, encoding="utf-8") as f:
             return json.load(f)
+    # 首次安裝：從預設通訊錄初始化
+    if Path(DEFAULT_CONTACTS_PATH).exists():
+        with open(DEFAULT_CONTACTS_PATH, encoding="utf-8") as f:
+            defaults = json.load(f)
+        save_contacts(defaults)
+        return defaults
     return []
 
 def save_contacts(contacts: list[dict]):
