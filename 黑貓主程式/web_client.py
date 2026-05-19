@@ -27,7 +27,7 @@ class TakkyubinWebClient:
         if post_data:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         req = urllib.request.Request(url, data=post_data, headers=headers)
-        with self._opener.open(req, timeout=20) as r:
+        with self._opener.open(req, timeout=8) as r:
             ct = r.headers.get("Content-Type","")
             enc = "utf-8"
             if "charset=" in ct: enc = ct.split("charset=")[-1].strip()

@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.8.6"
+VERSION     = "1.8.7"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3636,15 +3636,12 @@ class FreightView(tk.Frame):
         if not account:
             account = username  # fallback
 
-        # Check session in background (avoid blocking UI with network call)
-        self._status_lbl.config(text="檢查登入狀態…", fg=MUTED)
-        def _check():
-            need = (self._web is None) or (not self._web.is_logged_in())
-            if need:
-                self.after(0, lambda: self._do_login(username, password, account, start, end))
-            else:
-                self.after(0, lambda: self._do_query(account, start, end))
-        import threading; threading.Thread(target=_check, daemon=True).start()
+        # If no session, go straight to login. Otherwise query directly —
+        # session_expired exception inside query_payment() will trigger re-login.
+        if self._web is None:
+            self._do_login(username, password, account, start, end)
+        else:
+            self._do_query(account, start, end)
 
     def _do_login(self, username: str, password: str,
                   account: str, start: str, end: str):
@@ -3730,7 +3727,10 @@ class FreightView(tk.Frame):
         self._status_lbl.config(text="查詢中…", fg=MUTED)
         self._results = []
         self._render_rows()
-        self._summary_lbl.config(text="查詢中…", fg=MUTED)
+
+        cfg = load_cfg()
+        username = cfg.get("web_username","").strip()
+        password = cfg.get("web_password","").strip()
 
         def run():
             try:
@@ -3738,9 +3738,14 @@ class FreightView(tk.Frame):
                 self.after(0, lambda: self._on_result(data, start, end))
             except RuntimeError as ex:
                 if "session_expired" in str(ex):
+                    # Session expired — reset and re-login automatically
                     self._web = None
-                    self.after(0, lambda: self._status_lbl.config(
-                        text="工作階段已過期，請重新查詢", fg=WARN))
+                    if username and password:
+                        self.after(0, lambda: self._do_login(
+                            username, password, account, start, end))
+                    else:
+                        self.after(0, lambda: self._status_lbl.config(
+                            text="工作階段已過期，請重新查詢", fg=WARN))
                 else:
                     self.after(0, lambda msg=str(ex): self._on_error(msg))
             except Exception as ex:
