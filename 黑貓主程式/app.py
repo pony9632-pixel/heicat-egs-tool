@@ -1449,6 +1449,9 @@ class SingleOrderView(tk.Frame):
         sbtn = tk.Frame(wrap, bg=PAPER); sbtn.pack(fill="x", pady=(4, 0))
         TwButton(sbtn, "建立寄件單  →", variant="primary",
                  command=self._submit, width=20).pack(side="left")
+        self._next_btn = TwButton(sbtn, "建立下一筆  →", variant="ghost",
+                                  command=self._clear_for_next)
+        # initially hidden; shown after first successful submit
 
         self.result_var = tk.StringVar()
         self.result_lbl = tk.Label(wrap, textvariable=self.result_var,
@@ -1460,11 +1463,10 @@ class SingleOrderView(tk.Frame):
         sc = self._staging_card.body
         sh = tk.Frame(sc, bg=CARD); sh.pack(fill="x", pady=(0, 10))
         Kicker(sh, "待列印清單").pack(side="left")
-        sg_btns = tk.Frame(sh, bg=CARD); sg_btns.pack(side="right")
-        TwButton(sg_btns, "全選", variant="ghost",
-                 command=self._select_all_staging).pack(side="left", padx=(0, 4))
-        TwButton(sg_btns, "清除全部", variant="ghost",
-                 command=self._clear_staging).pack(side="left")
+        TwButton(sh, "全選", variant="ghost",
+                 command=self._select_all_staging).pack(side="left", padx=(10, 0))
+        TwButton(sh, "清除全部", variant="ghost",
+                 command=self._clear_staging).pack(side="right")
         self._staging_list_frame = tk.Frame(sc, bg=CARD)
         self._staging_list_frame.pack(fill="x")
         sf = tk.Frame(sc, bg=CARD); sf.pack(fill="x", pady=(12, 0))
@@ -1658,7 +1660,7 @@ class SingleOrderView(tk.Frame):
             tk.Label(row, text=item["order_id"], font=F_MONO, bg=CARD,
                      fg=INK, width=16, anchor="w").pack(side="left", padx=(4, 8))
             tk.Label(row, text=item["name"], font=F_NORM, bg=CARD,
-                     fg=INK, width=10, anchor="w").pack(side="left", padx=(0, 8))
+                     fg=INK, width=16, anchor="w").pack(side="left", padx=(0, 8))
             tk.Label(row, text=item["obt"], font=F_MONO, bg=CARD,
                      fg=MUTED, anchor="w").pack(side="left")
         self._update_print_btn()
@@ -1676,6 +1678,11 @@ class SingleOrderView(tk.Frame):
     def _clear_staging(self) -> None:
         self._staging.clear()
         self._refresh_staging_ui()
+
+    def _clear_for_next(self) -> None:
+        self._clear_order_fields()
+        self.result_var.set("")
+        self._next_btn.pack_forget()
 
     def _clear_order_fields(self) -> None:
         """建單成功後清除收件人資料與訂單號，保留包裹規格與付款設定。"""
@@ -2045,6 +2052,7 @@ class SingleOrderView(tk.Frame):
                         self.after(50, self._clear_order_fields)
                         msg += "\nPDF 已加入待列印清單，選取後按「列印選取」輸出。"
                     self.after(0, lambda: self.result_lbl.configure(fg=OK))
+                    self.after(0, lambda: self._next_btn.pack(side="left", padx=(10, 0)))
                 else:
                     raw = r['message']
                     if "E009" in raw:
@@ -2477,7 +2485,7 @@ class TrackingView(tk.Frame):
         # column header
         hdr = tk.Frame(tcard.inner, bg=PAPER2)
         hdr.pack(fill="x")
-        cols = [("建單時間", 17), ("收件人", 12), ("貨運單號", 16),
+        cols = [("建單時間", 17), ("收件人", 16), ("貨運單號", 16),
                 ("訂單編號", 14), ("配送狀態", 14), ("", 0)]
         for txt, w in cols:
             tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
@@ -2575,10 +2583,10 @@ class TrackingView(tk.Frame):
         inner = tk.Frame(row, bg=CARD)
         inner.pack(fill="x", padx=4, pady=10)
 
-        tk.Label(inner, text=created,    font=F_TINY, bg=CARD, fg=MUTED, width=17, anchor="w").pack(side="left", padx=(8, 0))
-        tk.Label(inner, text=name[:12],  font=F_NORM, bg=CARD, fg=INK,   width=12, anchor="w").pack(side="left", padx=(8, 0))
-        tk.Label(inner, text=obt,        font=F_MONO, bg=CARD, fg=INK,   width=16, anchor="w").pack(side="left", padx=(8, 0))
-        tk.Label(inner, text=oid[:14],   font=F_TINY, bg=CARD, fg=INK2,  width=14, anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(inner, text=created,   font=F_TINY, bg=CARD, fg=MUTED, width=17, anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(inner, text=name,      font=F_NORM, bg=CARD, fg=INK,   width=16, anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(inner, text=obt,       font=F_MONO, bg=CARD, fg=INK,   width=16, anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(inner, text=oid[:14],  font=F_TINY, bg=CARD, fg=INK2,  width=14, anchor="w").pack(side="left", padx=(8, 0))
 
         # status pill
         stone = self._status_tone(status)
