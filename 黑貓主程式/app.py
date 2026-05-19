@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.6.4"
+VERSION     = "1.6.5"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -474,8 +474,11 @@ class App(tk.Tk):
         hdr = tk.Frame(self, bg=RAIL, height=44)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
+        self._hdr_logo = _load_logo(28)
+        if self._hdr_logo:
+            tk.Label(hdr, image=self._hdr_logo, bg=RAIL).pack(side="left", padx=(12, 4))
         tk.Label(hdr, text="STUDIO A 黑貓宅急便工具",
-                 bg=RAIL, fg=INK2, font=F_BOLD).pack(side="left", padx=16)
+                 bg=RAIL, fg=INK2, font=F_BOLD).pack(side="left", padx=(4 if self._hdr_logo else 16, 0))
         tk.Label(hdr, text=f"v{VERSION}",
                  bg=RAIL, fg=MUTED, font=F_TINY).pack(side="right", padx=16)
 
@@ -660,6 +663,26 @@ class App(tk.Tk):
             self.bind_class(_cls, "<Control-Button-1>", _show_ctx)
 
 
+# ─── logo helper ─────────────────────────────────────────────────────────────
+
+def _load_logo(px: int = 36):
+    """Return a tk.PhotoImage of logo.png scaled to px×px, or None if not found."""
+    logo_path = Path(__file__).parent / "logo.png"
+    if not logo_path.exists():
+        return None
+    try:
+        img = tk.PhotoImage(file=str(logo_path))
+        factor = max(1, img.width() // px)
+        return img.subsample(factor, factor) if factor > 1 else img
+    except Exception:
+        try:
+            from PIL import Image, ImageTk
+            pil = Image.open(logo_path).resize((px, px), Image.LANCZOS)
+            return ImageTk.PhotoImage(pil)
+        except Exception:
+            return None
+
+
 # ─── sidebar ─────────────────────────────────────────────────────────────────
 
 class Sidebar(tk.Frame):
@@ -672,10 +695,14 @@ class Sidebar(tk.Frame):
         # brand
         brand = tk.Frame(self, bg=RAIL)
         brand.pack(fill="x", padx=18, pady=(20, 16))
-        m = tk.Canvas(brand, width=28, height=28, bg=RAIL, highlightthickness=0)
-        m.create_rectangle(4, 4, 26, 26, fill=INK, outline=INK)
-        m.create_rectangle(9, 11, 21, 19, outline="#FFFFFF", width=2)
-        m.pack(side="left", padx=(0, 10))
+        self._logo_img = _load_logo(52)
+        if self._logo_img:
+            tk.Label(brand, image=self._logo_img, bg=RAIL).pack(side="left", padx=(0, 10))
+        else:
+            m = tk.Canvas(brand, width=28, height=28, bg=RAIL, highlightthickness=0)
+            m.create_rectangle(4, 4, 26, 26, fill=INK, outline=INK)
+            m.create_rectangle(9, 11, 21, 19, outline="#FFFFFF", width=2)
+            m.pack(side="left", padx=(0, 10))
         info = tk.Frame(brand, bg=RAIL)
         info.pack(side="left")
         tk.Label(info, text="STUDIO A", font=F_BOLD, bg=RAIL, fg=INK).pack(anchor="w")
@@ -1880,6 +1907,27 @@ class TrackingView(tk.Frame):
         TwButton(ba, "重新整理", variant="ghost", command=self.refresh).pack(side="left", padx=4)
         TwButton(ba, "清除兩週前紀錄", variant="ghost", command=self._prune).pack(side="left", padx=4)
 
+        # manual add row
+        add_bar = tk.Frame(wrap, bg=PAPER)
+        add_bar.pack(fill="x", pady=(0, 10))
+        tk.Label(add_bar, text="手動新增單號：", font=F_SMALL, bg=PAPER, fg=INK2).pack(side="left")
+        self._add_obt_var  = tk.StringVar()
+        self._add_name_var = tk.StringVar()
+        e_obt = tk.Entry(add_bar, textvariable=self._add_obt_var,
+                         font=F_MONO, relief="flat", bg=CARD, fg=INK,
+                         highlightthickness=1, highlightbackground=HAIR2,
+                         width=18)
+        e_obt.pack(side="left", padx=(6, 4), ipady=4)
+        tk.Label(add_bar, text="收件人：", font=F_SMALL, bg=PAPER, fg=INK2).pack(side="left")
+        e_name = tk.Entry(add_bar, textvariable=self._add_name_var,
+                          font=F_NORM, relief="flat", bg=CARD, fg=INK,
+                          highlightthickness=1, highlightbackground=HAIR2,
+                          width=12)
+        e_name.pack(side="left", padx=(4, 8), ipady=4)
+        TwButton(add_bar, "新增", variant="default",
+                 command=self._manual_add).pack(side="left")
+        e_obt.bind("<Return>", lambda _: self._manual_add())
+
         # table header
         hdr = tk.Frame(wrap, bg=HAIR2)
         hdr.pack(fill="x")
@@ -1980,7 +2028,32 @@ class TrackingView(tk.Frame):
         TwButton(btns, "查詢狀態", variant="ghost",
                  command=lambda _obt=obt: self._query_one(_obt)).pack(side="left", padx=(0, 4))
         TwButton(btns, "複製單號", variant="ghost",
-                 command=lambda _obt=obt: self._copy(_obt)).pack(side="left")
+                 command=lambda _obt=obt: self._copy(_obt)).pack(side="left", padx=(0, 4))
+        TwButton(btns, "刪除", variant="ghost",
+                 command=lambda _obt=obt: self._delete_one(_obt)).pack(side="left")
+
+    def _manual_add(self):
+        obt  = self._add_obt_var.get().strip()
+        name = self._add_name_var.get().strip() or "—"
+        if not obt:
+            messagebox.showwarning("請填寫單號", "請輸入貨運單號後再新增。", parent=self)
+            return
+        records = load_tracking()
+        if any(r.get("obt_number") == obt for r in records):
+            messagebox.showinfo("已存在", f"單號 {obt} 已在清單中。", parent=self)
+            return
+        append_tracking(obt, name, "—")
+        self._add_obt_var.set("")
+        self._add_name_var.set("")
+        self.refresh()
+
+    def _delete_one(self, obt: str):
+        if not messagebox.askyesno("確認刪除", f"確定要刪除單號 {obt} 的紀錄嗎？", parent=self):
+            return
+        records = load_tracking()
+        records = [r for r in records if r.get("obt_number") != obt]
+        save_tracking(records)
+        self.refresh()
 
     def _set_status(self, obt: str, status: str):
         """Update status label and persist to tracking.json."""
