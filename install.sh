@@ -4,6 +4,14 @@
 
 set -euo pipefail
 
+TMP_ZIP=""
+TMP_DIR=""
+cleanup() {
+    [[ -n "$TMP_ZIP" ]] && rm -f "$TMP_ZIP"
+    [[ -n "$TMP_DIR" ]] && rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
 REPO="pony9632-pixel/heicat-egs-tool"
 INSTALL_DIR="$HOME/Desktop/黑貓宅急便工具"
 GITHUB_API="https://api.github.com/repos/$REPO/releases/latest"
@@ -73,7 +81,7 @@ echo ""
 
 # ── 4. 下載 ──────────────────────────────────────────────────────────────────
 echo "📥 下載中（請稍候）..."
-TMP_ZIP=$(mktemp /tmp/heicat_XXXXXX.zip)
+TMP_ZIP=$(mktemp /tmp/heicat_XXXXXX)
 curl -fsSL -L "$ZIPBALL_URL" -o "$TMP_ZIP"
 echo "✅ 下載完成"
 echo ""
