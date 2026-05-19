@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "2.1.2"
+VERSION     = "2.1.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -2790,7 +2790,8 @@ class TrackingView(tk.Frame):
         threading.Thread(target=run, daemon=True).start()
 
     def _query_all(self):
-        obts = [r.get("obt_number") for r in self._records if r.get("obt_number")]
+        obts = [r.get("obt_number") for r in self._records
+                if r.get("obt_number") and r.get("status") != "順利送達"]
         for obt in obts:
             lbl = self._status_labels.get(obt)
             if lbl and lbl.winfo_exists():
