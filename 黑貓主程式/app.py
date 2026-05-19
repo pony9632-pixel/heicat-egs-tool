@@ -1649,6 +1649,8 @@ class ContactsView(tk.Frame):
         self._all = []
         self._filtered = []
         self._selected = None
+        self._active_tab = "門市"
+        self._checked_names = set()
         self._build()
         self.refresh()
 
@@ -1663,8 +1665,12 @@ class ContactsView(tk.Frame):
                  command=self._export_csv).pack(side="left", padx=4)
         TwButton(ba, "匯入 CSV", variant="ghost",
                  command=self._import_csv).pack(side="left", padx=4)
-        TwButton(ba, "＋ 新增聯絡人", variant="primary",
-                 command=self._add).pack(side="left", padx=4)
+        self._del_sel_btn = TwButton(ba, "刪除選取 (0)", variant="danger",
+                                      command=self._delete_checked)
+        # _del_sel_btn is shown/hidden dynamically via _update_del_btn()
+        self._add_btn = TwButton(ba, "＋ 新增聯絡人", variant="primary",
+                                  command=self._add)
+        self._add_btn.pack(side="left", padx=4)
 
         # split: list (left) + detail (right)
         split = tk.Frame(wrap, bg=PAPER); split.pack(fill="x", expand=False)
@@ -1673,6 +1679,19 @@ class ContactsView(tk.Frame):
         # left list
         lcard = Card(split, padding=0)
         lcard.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+
+        # tab bar
+        tab_bar = tk.Frame(lcard.inner, bg=CARD)
+        tab_bar.pack(fill="x")
+        self._tab_btns = {}
+        for _cat in ("門市", "廠商"):
+            _btn = tk.Label(tab_bar, text=f"{_cat}通訊錄", font=F_SMALL,
+                            bg=CARD, fg=ACCENT if _cat == "門市" else MUTED,
+                            cursor="hand2", padx=16, pady=10)
+            _btn.pack(side="left")
+            _btn.bind("<Button-1>", lambda _, c=_cat: self._switch_tab(c))
+            self._tab_btns[_cat] = _btn
+        Hairline(lcard.inner).pack(fill="x")
 
         # search bar
         sbar = tk.Frame(lcard.inner, bg=CARD, height=44)
@@ -1694,6 +1713,13 @@ class ContactsView(tk.Frame):
             else:
                 self._search_clear_lbl.pack_forget()
         self.search_var.trace_add("write", _update_clear_btn)
+        # 全選 checkbox
+        self._all_check_var = tk.BooleanVar(value=False)
+        self._all_check = tk.Checkbutton(sbar, variable=self._all_check_var,
+                                          command=self._toggle_all,
+                                          bg=CARD, activebackground=CARD,
+                                          relief="flat", bd=0, highlightthickness=0)
+        self._all_check.pack(side="left", padx=(8, 0))
         self.count_lbl = tk.Label(sbar, text="", font=F_TINY, bg=CARD, fg=MUTED)
         self.count_lbl.pack(side="right", padx=14)
         Hairline(lcard.inner).pack(fill="x")
@@ -1731,11 +1757,13 @@ class ContactsView(tk.Frame):
 
     def _refilter(self):
         kw = self.search_var.get().lower() if hasattr(self, "search_var") else ""
+        pool = [c for c in self._all
+                if (c.get("category") or "門市") == self._active_tab]
         if kw:
-            self._filtered = [c for c in self._all
+            self._filtered = [c for c in pool
                               if any(kw in str(v).lower() for v in c.values())]
         else:
-            self._filtered = list(self._all)
+            self._filtered = list(pool)
         self.count_lbl.config(text=f"{len(self._filtered)} 位")
         self._render_list()
         if self._filtered:
@@ -1750,30 +1778,42 @@ class ContactsView(tk.Frame):
         for c in self._filtered:
             sel = self._selected and c.get("name") == self._selected.get("name")
             self._make_row(c, sel)
+        # Update 全選 state
+        checked_in_view = self._checked_names & {c.get("name") for c in self._filtered}
+        if self._filtered and checked_in_view == {c.get("name") for c in self._filtered}:
+            self._all_check_var.set(True)
+        else:
+            self._all_check_var.set(False)
 
     def _make_row(self, c, sel):
+        name = c.get("name", "")
+        checked = name in self._checked_names
         bg = ACCENT2 if sel else CARD
         row = tk.Frame(self.list_body, bg=bg, cursor="hand2")
         row.pack(fill="x")
         body = tk.Frame(row, bg=bg); body.pack(fill="x", padx=14, pady=10)
+        # checkbox
+        chk_var = tk.BooleanVar(value=checked)
+        chk = tk.Checkbutton(body, variable=chk_var, bg=bg, activebackground=bg,
+                              relief="flat", bd=0, highlightthickness=0,
+                              command=lambda _n=name, _v=chk_var: self._on_row_check(_n, _v.get()))
+        chk.pack(side="left", padx=(0, 8))
         # avatar
-        av_size = 32
         av_color = ACCENT if sel else RAIL
         av_fg = "#FFFFFF" if sel else INK2
-        av = tk.Label(body, text=(c.get("name") or "?")[:1],
+        av = tk.Label(body, text=(name or "?")[:1],
                       bg=av_color, fg=av_fg, font=F_BOLD, width=2, height=1)
         av.pack(side="left", padx=(0, 12))
         info = tk.Frame(body, bg=bg); info.pack(side="left", fill="x", expand=True)
-        tk.Label(info, text=c.get("name", ""), font=F_BOLD,
+        tk.Label(info, text=name, font=F_BOLD,
                  bg=bg, fg=INK, anchor="w").pack(fill="x")
         tk.Label(info, text=(c.get("address") or "—"),
                  font=F_TINY, bg=bg, fg=INK2, anchor="w",
-                 wraplength=380, justify="left").pack(fill="x")
+                 wraplength=360, justify="left").pack(fill="x")
         if c.get("notes"):
             tag = tk.Label(body, text=c["notes"][:8], font=F_TINY,
                            bg="#FFE9D8", fg=ACCENT, padx=6, pady=2)
             tag.pack(side="right")
-        # divider line
         Hairline(self.list_body).pack(fill="x")
 
         def select(_e=None):
@@ -1783,6 +1823,59 @@ class ContactsView(tk.Frame):
             w.bind("<Button-1>", select)
         for child in info.winfo_children():
             child.bind("<Button-1>", select)
+
+    def _on_row_check(self, name, checked):
+        if checked:
+            self._checked_names.add(name)
+        else:
+            self._checked_names.discard(name)
+        self._update_del_btn()
+        # update 全選 state
+        if self._filtered and self._checked_names >= {c.get("name") for c in self._filtered}:
+            self._all_check_var.set(True)
+        else:
+            self._all_check_var.set(False)
+
+    def _toggle_all(self):
+        if self._all_check_var.get():
+            for c in self._filtered:
+                self._checked_names.add(c.get("name", ""))
+        else:
+            for c in self._filtered:
+                self._checked_names.discard(c.get("name", ""))
+        self._update_del_btn()
+        self._render_list()
+
+    def _update_del_btn(self):
+        n = len(self._checked_names)
+        if n > 0:
+            self._del_sel_btn.set_text(f"刪除選取 ({n})")
+            if not self._del_sel_btn.winfo_ismapped():
+                self._del_sel_btn.pack(side="left", padx=4, before=self._add_btn)
+        else:
+            self._del_sel_btn.pack_forget()
+
+    def _delete_checked(self):
+        names = set(self._checked_names)
+        if not names: return
+        if not messagebox.askyesno("確認刪除",
+                f"確定刪除選取的 {len(names)} 筆聯絡人？\n此動作無法復原。"): return
+        contacts = [c for c in load_contacts() if c.get("name") not in names]
+        save_contacts(contacts)
+        self._checked_names.clear()
+        self._selected = None
+        self._update_del_btn()
+        self.refresh()
+
+    def _switch_tab(self, cat):
+        self._active_tab = cat
+        self._checked_names.clear()
+        self._update_del_btn()
+        for c, btn in self._tab_btns.items():
+            btn.config(fg=ACCENT if c == cat else MUTED,
+                       font=(F_SMALL[0], F_SMALL[1], "bold") if c == cat else F_SMALL)
+        self._all_check_var.set(False)
+        self._refilter()
 
     def _render_detail(self):
         for w in self.detail_card.body.winfo_children(): w.destroy()
@@ -1837,7 +1930,7 @@ class ContactsView(tk.Frame):
         self.app.show_view("single")
 
     def _add(self):
-        ContactDialog(self, None, self._on_save)
+        ContactDialog(self, {"category": self._active_tab}, self._on_save)
 
     def _edit(self):
         if not self._selected: return
@@ -1853,6 +1946,8 @@ class ContactsView(tk.Frame):
         self.refresh()
 
     def _on_save(self, contact, original_name=None):
+        if not contact.get("category"):
+            contact["category"] = self._active_tab
         contacts = load_contacts()
         if original_name:
             contacts = [c for c in contacts if c.get("name") != original_name]
@@ -2126,12 +2221,12 @@ CONTACT_FIELDS = [("name", "姓名 *"), ("phone", "電話"),
 class ContactDialog(tk.Toplevel):
     def __init__(self, parent, contact, on_save):
         super().__init__(parent)
-        self.title("新增聯絡人" if contact is None else "編輯聯絡人")
+        self.title("新增聯絡人" if (contact is None or not contact.get("name")) else "編輯聯絡人")
         self.configure(bg=PAPER)
         self.resizable(False, False)
         self.grab_set()
         self.on_save = on_save
-        self.original_name = contact["name"] if contact else None
+        self.original_name = contact.get("name") if contact else None
         self.vars = {}
         self._build(contact or {})
 
@@ -2152,6 +2247,16 @@ class ContactDialog(tk.Toplevel):
             ttk.Entry(grid, textvariable=v, style="Tw.TEntry",
                       font=F_MONO if key in ("phone","mobile") else F_NORM,
                       width=36).grid(row=i*2+1, column=0, sticky="ew")
+
+        # Category
+        tk.Label(wrap, text="分類", font=F_LABEL, bg=PAPER, fg=MUTED).pack(anchor="w", pady=(12, 4))
+        cat_frame = tk.Frame(wrap, bg=PAPER)
+        cat_frame.pack(anchor="w")
+        self.vars["category"] = tk.StringVar(value=contact.get("category", "門市"))
+        for cat in ("門市", "廠商"):
+            tk.Radiobutton(cat_frame, text=cat, variable=self.vars["category"],
+                           value=cat, bg=PAPER, activebackground=PAPER,
+                           font=F_NORM, fg=INK).pack(side="left", padx=(0, 16))
 
         ba = tk.Frame(wrap, bg=PAPER); ba.pack(fill="x", pady=(20, 0))
         TwButton(ba, "儲存", variant="primary", command=self._save).pack(side="left", padx=(0, 8))
