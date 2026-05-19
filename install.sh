@@ -85,7 +85,13 @@ echo ""
 
 # ── 5. 解壓縮並安裝 ───────────────────────────────────────────────────────────
 echo "📂 安裝中..."
-unzip -q "$TMP_ZIP" -d "$TMP_DIR"
+# 用 Python 解壓，避免系統 unzip 無法處理中文資料夾名稱的問題
+python3 - "$TMP_ZIP" "$TMP_DIR" <<'PYEOF'
+import sys, zipfile
+zip_path, out_dir = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zip_path, "r") as z:
+    z.extractall(out_dir)
+PYEOF
 
 # GitHub zip 會多一層前綴資料夾（如 pony9632-pixel-heicat-egs-tool-abc1234/）
 EXTRACTED_DIR=$(ls -d "$TMP_DIR"/*/ | head -1)
