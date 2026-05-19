@@ -100,10 +100,29 @@ class TakkyubinWebClient:
         except Exception:
             return False
 
-    def get_account_options(self) -> list[tuple[str,str]]:
-        """Return [(value, label), ...] from UC_UserList1$ddlUserList after login."""
+    def _payment_page_html(self) -> str:
+        """GET 交易明細 page, following RedirectFunc if needed."""
+        # Try direct URL first
         html = self._req(f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N")
         if "Login.aspx" in html or "txtUserID" in html:
+            raise RuntimeError("session_expired")
+        # If the page didn't load the form (no btnSearch), try via RedirectFunc
+        if "btnSearch" not in html:
+            try:
+                html = self._req(f"{BASE}/RedirectFunc.aspx?FuncNo=167")
+                if "Login.aspx" in html or "txtUserID" in html:
+                    raise RuntimeError("session_expired")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+        return html
+
+    def get_account_options(self) -> list[tuple[str,str]]:
+        """Return [(value, label), ...] from UC_UserList1$ddlUserList after login."""
+        try:
+            html = self._payment_page_html()
+        except Exception:
             return []
         m = re.search(r'<select[^>]*name="UC_UserList1\$ddlUserList"[^>]*>(.*?)</select>',
                       html, re.S | re.I)
@@ -114,9 +133,7 @@ class TakkyubinWebClient:
 
     def query_payment(self, start_date: str, end_date: str, account: str) -> list[dict]:
         """Query and parse payment detail table."""
-        html = self._req(f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N")
-        if "Login.aspx" in html or "txtUserID" in html:
-            raise RuntimeError("session_expired")
+        html = self._payment_page_html()
         tokens = self._tokens(html)
 
         # Auto-resolve account: if specified value isn't in dropdown, use first option
@@ -129,24 +146,36 @@ class TakkyubinWebClient:
         if dropdown_vals and account not in dropdown_vals:
             account = dropdown_vals[0]
 
+        # Extract actual btnSearch value from page (may have trailing spaces)
+        btn_val_m = re.search(r'<input[^>]*name="btnSearch"[^>]*value="([^"]*)"', html, re.I)
+        if not btn_val_m:
+            btn_val_m = re.search(r'<input[^>]*value="([^"]*)"[^>]*name="btnSearch"', html, re.I)
+        btn_val = btn_val_m.group(1) if btn_val_m else "搜尋"
+
         post = urllib.parse.urlencode({
             **tokens,
             "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
             "txtDateS": start_date, "txtDateE": end_date,
-            "UC_UserList1$ddlUserList": account, "btnSearch": "搜尋",
+            "UC_UserList1$ddlUserList": account, "btnSearch": btn_val,
         }, encoding="utf-8").encode("utf-8")
-        result_html = self._req(f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N", post)
 
-        # Save debug file so user can inspect actual response
+        # POST to the same page URL that served the form
+        post_url = f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N"
+        result_html = self._req(post_url, post)
+
+        # Save debug files for inspection
         try:
             import tempfile, os
-            debug_path = os.path.join(tempfile.gettempdir(), "heicat_freight_debug.html")
-            with open(debug_path, "w", encoding="utf-8") as f:
-                f.write(result_html)
+            tmp = tempfile.gettempdir()
+            with open(os.path.join(tmp, "heicat_freight_get.html"), "w", encoding="utf-8") as f:
+                f.write(html)      # pre-POST page (has actual btnSearch value + dropdown options)
+            with open(os.path.join(tmp, "heicat_freight_debug.html"), "w", encoding="utf-8") as f:
+                f.write(result_html)   # POST result (should contain the data table)
         except Exception:
             pass
 
-        return _parse_table(result_html)
+        rows = _parse_table(result_html)
+        return rows
 
 
 _COL_KEYS = ["customer_id","pickup_date","pickup_place","delivery_date","delivery_place",
