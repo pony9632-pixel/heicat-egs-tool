@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.7.6"
+VERSION     = "1.7.7"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3626,14 +3626,15 @@ class FreightView(tk.Frame):
                 data = resp.get("Data") or []
                 if not isinstance(data, list):
                     data = []
-                self.after(0, lambda: self._on_result(data, start, end))
+                ep = resp.get("_endpoint_used", "")
+                self.after(0, lambda d=data, ep=ep: self._on_result(d, start, end, ep))
             except Exception as ex:
                 self.after(0, lambda msg=str(ex): self._on_error(msg))
 
         import threading
         threading.Thread(target=run, daemon=True).start()
 
-    def _on_result(self, data: list, start: str, end: str):
+    def _on_result(self, data: list, start: str, end: str, endpoint: str = ""):
         self._results = data
         n = len(data)
         try:
@@ -3646,16 +3647,12 @@ class FreightView(tk.Frame):
         self._summary_lbl.config(
             text=f"  {s} ～ {e}   共 {n} 筆，運費計 {total:,} 元",
             fg=INK)
-        self._status_lbl.config(text=f"✓ 查詢完成，共 {n} 筆", fg=OK)
+        ep_hint = f"  （端點：{endpoint}）" if endpoint else ""
+        self._status_lbl.config(text=f"✓ 查詢完成，共 {n} 筆{ep_hint}", fg=OK)
         self._render_rows()
 
     def _on_error(self, msg: str):
-        is_500 = "500" in msg
-        if is_500:
-            short = "EGS 伺服器拒絕請求（HTTP 500）— 此帳號可能尚未開通費用查詢 API"
-        else:
-            short = msg[:100]
-        self._status_lbl.config(text=f"✗ {short}", fg=ERR)
+        self._status_lbl.config(text="✗ 所有端點均無法取得資料，詳見下方", fg=ERR)
         self._summary_lbl.config(text="—", fg=MUTED)
 
         for w in self._list_body.winfo_children():
@@ -3664,31 +3661,32 @@ class FreightView(tk.Frame):
         hint = tk.Frame(self._list_body, bg=CARD)
         hint.pack(expand=True, fill="both")
         inner = tk.Frame(hint, bg=CARD)
-        inner.place(relx=0.5, rely=0.45, anchor="center")
+        inner.place(relx=0.5, rely=0.42, anchor="center")
 
         tk.Label(inner, text="💳", font=(FONT_FAMILY, _sz(28)), bg=CARD).pack()
-        tk.Label(inner, text="費用查詢 API 未開通",
+        tk.Label(inner, text="找不到可用的費用查詢 API 端點",
                  font=(FONT_FAMILY, _sz(15), "bold"), bg=CARD, fg=INK).pack(pady=(8, 4))
+        tk.Label(inner,
+                 text="程式已嘗試多個端點名稱，均回傳錯誤。\n"
+                      "請截圖下方錯誤詳情，傳給黑貓業務確認正確端點名稱。",
+                 font=F_SMALL, bg=CARD, fg=INK3, justify="center").pack(pady=(0, 12))
 
-        if is_500:
-            detail = (
-                "黑貓 EGS API（api.suda.com.tw）回傳 HTTP 500，\n"
-                "表示此帳號尚未開通「客戶交易明細查詢」端點。\n\n"
-                "請洽黑貓業務代表申請開通，或至 EGS 企業網站手動查詢。"
-            )
-        else:
-            detail = f"錯誤詳情：{msg[:160]}\n\n請確認網路連線與 API 設定是否正確。"
-
-        tk.Label(inner, text=detail,
-                 font=F_SMALL, bg=CARD, fg=INK3, justify="center").pack(pady=(0, 20))
+        # 顯示詳細錯誤訊息（可複製）
+        err_box = tk.Text(inner, height=5, width=60,
+                          font=(MONO_FAMILY, _sz(10)),
+                          bg=HAIR3, fg=INK2, relief="flat",
+                          wrap="word", bd=0, padx=8, pady=6)
+        err_box.insert("1.0", msg)
+        err_box.configure(state="disabled")
+        err_box.pack(pady=(0, 16))
 
         btn_row = tk.Frame(inner, bg=CARD); btn_row.pack()
-        TwButton(btn_row, "前往 EGS 企業網站", variant="primary",
+        TwButton(btn_row, "重新查詢", variant="primary",
+                 command=self._query).pack(side="left", padx=(0, 8))
+        TwButton(btn_row, "前往 EGS 企業網站", variant="ghost",
                  command=lambda: subprocess.run(
                      ["open", "https://www.suda.com.tw/"]
-                 )).pack(side="left", padx=(0, 8))
-        TwButton(btn_row, "重新查詢", variant="ghost",
-                 command=self._query).pack(side="left")
+                 )).pack(side="left")
 
     def _render_rows(self):
         for w in self._list_body.winfo_children():

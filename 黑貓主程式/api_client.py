@@ -135,13 +135,32 @@ class SudaClient:
         """
         查詢客戶交易明細（運費）。
         start_date / end_date: YYYYMMDD
+        依序嘗試已知的端點與欄位格式，回傳第一個成功的結果。
         """
-        payload = {
-            **self._auth(),
-            "StartDate": start_date,
-            "EndDate": end_date,
-        }
-        return _post("CustomerTransactionDetail", payload)
+        auth = self._auth()
+        # 嘗試順序：端點名稱 × 日期欄位格式
+        candidates = [
+            ("CustomerTransactionDetail", {"StartDate": start_date, "EndDate": end_date}),
+            ("CustomerTransactionDetail", {"BeginDate": start_date, "EndDate": end_date}),
+            ("QueryFreight",              {"StartDate": start_date, "EndDate": end_date}),
+            ("QueryTransaction",          {"StartDate": start_date, "EndDate": end_date}),
+            ("FreightDetail",             {"StartDate": start_date, "EndDate": end_date}),
+        ]
+        last_err = None
+        for endpoint, extra in candidates:
+            try:
+                resp = _post(endpoint, {**auth, **extra})
+                # 成功：回傳時附上使用的端點名稱供除錯
+                resp["_endpoint_used"] = endpoint
+                return resp
+            except RuntimeError as e:
+                last_err = (endpoint, str(e))
+                # 404 = 端點不存在，繼續試下一個
+                # 500 = 端點存在但格式錯誤，也繼續試
+                continue
+        raise RuntimeError(
+            f"所有端點均失敗，最後嘗試：{last_err[0]}\n錯誤：{last_err[1]}"
+        )
 
 
 def save_pdf(base64_data: str, path: str) -> None:
