@@ -73,17 +73,18 @@ echo ""
 
 # ── 4. 下載 ──────────────────────────────────────────────────────────────────
 echo "📥 下載中（請稍候）..."
-# macOS mktemp 不支援副檔名在 template 內，先建暫存檔再重命名
-TMP_BASE=$(mktemp /tmp/heicat_XXXXXX)
-TMP_ZIP="${TMP_BASE}.zip"
-mv "$TMP_BASE" "$TMP_ZIP"
+# 用 PID 產生唯一路徑，完全避開 mktemp 在 macOS 的相容性問題
+TMP_ZIP="/tmp/heicat_install_$$.zip"
+TMP_DIR="/tmp/heicat_dir_$$"
+rm -f "$TMP_ZIP"           # 清除可能殘留的舊檔
+rm -rf "$TMP_DIR"
+mkdir -p "$TMP_DIR"
 curl -fsSL -L "$ZIPBALL_URL" -o "$TMP_ZIP"
 echo "✅ 下載完成"
 echo ""
 
 # ── 5. 解壓縮並安裝 ───────────────────────────────────────────────────────────
 echo "📂 安裝中..."
-TMP_DIR=$(mktemp -d /tmp/heicat_dir_XXXXXX)
 unzip -q "$TMP_ZIP" -d "$TMP_DIR"
 
 # GitHub zip 會多一層前綴資料夾（如 pony9632-pixel-heicat-egs-tool-abc1234/）
