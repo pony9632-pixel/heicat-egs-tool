@@ -25,6 +25,7 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH         = "contacts.json"
 DEFAULT_CONTACTS_PATH = "default_contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
+TRACKING_PATH = str(Path(__file__).parent / "tracking.json")
 
 
 def _append_build_log(msg: str):
@@ -36,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.6.2"
+VERSION     = "1.6.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -136,6 +137,30 @@ def load_contacts() -> list[dict]:
 def save_contacts(contacts: list[dict]):
     with open(CONTACTS_PATH, "w", encoding="utf-8") as f:
         json.dump(contacts, f, ensure_ascii=False, indent=2)
+
+def load_tracking() -> list[dict]:
+    if Path(TRACKING_PATH).exists():
+        with open(TRACKING_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def save_tracking(records: list[dict]):
+    with open(TRACKING_PATH, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+
+def append_tracking(obt_number: str, recipient_name: str, order_id: str):
+    """Add a new tracking record; auto-prune records older than 14 days."""
+    import datetime
+    records = load_tracking()
+    records.append({
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "obt_number": obt_number,
+        "recipient_name": recipient_name,
+        "order_id": order_id,
+    })
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
+    records = [r for r in records if r.get("created_at", "") >= cutoff]
+    save_tracking(records)
 
 def make_client(cfg: dict) -> SudaClient:
     return SudaClient(
@@ -469,6 +494,7 @@ class App(tk.Tk):
         self.views = {
             "single":   SingleOrderView(self.content_host, self),
             "batch":    BatchOrderView(self.content_host, self),
+            "tracking": TrackingView(self.content_host, self),
             "contacts": ContactsView(self.content_host, self),
             "settings": ConfigView(self.content_host, self),
         }
@@ -478,8 +504,9 @@ class App(tk.Tk):
         self.show_view("single")
         self.bind_all("<Command-1>", lambda e: self.show_view("single"))
         self.bind_all("<Command-2>", lambda e: self.show_view("batch"))
-        self.bind_all("<Command-3>", lambda e: self.show_view("contacts"))
-        self.bind_all("<Command-4>", lambda e: self.show_view("settings"))
+        self.bind_all("<Command-3>", lambda e: self.show_view("tracking"))
+        self.bind_all("<Command-4>", lambda e: self.show_view("contacts"))
+        self.bind_all("<Command-5>", lambda e: self.show_view("settings"))
 
     def show_view(self, name):
         v = self.views.get(name)
@@ -660,8 +687,9 @@ class Sidebar(tk.Frame):
         for key, label, kbd in [
             ("single",   "建立寄件單", "1"),
             ("batch",    "批次建單",   "2"),
-            ("contacts", "通訊錄",     "3"),
-            ("settings", "設定",       "4"),
+            ("tracking", "貨運單號查詢", "3"),
+            ("contacts", "通訊錄",     "4"),
+            ("settings", "設定",       "5"),
         ]:
             self._items[key] = NavItem(nav, label, kbd, lambda k=key: self.app.show_view(k))
             self._items[key].pack(fill="x", pady=1)
@@ -1518,6 +1546,7 @@ class SingleOrderView(tk.Frame):
                 if r["success"]:
                     msg = f"✓ 建單成功！OBT：{r['obt_number']}"
                     _append_build_log(f"✓ OBT:{r['obt_number']} 收件人:{values.get('recipient_name','')} 訂單:{values.get('order_id','')}")
+                    append_tracking(r['obt_number'], values.get('recipient_name',''), values.get('order_id',''))
                     if r["pdf_path"]:
                         self._normalize_pdf_rotation(r["pdf_path"])
                         self.after(0, lambda obt=r["obt_number"], nm=values["recipient_name"],
@@ -1720,6 +1749,7 @@ class BatchOrderView(tk.Frame):
                             save_pdf(pdf, pdf_path)
                             self.after(0, lambda o=oid, n=obt: self._log(f"✓ {o}  OBT:{n}"))
                             _append_build_log(f"✓ OBT:{obt} 訂單:{oid}")
+                            append_tracking(obt, order.get("recipient_name", ""), oid)
                         else:
                             self.after(0, lambda o=oid: self._log(f"✓ {o}  (無PDF)"))
                             _append_build_log(f"✓ 無PDF 訂單:{oid}")
@@ -1740,6 +1770,122 @@ class BatchOrderView(tk.Frame):
             self.after(0, lambda d=self.output_dir: subprocess.run(["open", d]))
 
         threading.Thread(target=run, daemon=True).start()
+
+
+# ─── tracking view ───────────────────────────────────────────────────────────
+
+class TrackingView(tk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, bg=PAPER)
+        self.app = app
+        self._build()
+
+    def _build(self):
+        wrap = tk.Frame(self, bg=PAPER)
+        wrap.pack(fill="both", expand=True, padx=28, pady=24)
+
+        head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
+        SectionHeader(head, "貨運查詢", "貨運單號查詢").pack(side="left")
+        ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
+        TwButton(ba, "重新整理", variant="ghost", command=self.refresh).pack(side="left", padx=4)
+        TwButton(ba, "清除兩週前紀錄", variant="ghost", command=self._prune).pack(side="left", padx=4)
+
+        # table header
+        hdr = tk.Frame(wrap, bg=HAIR2, pady=0)
+        hdr.pack(fill="x")
+        for txt, w in [("建單時間", 140), ("收件人", 120), ("貨運單號", 150), ("訂單編號", 130), ("", 110)]:
+            tk.Label(hdr, text=txt, font=F_KICKER, bg=HAIR2, fg=MUTED,
+                     width=w//8, anchor="w", padx=10, pady=8).pack(side="left")
+        Hairline(wrap).pack(fill="x")
+
+        # scrollable list
+        list_frame = tk.Frame(wrap, bg=PAPER)
+        list_frame.pack(fill="both", expand=True, pady=(4, 0))
+        canvas = tk.Canvas(list_frame, bg=PAPER, highlightthickness=0)
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview,
+                            style="Tw.Vertical.TScrollbar")
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=vsb.set)
+        self._list_body = tk.Frame(canvas, bg=PAPER)
+        self._list_win = canvas.create_window((0, 0), window=self._list_body, anchor="nw")
+        self._list_body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(self._list_win, width=e.width))
+        self._scroll_canvas = canvas
+        _bind_mousewheel_on_hover(self._list_body, canvas)
+        _bind_mousewheel_on_hover(canvas, canvas)
+
+        self._canvas = canvas
+        self.refresh()
+
+    def on_show(self):
+        self.refresh()
+
+    def refresh(self):
+        import datetime
+        for w in self._list_body.winfo_children():
+            w.destroy()
+        records = load_tracking()
+        # prune old records automatically
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
+        records = [r for r in records if r.get("created_at", "") >= cutoff]
+        records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+
+        if not records:
+            tk.Label(self._list_body, text="尚無建單紀錄\n（建立寄件單後會自動顯示在這裡）",
+                     bg=PAPER, fg=MUTED, font=F_SMALL, justify="center").pack(pady=60)
+            return
+
+        for r in records:
+            created = r.get("created_at", "")[:16].replace("T", " ")
+            obt = r.get("obt_number", "—")
+            name = r.get("recipient_name", "—")
+            oid = r.get("order_id", "—")
+
+            row = tk.Frame(self._list_body, bg=CARD)
+            row.pack(fill="x", pady=(0, 1))
+            inner = tk.Frame(row, bg=CARD); inner.pack(fill="x", padx=0, pady=8)
+
+            tk.Label(inner, text=created, font=F_TINY, bg=CARD, fg=MUTED,
+                     width=17, anchor="w").pack(side="left", padx=(12, 0))
+            tk.Label(inner, text=name[:12], font=F_NORM, bg=CARD, fg=INK,
+                     width=12, anchor="w").pack(side="left", padx=(8, 0))
+            tk.Label(inner, text=obt, font=F_MONO, bg=CARD, fg=INK,
+                     width=16, anchor="w").pack(side="left", padx=(8, 0))
+            tk.Label(inner, text=oid[:14], font=F_TINY, bg=CARD, fg=INK2,
+                     width=14, anchor="w").pack(side="left", padx=(8, 0))
+
+            btn_frame = tk.Frame(inner, bg=CARD)
+            btn_frame.pack(side="left", padx=(8, 12))
+            TwButton(btn_frame, "開啟查詢網頁", variant="ghost",
+                     command=lambda _obt=obt: self._open_tracking(_obt)).pack(side="left", padx=(0,4))
+            TwButton(btn_frame, "複製單號", variant="ghost",
+                     command=lambda _obt=obt: self._copy(_obt)).pack(side="left")
+
+        # empty space at bottom
+        tk.Frame(self._list_body, bg=PAPER, height=20).pack()
+
+    def _open_tracking(self, obt: str):
+        import subprocess
+        url = f"https://www.t-cat.com.tw/inquire/trace.aspx?BillID={obt}"
+        subprocess.run(["open", url])
+
+    def _copy(self, text: str):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+    def _prune(self):
+        import datetime
+        records = load_tracking()
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
+        kept = [r for r in records if r.get("created_at", "") >= cutoff]
+        removed = len(records) - len(kept)
+        save_tracking(kept)
+        self.refresh()
+        if removed:
+            messagebox.showinfo("清除完成", f"已刪除 {removed} 筆兩週前的紀錄。")
+        else:
+            messagebox.showinfo("無需清除", "沒有兩週前的紀錄。")
 
 
 # ─── contacts view ───────────────────────────────────────────────────────────
