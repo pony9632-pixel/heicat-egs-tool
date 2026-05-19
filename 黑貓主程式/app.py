@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.9.2"
+VERSION     = "1.9.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -518,6 +518,7 @@ class App(tk.Tk):
         self.content_host.pack(fill="both", expand=True)
 
         self._staging = []   # app-level staging list shared across views
+        self._web: TakkyubinWebClient | None = None  # shared web session
 
         self.views = {
             "single":      SingleOrderView(self.content_host, self),
@@ -2367,6 +2368,8 @@ class TrackingView(tk.Frame):
         ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
         TwButton(ba, "全部查詢狀態", variant="default",
                  command=self._query_all).pack(side="left", padx=4)
+        TwButton(ba, "同步 14 天紀錄", variant="ghost",
+                 command=self._sync_from_web).pack(side="left", padx=4)
         TwButton(ba, "重新整理", variant="ghost", command=self.refresh).pack(side="left", padx=4)
         TwButton(ba, "清除兩週前紀錄", variant="ghost", command=self._prune).pack(side="left", padx=4)
 
@@ -2701,6 +2704,68 @@ class TrackingView(tk.Frame):
     def _copy(self, text: str):
         self.clipboard_clear()
         self.clipboard_append(text)
+
+    def _sync_from_web(self):
+        """Pull the last 14 days of OBT records from the web portal and merge into tracking.json."""
+        if self.app._web is None:
+            messagebox.showinfo("尚未登入",
+                "請先到「費用查詢」頁完成契客專區登入，再回來同步。")
+            return
+
+        import datetime, threading
+        today = datetime.date.today()
+        start = (today - datetime.timedelta(days=14)).strftime("%Y%m%d")
+        end   = today.strftime("%Y%m%d")
+
+        cfg     = load_cfg()
+        account = cfg.get("web_username", "").strip()
+
+        def run():
+            try:
+                rows = self.app._web.query_payment(start, end, account)
+            except RuntimeError as ex:
+                if "session_expired" in str(ex):
+                    self.app._web = None
+                    self.after(0, lambda: messagebox.showwarning(
+                        "工作階段已過期", "請到「費用查詢」頁重新登入後再同步。"))
+                else:
+                    self.after(0, lambda msg=str(ex): messagebox.showerror("同步失敗", msg))
+                return
+            except Exception as ex:
+                self.after(0, lambda msg=str(ex): messagebox.showerror("同步失敗", msg))
+                return
+
+            # Merge: add records whose OBT is not already in tracking.json
+            existing = load_tracking()
+            existing_obts = {r.get("obt_number", "") for r in existing}
+
+            added = 0
+            for row in rows:
+                obt = row.get("obt", "").strip()
+                if not obt or obt in existing_obts:
+                    continue
+                # Build a minimal tracking record from the freight row
+                new_rec = {
+                    "obt_number":  obt,
+                    "recipient_name":    row.get("delivery_place", "").strip(),
+                    "recipient_address": "",
+                    "order_id":          row.get("order_id", "").strip(),
+                    "status":            "已送達",
+                    "created_at":        row.get("pickup_date", "").strip(),
+                    "note":              f"由費用查詢同步 {row.get('pickup_date','')}",
+                }
+                existing.append(new_rec)
+                existing_obts.add(obt)
+                added += 1
+
+            if added:
+                save_tracking(existing)
+            self.after(0, self.refresh)
+            self.after(0, lambda n=added: messagebox.showinfo(
+                "同步完成",
+                f"同步完成：新增 {n} 筆紀錄。" if n else "同步完成：沒有新增紀錄（已是最新）。"))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _prune(self):
         import datetime
@@ -3577,7 +3642,6 @@ class FreightView(tk.Frame):
         self.app = app
         self._results: list[dict] = []
         self._mode = "send"
-        self._web: TakkyubinWebClient | None = None
         self._build()
 
     def _build(self):
@@ -3699,7 +3763,7 @@ class FreightView(tk.Frame):
 
         # If no session, go straight to login. Otherwise query directly —
         # session_expired exception inside query_payment() will trigger re-login.
-        if self._web is None:
+        if self.app._web is None:
             self._do_login(username, password, account, start, end)
         else:
             self._do_query(account, start, end)
@@ -3708,11 +3772,11 @@ class FreightView(tk.Frame):
                   account: str, start: str, end: str):
         """Show CAPTCHA dialog then login in background."""
         self._status_lbl.config(text="正在載入驗證碼…", fg=MUTED)
-        self._web = TakkyubinWebClient()
+        self.app._web = TakkyubinWebClient()
 
         def fetch():
             try:
-                tokens, img_bytes = self._web.get_login_page()
+                tokens, img_bytes = self.app._web.get_login_page()
                 self.after(0, lambda: self._show_captcha(
                     tokens, img_bytes, username, password, account, start, end))
             except Exception as ex:
@@ -3764,7 +3828,7 @@ class FreightView(tk.Frame):
             dlg.update()
             def do_login():
                 try:
-                    ok = self._web.login(username, password, code, tokens)
+                    ok = self.app._web.login(username, password, code, tokens)
                     if ok:
                         self.after(0, dlg.destroy)
                         self.after(0, lambda: self._do_query(account, start, end))
@@ -3795,12 +3859,12 @@ class FreightView(tk.Frame):
 
         def run():
             try:
-                data = self._web.query_payment(start, end, account)
+                data = self.app._web.query_payment(start, end, account)
                 self.after(0, lambda: self._on_result(data, start, end))
             except RuntimeError as ex:
                 if "session_expired" in str(ex):
                     # Session expired — reset and re-login automatically
-                    self._web = None
+                    self.app._web = None
                     if username and password:
                         self.after(0, lambda: self._do_login(
                             username, password, account, start, end))
