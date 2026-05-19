@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.6.3"
+VERSION     = "1.6.4"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -1772,12 +1772,100 @@ class BatchOrderView(tk.Frame):
         threading.Thread(target=run, daemon=True).start()
 
 
+# ─── t-cat status query ──────────────────────────────────────────────────────
+
+def _fetch_obt_status(obt: str) -> str:
+    """
+    向黑貓官網查詢單一 OBT 的最新配送狀態。
+    回傳繁體中文狀態字串，查不到或出錯時回傳說明文字。
+    """
+    import urllib.request, urllib.parse, ssl, re
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    base = "https://www.t-cat.com.tw/inquire/trace.aspx"
+
+    # Step 1: GET — 取得 VIEWSTATE 等 ASP.NET 表單欄位
+    try:
+        req = urllib.request.Request(base,
+            headers={"User-Agent": ua, "Accept-Language": "zh-TW,zh;q=0.9"})
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
+            html = r.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        return f"網路錯誤：{str(e)[:40]}"
+
+    def _find(pattern):
+        m = re.search(pattern, html)
+        return m.group(1) if m else ""
+
+    vs  = _find(r'id="__VIEWSTATE" value="([^"]+)"')
+    vsg = _find(r'id="__VIEWSTATEGENERATOR" value="([^"]+)"')
+    evt = _find(r'id="__EVENTVALIDATION" value="([^"]+)"')
+
+    # Step 2: POST — 送出查詢
+    payload = urllib.parse.urlencode({
+        "__VIEWSTATE": vs,
+        "__VIEWSTATEGENERATOR": vsg,
+        "__EVENTVALIDATION": evt,
+        "ctl00$ContentPlaceHolder1$txtQuery1": obt.strip(),
+        "ctl00$ContentPlaceHolder1$btnSend": "確認送出",
+    }).encode("utf-8")
+
+    try:
+        req2 = urllib.request.Request(base, data=payload, headers={
+            "User-Agent": ua,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": base,
+            "Accept-Language": "zh-TW,zh;q=0.9",
+        })
+        with urllib.request.urlopen(req2, context=ctx, timeout=15) as r:
+            html2 = r.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        return f"查詢失敗：{str(e)[:40]}"
+
+    # 無效單號 → alert('XXXXX 非有效單號 !!')
+    inv = re.search(r"alert\('([^']+非有效單號[^']*)'\)", html2)
+    if inv:
+        return "無效單號"
+
+    # 擷取查詢結果區塊（<!-- 查詢結果1 --> … <!-- 查詢結果2 -->）
+    m = re.search(r"<!--\s*查詢結果1\s*-->(.*?)<!--\s*查詢結果2\s*-->", html2, re.DOTALL)
+    if not m or not m.group(1).strip():
+        return "查無紀錄"
+
+    result_html = m.group(1)
+    # 移除 script / style
+    result_html = re.sub(r"<script[^>]*>.*?</script>", "", result_html, flags=re.DOTALL)
+    result_html = re.sub(r"<style[^>]*>.*?</style>",  "", result_html, flags=re.DOTALL)
+    # 純文字
+    text = re.sub(r"<[^>]+>", " ", result_html)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return "查無紀錄"
+
+    # 尋找最新狀態關鍵字
+    STATUS_KW = ["已送達", "配送中", "取件中", "已取件", "投遞中",
+                 "派送中", "到站", "轉運中", "處理中", "待取件",
+                 "收件完成", "送達門市", "配達完了"]
+    for kw in STATUS_KW:
+        if kw in text:
+            return kw
+
+    # 回傳前 30 字作為 fallback
+    return text[:30].strip() or "無法解析"
+
+
 # ─── tracking view ───────────────────────────────────────────────────────────
 
 class TrackingView(tk.Frame):
     def __init__(self, master, app):
         super().__init__(master, bg=PAPER)
         self.app = app
+        self._records = []
+        self._status_labels: dict[str, tk.Label] = {}   # obt → label
         self._build()
 
     def _build(self):
@@ -1787,35 +1875,39 @@ class TrackingView(tk.Frame):
         head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
         SectionHeader(head, "貨運查詢", "貨運單號查詢").pack(side="left")
         ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
+        TwButton(ba, "全部查詢狀態", variant="default",
+                 command=self._query_all).pack(side="left", padx=4)
         TwButton(ba, "重新整理", variant="ghost", command=self.refresh).pack(side="left", padx=4)
         TwButton(ba, "清除兩週前紀錄", variant="ghost", command=self._prune).pack(side="left", padx=4)
 
         # table header
-        hdr = tk.Frame(wrap, bg=HAIR2, pady=0)
+        hdr = tk.Frame(wrap, bg=HAIR2)
         hdr.pack(fill="x")
-        for txt, w in [("建單時間", 140), ("收件人", 120), ("貨運單號", 150), ("訂單編號", 130), ("", 110)]:
+        cols = [("建單時間", 17), ("收件人", 12), ("貨運單號", 16),
+                ("訂單編號", 14), ("配送狀態", 14), ("", 0)]
+        for txt, w in cols:
             tk.Label(hdr, text=txt, font=F_KICKER, bg=HAIR2, fg=MUTED,
-                     width=w//8, anchor="w", padx=10, pady=8).pack(side="left")
+                     width=w if w else 1, anchor="w", padx=10, pady=8).pack(side="left")
         Hairline(wrap).pack(fill="x")
 
         # scrollable list
-        list_frame = tk.Frame(wrap, bg=PAPER)
-        list_frame.pack(fill="both", expand=True, pady=(4, 0))
-        canvas = tk.Canvas(list_frame, bg=PAPER, highlightthickness=0)
-        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview,
+        lf = tk.Frame(wrap, bg=PAPER)
+        lf.pack(fill="both", expand=True, pady=(4, 0))
+        canvas = tk.Canvas(lf, bg=PAPER, highlightthickness=0)
+        vsb = ttk.Scrollbar(lf, orient="vertical", command=canvas.yview,
                             style="Tw.Vertical.TScrollbar")
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
         canvas.configure(yscrollcommand=vsb.set)
         self._list_body = tk.Frame(canvas, bg=PAPER)
         self._list_win = canvas.create_window((0, 0), window=self._list_body, anchor="nw")
-        self._list_body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(self._list_win, width=e.width))
+        self._list_body.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+            lambda e: canvas.itemconfig(self._list_win, width=e.width))
         self._scroll_canvas = canvas
         _bind_mousewheel_on_hover(self._list_body, canvas)
         _bind_mousewheel_on_hover(canvas, canvas)
-
-        self._canvas = canvas
         self.refresh()
 
     def on_show(self):
@@ -1825,50 +1917,120 @@ class TrackingView(tk.Frame):
         import datetime
         for w in self._list_body.winfo_children():
             w.destroy()
+        self._status_labels.clear()
+
         records = load_tracking()
-        # prune old records automatically
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
         records = [r for r in records if r.get("created_at", "") >= cutoff]
         records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        self._records = records
 
         if not records:
-            tk.Label(self._list_body, text="尚無建單紀錄\n（建立寄件單後會自動顯示在這裡）",
+            tk.Label(self._list_body,
+                     text="尚無建單紀錄\n（建立寄件單後會自動顯示在這裡）",
                      bg=PAPER, fg=MUTED, font=F_SMALL, justify="center").pack(pady=60)
             return
 
         for r in records:
-            created = r.get("created_at", "")[:16].replace("T", " ")
-            obt = r.get("obt_number", "—")
-            name = r.get("recipient_name", "—")
-            oid = r.get("order_id", "—")
-
-            row = tk.Frame(self._list_body, bg=CARD)
-            row.pack(fill="x", pady=(0, 1))
-            inner = tk.Frame(row, bg=CARD); inner.pack(fill="x", padx=0, pady=8)
-
-            tk.Label(inner, text=created, font=F_TINY, bg=CARD, fg=MUTED,
-                     width=17, anchor="w").pack(side="left", padx=(12, 0))
-            tk.Label(inner, text=name[:12], font=F_NORM, bg=CARD, fg=INK,
-                     width=12, anchor="w").pack(side="left", padx=(8, 0))
-            tk.Label(inner, text=obt, font=F_MONO, bg=CARD, fg=INK,
-                     width=16, anchor="w").pack(side="left", padx=(8, 0))
-            tk.Label(inner, text=oid[:14], font=F_TINY, bg=CARD, fg=INK2,
-                     width=14, anchor="w").pack(side="left", padx=(8, 0))
-
-            btn_frame = tk.Frame(inner, bg=CARD)
-            btn_frame.pack(side="left", padx=(8, 12))
-            TwButton(btn_frame, "開啟查詢網頁", variant="ghost",
-                     command=lambda _obt=obt: self._open_tracking(_obt)).pack(side="left", padx=(0,4))
-            TwButton(btn_frame, "複製單號", variant="ghost",
-                     command=lambda _obt=obt: self._copy(_obt)).pack(side="left")
-
-        # empty space at bottom
+            self._make_row(r)
         tk.Frame(self._list_body, bg=PAPER, height=20).pack()
 
-    def _open_tracking(self, obt: str):
-        import subprocess
-        url = f"https://www.t-cat.com.tw/inquire/trace.aspx?BillID={obt}"
-        subprocess.run(["open", url])
+    def _make_row(self, r: dict):
+        obt     = r.get("obt_number", "—")
+        name    = r.get("recipient_name", "—")
+        oid     = r.get("order_id", "—")
+        created = r.get("created_at", "")[:16].replace("T", " ")
+        status  = r.get("status", "—")
+        queried = r.get("queried_at", "")
+
+        # colour by status
+        if "送達" in status or "完成" in status or "完了" in status:
+            s_fg = OK
+        elif status in ("查詢中…",):
+            s_fg = MUTED
+        elif status in ("查無紀錄", "無效單號", "無法解析") or "失敗" in status or "錯誤" in status:
+            s_fg = ERR
+        elif status != "—":
+            s_fg = WARN
+        else:
+            s_fg = MUTED
+
+        row = tk.Frame(self._list_body, bg=CARD)
+        row.pack(fill="x", pady=(0, 1))
+        inner = tk.Frame(row, bg=CARD)
+        inner.pack(fill="x", pady=8)
+
+        tk.Label(inner, text=created,    font=F_TINY, bg=CARD, fg=MUTED, width=17, anchor="w").pack(side="left", padx=(12, 0))
+        tk.Label(inner, text=name[:12],  font=F_NORM, bg=CARD, fg=INK,   width=12, anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(inner, text=obt,        font=F_MONO, bg=CARD, fg=INK,   width=16, anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(inner, text=oid[:14],   font=F_TINY, bg=CARD, fg=INK2,  width=14, anchor="w").pack(side="left", padx=(8, 0))
+
+        # status label (updateable)
+        slbl = tk.Label(inner, text=status, font=F_SMALL, bg=CARD, fg=s_fg, width=14, anchor="w")
+        slbl.pack(side="left", padx=(8, 0))
+        self._status_labels[obt] = slbl
+
+        # tooltip: last queried time
+        if queried:
+            slbl.bind("<Enter>", lambda e, t=queried: slbl.config(text=f"查詢於 {t[11:16]}"))
+            slbl.bind("<Leave>", lambda e, s=status: slbl.config(text=s))
+
+        btns = tk.Frame(inner, bg=CARD)
+        btns.pack(side="left", padx=(8, 12))
+        TwButton(btns, "查詢狀態", variant="ghost",
+                 command=lambda _obt=obt: self._query_one(_obt)).pack(side="left", padx=(0, 4))
+        TwButton(btns, "複製單號", variant="ghost",
+                 command=lambda _obt=obt: self._copy(_obt)).pack(side="left")
+
+    def _set_status(self, obt: str, status: str):
+        """Update status label and persist to tracking.json."""
+        import datetime
+        lbl = self._status_labels.get(obt)
+        if lbl and lbl.winfo_exists():
+            if "送達" in status or "完成" in status or "完了" in status:
+                fg = OK
+            elif status in ("查無紀錄", "無效單號", "無法解析") or "失敗" in status or "錯誤" in status:
+                fg = ERR
+            elif status not in ("—", "查詢中…"):
+                fg = WARN
+            else:
+                fg = MUTED
+            lbl.config(text=status, fg=fg)
+
+        # persist
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        records = load_tracking()
+        for rec in records:
+            if rec.get("obt_number") == obt:
+                rec["status"] = status
+                rec["queried_at"] = now
+                break
+        save_tracking(records)
+
+    def _query_one(self, obt: str):
+        lbl = self._status_labels.get(obt)
+        if lbl and lbl.winfo_exists():
+            lbl.config(text="查詢中…", fg=MUTED)
+
+        def run():
+            result = _fetch_obt_status(obt)
+            self.after(0, lambda: self._set_status(obt, result))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _query_all(self):
+        obts = [r.get("obt_number") for r in self._records if r.get("obt_number")]
+        for obt in obts:
+            lbl = self._status_labels.get(obt)
+            if lbl and lbl.winfo_exists():
+                lbl.config(text="查詢中…", fg=MUTED)
+
+        def run():
+            for obt in obts:
+                result = _fetch_obt_status(obt)
+                self.after(0, lambda _o=obt, _r=result: self._set_status(_o, _r))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _copy(self, text: str):
         self.clipboard_clear()
