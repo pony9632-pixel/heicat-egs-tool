@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.8.9"
+VERSION     = "1.9.0"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3525,7 +3525,7 @@ class FreightView(tk.Frame):
 
         # ── header ────────────────────────────────────────────────────────────
         head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
-        SectionHeader(head, "費用查詢", "我的寄件費用明細").pack(side="left")
+        SectionHeader(head, "費用查詢", "我的黑貓費用明細").pack(side="left")
 
         # ── query card ────────────────────────────────────────────────────────
         qc = Card(wrap, padding=20); qc.pack(fill="x", pady=(0, 10))
