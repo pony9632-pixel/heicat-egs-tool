@@ -755,6 +755,8 @@ class SingleOrderView(tk.Frame):
         super().__init__(master, bg=PAPER)
         self.app = app
         self.fields = {}
+        self._field_widgets = {}
+        self._ac_popup = None
         self._staging = []   # list of {order_id, name, obt, pdf_path, var}
         self._print_btn = None
         self._staging_card = None
@@ -806,6 +808,7 @@ class SingleOrderView(tk.Frame):
         grid1.columnconfigure(0, weight=1); grid1.columnconfigure(1, weight=2)
         self._field(grid1, 0, 0, "姓名", "recipient_name", required=True)
         self._field(grid1, 0, 1, "地址", "recipient_address", required=True)
+        self.after(100, lambda: self._attach_autocomplete("recipient_name"))
         grid2 = tk.Frame(rc.body, bg=CARD); grid2.pack(fill="x", pady=(12, 0))
         grid2.columnconfigure(0, weight=1); grid2.columnconfigure(1, weight=1)
         self._field(grid2, 0, 0, "電話", "recipient_phone", required=True, hint="市話")
@@ -866,7 +869,7 @@ class SingleOrderView(tk.Frame):
         def _quick_ship(offset):
             from datetime import date, timedelta
             d = _skip_sunday(date.today() + timedelta(days=offset))
-            self._vars["shipment_date"].set(d.strftime("%Y%m%d"))
+            self.fields["shipment_date"].set(d.strftime("%Y%m%d"))
         sbtn_row = tk.Frame(gp3, bg=CARD)
         sbtn_row.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(2, 0))
         for _lbl, _off in [("今天", 0), ("明天", 1), ("後天", 2)]:
@@ -879,7 +882,7 @@ class SingleOrderView(tk.Frame):
         def _quick_deliv(offset):
             from datetime import date, timedelta
             d = _skip_sunday(date.today() + timedelta(days=offset))
-            self._vars["delivery_date"].set(d.strftime("%Y%m%d"))
+            self.fields["delivery_date"].set(d.strftime("%Y%m%d"))
         dbtn_row = tk.Frame(gp3, bg=CARD)
         dbtn_row.grid(row=1, column=1, sticky="w", padx=(0, 8), pady=(2, 0))
         for _lbl, _off in [("今天", 0), ("明天", 1), ("後天", 2)]:
@@ -953,6 +956,7 @@ class SingleOrderView(tk.Frame):
         e = ttk.Entry(cell, textvariable=v, style="Tw.TEntry",
                       font=F_MONO if mono else F_NORM)
         e.pack(fill="x")
+        self._field_widgets[key] = e
 
     def _combo_field(self, parent, r, c, label, key, options, default=""):
         cell = tk.Frame(parent, bg=_frame_bg(parent))
@@ -1328,6 +1332,97 @@ class SingleOrderView(tk.Frame):
             if candidate and len(candidate) <= 20:
                 return candidate
         return ""
+
+    def _attach_autocomplete(self, key):
+        """姓名欄即時搜尋通訊錄，下拉選取後自動填入電話和地址。"""
+        var = self.fields.get(key)
+        entry = self._field_widgets.get(key)
+        if not var or not entry:
+            return
+
+        def _close():
+            if self._ac_popup and self._ac_popup.winfo_exists():
+                self._ac_popup.destroy()
+            self._ac_popup = None
+
+        def _fill(contact):
+            var.set(contact.get("name", ""))
+            self.fields["recipient_phone"].set(contact.get("phone", "") or "")
+            self.fields["recipient_mobile"].set(contact.get("mobile", "") or "")
+            self.fields["recipient_address"].set(contact.get("address", "") or "")
+            _close()
+
+        def _open(matches):
+            _close()
+            popup = tk.Toplevel(self)
+            popup.overrideredirect(True)
+            popup.configure(bg=HAIR)
+            self._ac_popup = popup
+
+            entry.update_idletasks()
+            x = entry.winfo_rootx()
+            y = entry.winfo_rooty() + entry.winfo_height() + 2
+            w = max(entry.winfo_width(), 320)
+
+            outer = tk.Frame(popup, bg=CARD,
+                             highlightbackground=HAIR, highlightthickness=1)
+            outer.pack(fill="both", expand=True)
+
+            for c in matches:
+                name = c.get("name", "")
+                addr = (c.get("address") or "")
+                phone = (c.get("phone") or c.get("mobile") or "")
+
+                row = tk.Frame(outer, bg=CARD, cursor="hand2")
+                row.pack(fill="x")
+                inner = tk.Frame(row, bg=CARD)
+                inner.pack(fill="x", padx=14, pady=(8, 4))
+                nl = tk.Label(inner, text=name, font=F_BOLD, bg=CARD, fg=INK, anchor="w")
+                nl.pack(fill="x")
+                sub_parts = [p for p in [phone, addr[:40] if addr else ""] if p]
+                sub = tk.Label(inner, text="  ".join(sub_parts),
+                               font=F_TINY, bg=CARD, fg=MUTED, anchor="w")
+                sub.pack(fill="x", pady=(0, 4))
+                Hairline(outer).pack(fill="x")
+
+                all_w = [row, inner, nl, sub]
+
+                def _enter(_e, _ws=all_w):
+                    for _w in _ws: _w.configure(bg=ACCENT2)
+                def _leave(_e, _ws=all_w, _row=row):
+                    try:
+                        rx = _row.winfo_rootx(); ry = _row.winfo_rooty()
+                        if rx <= _e.x_root < rx + _row.winfo_width() and \
+                           ry <= _e.y_root < ry + _row.winfo_height():
+                            return
+                    except Exception:
+                        pass
+                    for _w in _ws: _w.configure(bg=CARD)
+
+                for _w in all_w:
+                    _w.bind("<Button-1>", lambda _e, _c=c: _fill(_c))
+                    _w.bind("<Enter>", _enter)
+                    _w.bind("<Leave>", _leave)
+
+            row_h = 52
+            popup.geometry(f"{w}x{min(len(matches) * row_h, 300)}+{x}+{y}")
+            popup.lift()
+
+        def _on_change(*_):
+            text = var.get().strip()
+            if len(text) < 1:
+                _close()
+                return
+            matches = [c for c in load_contacts()
+                       if text.lower() in (c.get("name") or "").lower()][:8]
+            if matches:
+                _open(matches)
+            else:
+                _close()
+
+        var.trace_add("write", _on_change)
+        entry.bind("<FocusOut>", lambda _: self.after(200, _close))
+        entry.bind("<Escape>", lambda _: _close())
 
     def _save_to_contacts(self):
         name = self.fields["recipient_name"].get().strip()
