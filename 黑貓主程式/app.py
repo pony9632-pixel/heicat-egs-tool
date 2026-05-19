@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.9.3"
+VERSION     = "1.9.5"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3981,9 +3981,49 @@ class FreightView(tk.Frame):
             tk.Label(f, text="⚠ 收件人資料來自本機建單紀錄，此單未在本機建立故無法顯示。",
                      font=F_TINY, bg=PAPER, fg=MUTED, wraplength=340).pack(anchor="w", pady=(4, 0))
 
-        tk.Button(f, text="關閉", command=dlg.destroy,
+        status_lbl = tk.Label(f, text="", font=F_SMALL, bg=PAPER, fg=MUTED)
+        status_lbl.pack(anchor="w", pady=(6, 0))
+
+        def _do_cancel():
+            if not messagebox.askyesno("確認取消宅配",
+                    f"確定要取消以下宅配單嗎？\n\n託運單號：{obt}\n收件人：{recipient_name or '（未記錄）'}\n\n此操作無法復原。"):
+                return
+            status_lbl.config(text="取消中…", fg=MUTED)
+            dlg.update()
+
+            cfg = load_cfg()
+            client = SudaClient(cfg.get("customer_id",""), cfg.get("customer_token",""))
+
+            def run():
+                try:
+                    resp = client.cancel_obt([obt])
+                    ok = resp.get("IsSuccess") or str(resp.get("ReturnCode","")) == "0000"
+                    msg = resp.get("ReturnMessage", "")
+                    if ok:
+                        # Update tracking.json status if exists
+                        records = load_tracking()
+                        for rec in records:
+                            if rec.get("obt_number","") == obt:
+                                rec["status"] = "已取消"
+                        save_tracking(records)
+                        self.after(0, lambda: status_lbl.config(text="✓ 已取消", fg=OK))
+                        self.after(0, lambda: cancel_btn.config(state="disabled"))
+                    else:
+                        self.after(0, lambda m=msg: status_lbl.config(
+                            text=f"✗ 取消失敗：{m[:60]}", fg=ERR))
+                except Exception as ex:
+                    self.after(0, lambda m=str(ex): status_lbl.config(
+                        text=f"✗ 錯誤：{m[:60]}", fg=ERR))
+            import threading; threading.Thread(target=run, daemon=True).start()
+
+        btn_row = tk.Frame(f, bg=PAPER); btn_row.pack(fill="x", pady=(10, 0))
+        cancel_btn = tk.Button(btn_row, text="取消宅配", command=_do_cancel,
+                               font=F_NORM, bg=ERR, fg="white",
+                               relief="flat", padx=16, pady=6, cursor="hand2")
+        cancel_btn.pack(side="left")
+        tk.Button(btn_row, text="關閉", command=dlg.destroy,
                   font=F_NORM, bg=HAIR3, fg=INK,
-                  relief="flat", padx=20, pady=6, cursor="hand2").pack(pady=(14, 0))
+                  relief="flat", padx=20, pady=6, cursor="hand2").pack(side="right")
 
 
 # ─── dialogs ─────────────────────────────────────────────────────────────────
