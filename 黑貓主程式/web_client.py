@@ -327,27 +327,21 @@ class TakkyubinWebClient:
 
         all_rows = _parse_obt_table(cur_html)
 
-        # Pagination: this page uses ASP.NET GridView Page$N style
-        # or navigation buttons ◄ ► — detect either pattern
-        for page_num in range(2, 200):  # safety cap
-            # Try Page$N style first
+        # Pagination: Page$N style (__doPostBack). Cap at 30 pages (= 600 records).
+        # Use a seen-OBT set to detect stuck loops (server returns same page repeatedly).
+        seen_obts = {r.get("obt","") for r in all_rows}
+
+        for page_num in range(2, 31):
             next_arg = f"Page${page_num}"
             links = re.findall(r"__doPostBack\('([^']+)','(Page\$\d+)'\)", cur_html)
             target = next((t for t, a in links if a == next_arg), None)
-
-            # Also try navigation-button style (__doPostBack with 'Next' or numeric arg)
             if not target:
-                # Look for any postback with an arg indicating "next"
-                nav_links = re.findall(r"__doPostBack\('([^']+)','([^']+)'\)", cur_html)
-                target = next((t for t, a in nav_links
-                               if a.lower() in ("next", "page$next", str(page_num))), None)
-            if not target:
-                break  # no more pages
+                break  # no more pages link found — we're done
 
             page_tokens = self._tokens(cur_html)
             page_post = urllib.parse.urlencode({
                 **page_tokens,
-                "__EVENTTARGET": target, "__EVENTARGUMENT": next_arg if "Page$" in next_arg else str(page_num),
+                "__EVENTTARGET": target, "__EVENTARGUMENT": next_arg,
                 "__LASTFOCUS": "", **keep,
             }, encoding="utf-8").encode("utf-8")
             try:
@@ -355,6 +349,11 @@ class TakkyubinWebClient:
                 new_rows = _parse_obt_table(cur_html)
                 if not new_rows:
                     break
+                # Stuck-loop guard: if every OBT on this page was already seen, stop
+                new_obts = {r.get("obt","") for r in new_rows if r.get("obt")}
+                if new_obts and new_obts.issubset(seen_obts):
+                    break
+                seen_obts |= new_obts
                 all_rows.extend(new_rows)
             except Exception:
                 break
@@ -453,7 +452,18 @@ class _TP(HTMLParser):
     def handle_data(self, data):
         if self._c is not None: self._c += data
     def handle_entityref(self, name):
-        if self._c is not None and name=="nbsp": self._c += " "
+        if self._c is not None:
+            if name == "nbsp": self._c += " "
+            else:
+                import html as _html
+                self._c += _html.unescape(f"&{name};")
+    def handle_charref(self, name):
+        # Handles &#12345; and &#x30A1; numeric character references
+        if self._c is not None:
+            try:
+                self._c += chr(int(name[1:], 16) if name.lower().startswith('x') else int(name))
+            except (ValueError, OverflowError):
+                pass
 
 def _parse_table(html: str) -> list[dict]:
     p = _TP(); p.feed(html)
