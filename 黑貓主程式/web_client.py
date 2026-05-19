@@ -158,21 +158,30 @@ class TakkyubinWebClient:
             return {}
 
         # Step 2 — paginate to find the page that contains the OBT link
+        # Pager format: __doPostBack('grdList$ctl14$ctl01','') → page 2 (empty event arg)
+        import html as _html_mod
+
+        def _pager_targets(html_str: str) -> list[tuple[str, int]]:
+            decoded = _html_mod.unescape(html_str)
+            return [(t, int(n)) for t, n in
+                    re.findall(r"__doPostBack\('([^']+)',''\)\">(\d+)</a>", decoded)]
+
         detail_url = None
-        for page_num in range(1, 50):
+        visited_pages = {1}
+        for _ in range(50):
             detail_url = self._find_obt_link(cur_html, obt)
             if detail_url:
                 break
-            # Next page
-            next_arg = f"Page${page_num + 1}"
-            pg_links = re.findall(r"__doPostBack\('([^']+)','(Page\$\d+)'\)", cur_html)
-            target = next((t for t, a in pg_links if a == next_arg), None)
-            if not target:
+            links = _pager_targets(cur_html)
+            next_link = next(((t, n) for t, n in links if n not in visited_pages), None)
+            if not next_link:
                 return {}
+            target, pg = next_link
+            visited_pages.add(pg)
             page_tokens = self._tokens(cur_html)
             page_post = urllib.parse.urlencode({
                 **page_tokens,
-                "__EVENTTARGET": target, "__EVENTARGUMENT": next_arg,
+                "__EVENTTARGET": target, "__EVENTARGUMENT": "",
                 "__LASTFOCUS": "", **keep,
             }, encoding="utf-8").encode("utf-8")
             try:
@@ -244,134 +253,141 @@ class TakkyubinWebClient:
                 html, re.S | re.I)
             return _clean(m.group(1)) if m else ""
 
-        rec_name = _span("LBLOUTPUT_RECNAME") or _span("LBLOUTPUT_MASKRECNAME")
+        rec_name    = _span("LBLOUTPUT_RECNAME") or _span("LBLOUTPUT_MASKRECNAME")
+        sender_name = _span("LBLOUTPUT_SENDERNAME") or _span("LBLOUTPUT_MASKSENDERNAME") \
+                      or _after_label("寄件人姓名")
 
         return {
             "recipient_name":    rec_name,
-            "recipient_address": _after_label("收件人地址"),
-            "recipient_zip":     _after_label("郵遞區號"),
-            "sender_name":       _after_label("寄件人姓名"),
-            "sender_address":    _after_label("寄件人地址"),
+            "sender_name":       sender_name,
             "product_name":      _after_label("物件名稱"),
             "pickup_date":       _after_label("集貨日期"),
-            "order_date":        _after_label("訂單日期"),
             "notes":             _after_label("備註"),
         }
 
-    def _obt_export_page(self) -> tuple[str, str]:
+    _OPRINT_API = "https://www.takkyubin.com.tw/OnlinePrint/OPEOrderDetail/OPEOrderDetail_Query"
+    _OPRINT_REFERER = "https://www.takkyubin.com.tw/OnlinePrint/OPEOrderDetail/OPEOrderDetail"
+
+    def _obt_export_init(self) -> str:
         """
-        Navigate to 匯出託運單資料 (FuncNo=135) and return (page_html, form_url).
-        Raises RuntimeError if session expired or page not found.
+        Follow FuncNo=135 JS redirect to establish OnlinePrint session.
+        Returns the customer ID (uID= from redirect URL).
+        Raises RuntimeError("session_expired") if not logged in.
         """
-        # FuncNo=135 confirmed from nav HTML inspection
-        html = self._req(f"{BASE}/RedirectFunc.aspx?FuncNo=135")
-        if "Login.aspx" in html or "txtUserID" in html:
+        redirect_html = self._req(f"{BASE}/RedirectFunc.aspx?FuncNo=135")
+        if "Login.aspx" in redirect_html or "txtUserID" in redirect_html:
             raise RuntimeError("session_expired")
-        if "託運單" not in html and "btnQuery" not in html:
-            raise RuntimeError("FuncNo=135 頁面無法載入匯出託運單資料。")
-        # Resolve form action URL
-        action_m = re.search(r'<form[^>]+action="([^"]*)"', html, re.I)
-        if action_m:
-            action = action_m.group(1).strip()
-            form_url = action if action.startswith("http") else f"{BASE}/{action.lstrip('/')}"
-        else:
-            form_url = f"{BASE}/RedirectFunc.aspx?FuncNo=135"
-        return html, form_url
+
+        js_m = re.search(r"window\.location\.href\s*=\s*['\"]([^'\"]+)['\"]",
+                          redirect_html, re.I)
+        if not js_m:
+            raise RuntimeError("FuncNo=135 無法取得跳轉 URL。")
+
+        oprint_redirect = js_m.group(1).strip()
+
+        # Extract customer ID from uID= parameter
+        uid_m = re.search(r'uID=(\w+)', oprint_redirect)
+        cust_id = uid_m.group(1) if uid_m else ""
+
+        # Follow the redirect to establish cookies on OnlinePrint domain
+        self._req(oprint_redirect)
+
+        return cust_id
 
     def query_obt_list(self, start_date: str, end_date: str) -> list[dict]:
         """
-        Query 匯出託運單資料 (FuncNo=135) for OBTs in the given date range.
-        Handles multi-page results (20 records/page).
-        start_date / end_date: YYYYMMDD → converted to YYYY/MM/DD for the form.
+        Query 匯出託運單資料 via OPEOrderDetail_Query JSON API.
+        start_date / end_date: YYYYMMDD → converted to YYYY/MM/DD.
         Returns list of dicts: obt, order_id, shipment_date, cod_amount,
-          product_name, recipient_name, phone_last3, mobile_last3,
-          recipient_address, thermosphere, spec, notes.
+          recipient_name, phone_last3, mobile_last3.
         Returns [] on any error.
         """
+        import json as _json
+
         def _fmt(d: str) -> str:
             return f"{d[:4]}/{d[4:6]}/{d[6:]}" if len(d) == 8 else d
 
         try:
-            page_html, form_url = self._obt_export_page()
+            cust_id = self._obt_export_init()
         except RuntimeError:
-            raise   # re-raise session_expired / page-load failures to caller
+            raise
         except Exception:
             return []
 
-        tokens = self._tokens(page_html)
-        if not tokens:
-            return []
+        all_rows: list[dict] = []
+        page      = 1
+        page_size = 100  # max allowed; reduces round-trips
 
-        # Dump page for debugging (written to Desktop)
-        try:
-            import os, pathlib
-            all_debug_inputs = re.findall(r'<input[^>]+name="([^"]+)"', page_html, re.I)
-            debug_info = f"<!-- ALL INPUT NAMES: {all_debug_inputs} -->\n"
-            pathlib.Path(os.path.expanduser("~/Desktop/heicat_obt_export_debug.html")
-                         ).write_text(debug_info + page_html, encoding="utf-8")
-        except Exception:
-            pass
-
-        # Locate search button value (name=btnQuery is confirmed from page)
-        btn_name = "btnQuery"
-        btn_m = re.search(r'<input[^>]*name="btnQuery"[^>]*value="([^"]*)"', page_html, re.I) \
-             or re.search(r'<input[^>]*value="([^"]*)"[^>]*name="btnQuery"', page_html, re.I)
-        btn_value = btn_m.group(1) if btn_m else "查詢"
-
-        # Locate date field names — dump all input names for debugging
-        all_inputs = re.findall(r'<input[^>]+name="([^"]+)"', page_html, re.I)
-        # Also check <select> and <textarea> for date-like names
-        all_inputs += re.findall(r'<select[^>]+name="([^"]+)"', page_html, re.I)
-        date_inputs = [n for n in all_inputs
-                       if re.search(r'[Dd]ate|[Ss]tart|[Ee]nd|txt[SD]|txt[ED]|[Ss]hip|[Yy]ear|[Mm]on', n)]
-        start_field = date_inputs[0] if len(date_inputs) >= 1 else "txtShipDateS"
-        end_field   = date_inputs[1] if len(date_inputs) >= 2 else "txtShipDateE"
-
-        keep = {start_field: _fmt(start_date), end_field: _fmt(end_date)}
-
-        # Page 1: POST the search
-        post1 = urllib.parse.urlencode({
-            **tokens,
-            "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
-            **keep, btn_name: btn_value,
-        }, encoding="utf-8").encode("utf-8")
-        try:
-            cur_html = self._req(form_url, post1)
-        except Exception:
-            return []
-
-        all_rows = _parse_obt_table(cur_html)
-
-        # Pagination: Page$N style (__doPostBack). Cap at 30 pages (= 600 records).
-        # Use a seen-OBT set to detect stuck loops (server returns same page repeatedly).
-        seen_obts = {r.get("obt","") for r in all_rows}
-
-        for page_num in range(2, 31):
-            next_arg = f"Page${page_num}"
-            links = re.findall(r"__doPostBack\('([^']+)','(Page\$\d+)'\)", cur_html)
-            target = next((t for t, a in links if a == next_arg), None)
-            if not target:
-                break  # no more pages link found — we're done
-
-            page_tokens = self._tokens(cur_html)
-            page_post = urllib.parse.urlencode({
-                **page_tokens,
-                "__EVENTTARGET": target, "__EVENTARGUMENT": next_arg,
-                "__LASTFOCUS": "", **keep,
+        while True:
+            payload = urllib.parse.urlencode({
+                "sort": "", "page": page, "pageSize": page_size,
+                "group": "", "filter": "",
+                "SearchType": "0",
+                "Cust": cust_id, "DefaultCust": cust_id,
+                "SntStartDate": _fmt(start_date),
+                "SntEndDate":   _fmt(end_date),
+                "PrintNo": "ALL",
+                "BillID": "", "RecName": "",
+                "TxtCust": cust_id,
+                "IsWithHis": "false",
             }, encoding="utf-8").encode("utf-8")
+
             try:
-                cur_html = self._req(form_url, page_post)
-                new_rows = _parse_obt_table(cur_html)
-                if not new_rows:
-                    break
-                # Stuck-loop guard: if every OBT on this page was already seen, stop
-                new_obts = {r.get("obt","") for r in new_rows if r.get("obt")}
-                if new_obts and new_obts.issubset(seen_obts):
-                    break
-                seen_obts |= new_obts
-                all_rows.extend(new_rows)
+                # Must set Referer and Accept for the API to respond with JSON
+                req = urllib.request.Request(
+                    self._OPRINT_API, data=payload,
+                    headers={
+                        "User-Agent":    _UA,
+                        "Content-Type":  "application/x-www-form-urlencoded; charset=UTF-8",
+                        "Accept":        "*/*",
+                        "Referer":       self._OPRINT_REFERER,
+                        "X-Requested-With": "XMLHttpRequest",
+                    })
+                with self._opener.open(req, timeout=15) as r:
+                    resp_bytes = r.read()
+                resp = _json.loads(resp_bytes.decode("utf-8", errors="replace"))
             except Exception:
                 break
+
+            # Kendo UI DataSource response: {"Data": [...], "Total": N}
+            if isinstance(resp, dict):
+                data  = resp.get("Data", [])
+                total = resp.get("Total", 0)
+            elif isinstance(resp, list):
+                data  = resp
+                total = len(resp)
+            else:
+                break
+
+            if not data:
+                break
+
+            # Save raw response for debugging (first page only)
+            if page == 1:
+                try:
+                    import os, pathlib, json as _j2
+                    pathlib.Path(os.path.expanduser("~/Desktop/heicat_obt_api_debug.json")
+                                 ).write_text(_j2.dumps(resp, ensure_ascii=False, indent=2),
+                                              encoding="utf-8")
+                except Exception:
+                    pass
+
+            for item in data:
+                all_rows.append({
+                    "obt":            str(item.get("bill_id")       or ""),
+                    "order_id":       str(item.get("order_id")      or ""),
+                    "shipment_date":  str(item.get("snt_date")      or ""),
+                    "cod_amount":     str(item.get("goods_price")   or ""),
+                    "recipient_name": str(item.get("rec_name")      or ""),
+                    "product_name":   str(item.get("goods_name")    or ""),
+                    "memo":           str(item.get("memo")          or ""),
+                    "phone_last3":    str(item.get("rec_tel_Show")  or ""),
+                    "mobile_last3":   str(item.get("rec_mobile_Show") or ""),
+                })
+
+            if len(all_rows) >= total or len(data) < page_size:
+                break
+            page += 1
 
         return all_rows
 
@@ -421,18 +437,37 @@ class TakkyubinWebClient:
         cur_html = self._req(post_url, page1_post)
         all_rows = _parse_table(cur_html)
 
-        # --- Additional pages via ASP.NET __doPostBack pagination ---
-        for page_num in range(2, 50):  # safety cap at 50 pages
-            next_arg = f"Page${page_num}"
-            links = re.findall(r"__doPostBack\('([^']+)','(Page\$\d+)'\)", cur_html)
-            target = next((t for t, a in links if a == next_arg), None)
-            if not target:
-                break  # no more pages
+        # --- Additional pages ---
+        # This site uses ASP.NET GridView pager with format:
+        #   __doPostBack('grdList$ctl14$ctl01','')  → page 2
+        #   __doPostBack('grdList$ctl14$ctl02','')  → page 3
+        # Event argument is always empty; the target encodes the page number.
+        # We find all pager links by matching anchor tags next to page numbers.
+        import html as _html_mod
+
+        def _pager_links(html_str: str) -> list[tuple[str, int]]:
+            """Return [(event_target, page_num), ...] for all clickable page links."""
+            decoded = _html_mod.unescape(html_str)
+            # Pattern: __doPostBack('target','')">PAGE_NUM</a>
+            return [(t, int(n)) for t, n in
+                    re.findall(r"__doPostBack\('([^']+)',''\)\">(\d+)</a>", decoded)]
+
+        seen_pages = {1}
+        for _ in range(50):  # safety cap
+            page_links = _pager_links(cur_html)
+            if not page_links:
+                break
+            # Find the lowest page number we haven't visited yet
+            next_link = next(((t, n) for t, n in page_links if n not in seen_pages), None)
+            if not next_link:
+                break
+            target, page_num = next_link
+            seen_pages.add(page_num)
             try:
                 page_tokens = self._tokens(cur_html)
                 page_post = urllib.parse.urlencode({
                     **page_tokens,
-                    "__EVENTTARGET": target, "__EVENTARGUMENT": next_arg,
+                    "__EVENTTARGET": target, "__EVENTARGUMENT": "",
                     "__LASTFOCUS": "", **keep,
                 }, encoding="utf-8").encode("utf-8")
                 cur_html = self._req(post_url, page_post)
@@ -441,7 +476,7 @@ class TakkyubinWebClient:
                     break
                 all_rows.extend(new_rows)
             except Exception:
-                break  # network error on this page — return what we have
+                break
 
         return all_rows
 

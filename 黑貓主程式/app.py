@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "2.0.5"
+VERSION     = "2.1.0"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -481,18 +481,10 @@ class App(tk.Tk):
         # mac copy/paste
         self._install_mac_clipboard()
 
-        # ── Window chrome — macOS traffic lights + centred title ──────────────
+        # ── Window chrome — centred title bar ────────────────────────────────
         chrome = tk.Frame(self, bg=RAIL, height=36)
         chrome.pack(fill="x")
         chrome.pack_propagate(False)
-        # traffic lights (decorative — real ones are in native title bar area)
-        lights = tk.Frame(chrome, bg=RAIL)
-        lights.place(x=12, rely=0.5, anchor="w")
-        for col in ("#FF5F57", "#FEBC2E", "#28C840"):
-            c_dot = tk.Canvas(lights, width=12, height=12, bg=RAIL,
-                              highlightthickness=0)
-            c_dot.create_oval(1, 1, 11, 11, fill=col, outline="")
-            c_dot.pack(side="left", padx=3)
         tk.Label(chrome, text="STUDIO A · 黑貓宅急便工具",
                  bg=RAIL, fg=INK2, font=(FONT_FAMILY, _sz(11), "bold")).place(
                  relx=0.5, rely=0.5, anchor="center")
@@ -1084,6 +1076,19 @@ class Sidebar(tk.Frame):
                                        lambda k=key: self.app.show_view(k))
             self._items[key].pack(fill="x", pady=1)
 
+        # 契客專區登入按鈕（設定下方）
+        self._web_login_btn = tk.Label(
+            nav, text="🔐 驗證碼確認（契客專區）",
+            font=(FONT_FAMILY, _sz(11)), bg=RAIL2, fg=INK2,
+            cursor="hand2", padx=12, pady=7, anchor="w",
+            relief="flat")
+        self._web_login_btn.pack(fill="x", pady=(6, 1))
+        self._web_login_btn.bind("<Button-1>", lambda e: self._do_web_login())
+        self._web_login_btn.bind("<Enter>",
+            lambda e: self._web_login_btn.config(bg=RAIL, fg=INK))
+        self._web_login_btn.bind("<Leave>",
+            lambda e: self._web_login_btn.config(bg=RAIL2, fg=INK2))
+
         # spacer
         tk.Frame(self, bg=RAIL).pack(fill="both", expand=True)
 
@@ -1143,6 +1148,88 @@ class Sidebar(tk.Frame):
 
     def refresh_sender(self):
         self._render_sender()
+
+    def _do_web_login(self):
+        cfg = load_cfg()
+        username = cfg.get("web_username","").strip()
+        password = cfg.get("web_password","").strip()
+        if not username or not password:
+            messagebox.showwarning("尚未設定",
+                "請先到「設定」頁填入客戶代號與密碼後儲存，再登入。")
+            return
+        self._web_login_btn.config(text="⏳ 載入驗證碼中…", fg=MUTED)
+        self.app._web = TakkyubinWebClient()
+
+        def fetch():
+            try:
+                tokens, img_bytes = self.app._web.get_login_page()
+                self.after(0, lambda: self._show_web_captcha(tokens, img_bytes, username, password))
+            except Exception as ex:
+                self.app._web = None
+                self.after(0, lambda: self._web_login_btn.config(
+                    text="🔐 驗證碼確認（契客專區）", fg=INK2))
+        import threading; threading.Thread(target=fetch, daemon=True).start()
+
+    def _show_web_captcha(self, tokens, img_bytes, username, password):
+        self._web_login_btn.config(text="🔐 驗證碼確認（契客專區）", fg=INK2)
+        dlg = tk.Toplevel(self)
+        dlg.title("驗證碼登入")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        f = tk.Frame(dlg, bg=PAPER, padx=24, pady=20); f.pack()
+        dlg.update_idletasks()
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        w, h   = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{(sw-w)//2}+{(sh-h)//2}")
+
+        tk.Label(f, text="請輸入驗證碼後登入",
+                 font=(FONT_FAMILY, _sz(13), "bold"), bg=PAPER, fg=INK).pack(pady=(0, 12))
+        if img_bytes:
+            try:
+                import base64 as _b64
+                img = tk.PhotoImage(data=_b64.b64encode(img_bytes).decode())
+                tk.Label(f, image=img, bg=PAPER).pack(pady=(0, 8))
+                dlg._img = img
+            except Exception:
+                tk.Label(f, text="（無法顯示驗證碼圖片）",
+                         bg=PAPER, fg=MUTED, font=F_SMALL).pack(pady=(0, 8))
+        cap_var = tk.StringVar()
+        e = tk.Entry(f, textvariable=cap_var, font=(MONO_FAMILY, _sz(14)),
+                     width=10, justify="center", relief="flat",
+                     bg=HAIR3, fg=INK, insertbackground=INK,
+                     highlightthickness=1, highlightbackground=HAIR)
+        e.pack(ipady=6, pady=(0, 14)); e.focus_set()
+        msg_lbl = tk.Label(f, text="", font=F_SMALL, bg=PAPER, fg=ERR); msg_lbl.pack()
+
+        def _submit():
+            code = cap_var.get().strip()
+            if not code:
+                msg_lbl.config(text="請輸入驗證碼"); return
+            msg_lbl.config(text="登入中…", fg=MUTED); dlg.update()
+            def do_login():
+                try:
+                    ok = self.app._web.login(username, password, code, tokens)
+                    if ok:
+                        self.after(0, dlg.destroy)
+                        self.after(0, lambda: self._web_login_btn.config(
+                            text="✓ 已登入契客專區", fg=OK))
+                    else:
+                        self.app._web = None
+                        self.after(0, lambda: msg_lbl.config(
+                            text="登入失敗，請確認帳號密碼與驗證碼", fg=ERR))
+                except Exception as ex:
+                    self.app._web = None
+                    self.after(0, lambda: msg_lbl.config(text=f"錯誤：{ex}", fg=ERR))
+            import threading; threading.Thread(target=do_login, daemon=True).start()
+
+        btn_row = tk.Frame(f, bg=PAPER); btn_row.pack(pady=(8, 0))
+        tk.Button(btn_row, text="確認登入", command=_submit,
+                  font=(FONT_FAMILY, _sz(12), "bold"), bg=HAIR3, fg=INK,
+                  relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left", padx=(0,8))
+        tk.Button(btn_row, text="取消", command=dlg.destroy,
+                  font=(FONT_FAMILY, _sz(12)), bg=HAIR3, fg=INK2,
+                  relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left")
+        e.bind("<Return>", lambda _: _submit())
 
     def update_badge(self, key: str, n: int):
         if key in self._items:
@@ -2347,6 +2434,21 @@ def _fetch_obt_status(obt: str) -> str:
 
 # ─── tracking view ───────────────────────────────────────────────────────────
 
+_TRK_GCOLS = [
+    # (header_text, minsize_px, weight)
+    ("配送狀態",  112, 0),
+    ("出貨日",     90, 0),
+    ("托運單號",  130, 0),
+    ("代收金額",   76, 0),
+    ("收件人姓名", 130, 2),
+    ("備註",       100, 3),
+    ("",           120, 0),  # buttons col
+]
+
+def _apply_trk_grid(frame):
+    for i, (_, mn, w) in enumerate(_TRK_GCOLS):
+        frame.columnconfigure(i, minsize=mn, weight=w)
+
 class TrackingView(tk.Frame):
     def __init__(self, master, app):
         super().__init__(master, bg=PAPER)
@@ -2370,7 +2472,6 @@ class TrackingView(tk.Frame):
                  command=self._query_all).pack(side="left", padx=4)
         TwButton(ba, "同步 14 天紀錄", variant="ghost",
                  command=self._sync_from_web).pack(side="left", padx=4)
-        TwButton(ba, "重新整理", variant="ghost", command=self.refresh).pack(side="left", padx=4)
         TwButton(ba, "清除兩週前紀錄", variant="ghost", command=self._prune).pack(side="left", padx=4)
 
         # stats row (4 cards)
@@ -2440,11 +2541,11 @@ class TrackingView(tk.Frame):
         # column header
         hdr = tk.Frame(tcard.body, bg=PAPER2)
         hdr.pack(fill="x")
-        cols = [("建單時間", 17), ("收件人", 16), ("貨運單號", 16),
-                ("訂單編號", 14), ("配送狀態", 14), ("", 0)]
-        for txt, w in cols:
-            tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
-                     width=w if w else 1, anchor="w", padx=10, pady=8).pack(side="left")
+        _apply_trk_grid(hdr)
+        for i, (txt, mn, w) in enumerate(_TRK_GCOLS):
+            if txt:
+                tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
+                         anchor="w", padx=10, pady=8).grid(row=0, column=i, sticky="ew")
         Hairline(tcard.body).pack(fill="x")
 
         # scrollable list
@@ -2470,7 +2571,7 @@ class TrackingView(tk.Frame):
     def _status_tone(self, status: str) -> str:
         if _status_fg(status) == OK:  return "ok"
         if _status_fg(status) == ERR: return "err"
-        if status in ("—", "查詢中…"): return "neutral"
+        if status in ("—", "查詢中…", "請按查詢確認"): return "neutral"
         return "progress"
 
     def _set_filter(self, fid: str):
@@ -2526,48 +2627,42 @@ class TrackingView(tk.Frame):
     def _make_row(self, r: dict, divider=True):
         obt     = r.get("obt_number", "—")
         name    = r.get("recipient_name", "—")
-        oid     = r.get("order_id", "—")
-        created = r.get("created_at", "")[:16].replace("T", " ")
+        cod     = r.get("cod_amount", "")
+        snt     = r.get("created_at", "")[:10]   # 出貨日 YYYY/MM/DD 或 YYYY-MM-DD
         status  = r.get("status", "—")
+        notes   = r.get("notes", "")
         queried = r.get("queried_at", "")
-
-        s_fg = _status_fg(status)
 
         row = tk.Frame(self._list_body, bg=CARD)
         row.pack(fill="x")
         inner = tk.Frame(row, bg=CARD)
-        inner.pack(fill="x", padx=4, pady=10)
-
-        tk.Label(inner, text=created,   font=F_TINY, bg=CARD, fg=MUTED, width=17, anchor="w").pack(side="left", padx=(8, 0))
-        tk.Label(inner, text=name,      font=F_NORM, bg=CARD, fg=INK,   width=16, anchor="w").pack(side="left", padx=(8, 0))
-        tk.Label(inner, text=obt,       font=F_MONO, bg=CARD, fg=INK,   width=16, anchor="w").pack(side="left", padx=(8, 0))
-        tk.Label(inner, text=oid[:14],  font=F_TINY, bg=CARD, fg=INK2,  width=14, anchor="w").pack(side="left", padx=(8, 0))
+        inner.pack(fill="x", padx=4, pady=8)
+        _apply_trk_grid(inner)
 
         # status pill
         stone = self._status_tone(status)
-        pill_bg = {
-            "ok": OK2, "err": ERR2, "progress": WARN2, "neutral": HAIR3,
-        }.get(stone, HAIR3)
-        pill_fg = {
-            "ok": OK, "err": ERR, "progress": WARN, "neutral": MUTED,
-        }.get(stone, MUTED)
+        pill_bg = {"ok": OK2, "err": ERR2, "progress": WARN2, "neutral": HAIR3}.get(stone, HAIR3)
+        pill_fg = {"ok": OK,  "err": ERR,  "progress": WARN,  "neutral": MUTED}.get(stone, MUTED)
         slbl = tk.Label(inner, text=f"● {status}", font=F_TINY, bg=pill_bg, fg=pill_fg,
-                        padx=7, pady=3, width=14, anchor="w")
-        slbl.pack(side="left", padx=(8, 0))
+                        padx=7, pady=3, anchor="w")
+        slbl.grid(row=0, column=0, sticky="ew", padx=(8, 4), pady=2)
         self._status_labels[obt] = slbl
-
         if queried:
             slbl.bind("<Enter>", lambda e, t=queried: slbl.config(text=f"查詢 {t[11:16]}"))
             slbl.bind("<Leave>", lambda e, s=status: slbl.config(text=f"● {s}"))
 
+        tk.Label(inner, text=snt,   font=F_TINY, bg=CARD, fg=MUTED, anchor="w").grid(row=0, column=1, sticky="ew", padx=(8, 4), pady=2)
+        tk.Label(inner, text=obt,   font=F_MONO, bg=CARD, fg=INK,   anchor="w").grid(row=0, column=2, sticky="ew", padx=(8, 4), pady=2)
+        tk.Label(inner, text=cod,   font=F_TINY, bg=CARD, fg=INK2,  anchor="w").grid(row=0, column=3, sticky="ew", padx=(8, 4), pady=2)
+        tk.Label(inner, text=name,  font=F_NORM, bg=CARD, fg=INK,   anchor="w").grid(row=0, column=4, sticky="ew", padx=(8, 4), pady=2)
+        tk.Label(inner, text=notes, font=F_TINY, bg=CARD, fg=MUTED, anchor="w").grid(row=0, column=5, sticky="ew", padx=(8, 4), pady=2)
+
         btns = tk.Frame(inner, bg=CARD)
-        btns.pack(side="right", padx=(4, 8))
+        btns.grid(row=0, column=6, sticky="e", padx=(4, 8), pady=2)
         TwButton(btns, "查詢", variant="ghost",
                  command=lambda _obt=obt: self._query_one(_obt)).pack(side="left", padx=(0, 4))
         TwButton(btns, "複製", variant="ghost",
                  command=lambda _obt=obt: self._copy(_obt)).pack(side="left", padx=(0, 4))
-        TwButton(btns, "取消宅配", variant="danger",
-                 command=lambda _obt=obt, _name=name: self._cancel_obt(_obt, _name)).pack(side="left", padx=(0, 4))
         TwButton(btns, "刪除", variant="ghost",
                  command=lambda _obt=obt: self._delete_one(_obt)).pack(side="left")
 
@@ -2698,6 +2793,8 @@ class TrackingView(tk.Frame):
             for obt in obts:
                 result = _fetch_obt_status(obt)
                 self.after(0, lambda _o=obt, _r=result: self._set_status(_o, _r))
+            self.after(0, lambda: messagebox.showinfo(
+                "查詢完成", f"已完成 {len(obts)} 筆托運單狀態查詢。"))
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -2714,11 +2811,11 @@ class TrackingView(tk.Frame):
 
         import datetime, threading
         today = datetime.date.today()
-        start = (today - datetime.timedelta(days=2)).strftime("%Y%m%d")  # 近3天
+        start_date = today - datetime.timedelta(days=13)   # 近 14 天（含今天）
+        start = start_date.strftime("%Y%m%d")
         end   = today.strftime("%Y%m%d")
-
-        cfg     = load_cfg()
-        account = cfg.get("web_username", "").strip()
+        start_label = start_date.strftime("%-m/%-d")
+        end_label   = today.strftime("%-m/%-d")
 
         def run():
             try:
@@ -2735,7 +2832,6 @@ class TrackingView(tk.Frame):
                 self.after(0, lambda msg=str(ex): messagebox.showerror("同步失敗", msg))
                 return
 
-            # Merge: only 4 fields needed — 出貨日, 託運單號, 收件人姓名, 代收金額
             existing = load_tracking()
             existing_obts = {r.get("obt_number", "") for r in existing}
 
@@ -2749,8 +2845,9 @@ class TrackingView(tk.Frame):
                     "recipient_name": row.get("recipient_name", "").strip(),
                     "cod_amount":     row.get("cod_amount", "").strip(),
                     "created_at":     row.get("shipment_date", "").strip(),
-                    "status":         "配送中",
+                    "status":         "請按查詢確認",
                     "order_id":       row.get("order_id", "").strip(),
+                    "notes":          row.get("memo", "").strip(),
                 }
                 existing.append(new_rec)
                 existing_obts.add(obt)
@@ -2763,13 +2860,18 @@ class TrackingView(tk.Frame):
             if total_rows == 0:
                 self.after(0, lambda: messagebox.showwarning(
                     "同步完成",
-                    f"網站在近 3 天內查無資料（可能日期範圍無建單，或登入已過期）。\n"
+                    f"同步範圍：{start_label} ～ {end_label}\n\n"
+                    "網站查無資料（可能該期間無建單，或登入已過期）。\n"
                     "請到「費用查詢」頁確認登入狀態後再試一次。"))
             else:
-                self.after(0, lambda n=added: messagebox.showinfo(
+                self.after(0, lambda n=added, t=total_rows: messagebox.showinfo(
                     "同步完成",
-                    f"同步完成：從網站抓到 {total_rows} 筆，新增 {n} 筆紀錄。"
-                    if n else f"同步完成：從網站抓到 {total_rows} 筆，皆已是最新。"))
+                    f"同步範圍：{start_label} ～ {end_label}\n"
+                    f"共抓到 {t} 筆，新增 {n} 筆紀錄。\n\n即將自動查詢所有配送狀態…"
+                    if n else
+                    f"同步範圍：{start_label} ～ {end_label}\n"
+                    f"共抓到 {t} 筆，皆已是最新紀錄。\n\n即將自動查詢所有配送狀態…"))
+                self.after(200, self._query_all)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -3497,8 +3599,13 @@ class ConfigView(tk.Frame):
                  font=(MONO_FAMILY, _sz(11)), relief="flat", bg=HAIR3, fg=INK,
                  insertbackground=INK,
                  highlightthickness=1, highlightbackground=HAIR).pack(fill="x", ipady=5)
-        TwButton(wc.body, "儲存登入資訊", variant="primary",
-                 command=self._save).pack(anchor="w", pady=(12, 0))
+        btn_row = tk.Frame(wc.body, bg=CARD); btn_row.pack(anchor="w", fill="x", pady=(12, 0))
+        TwButton(btn_row, "儲存登入資訊", variant="primary",
+                 command=self._save).pack(side="left", padx=(0, 8))
+        self._web_status_lbl = tk.Label(btn_row, text="", font=F_TINY, bg=CARD, fg=MUTED)
+        self._web_status_lbl.pack(side="left")
+        TwButton(wc.body, "驗證碼確認（登入契客專區）", variant="ghost",
+                 command=self._do_web_login).pack(anchor="w", pady=(8, 0))
 
         # Preferences card (toggles)
         prefc = Card(wrap, padding=0); prefc.pack(fill="x", pady=(0, 14))
@@ -3577,6 +3684,97 @@ class ConfigView(tk.Frame):
         # load pref toggles
         for key, v in self.pref_vars.items():
             v.set(bool(cfg.get(key, key in ("auto_open_pdf", "check_updates"))))
+
+    def _do_web_login(self):
+        """Launch CAPTCHA dialog from settings page to login to 契客專區."""
+        cfg = load_cfg()
+        username = cfg.get("web_username","").strip()
+        password = cfg.get("web_password","").strip()
+        if not username or not password:
+            messagebox.showwarning("尚未設定", "請先填入客戶代號與密碼後儲存，再登入。")
+            return
+
+        self._web_status_lbl.config(text="載入驗證碼中…", fg=MUTED)
+        self.app._web = TakkyubinWebClient()
+
+        def fetch():
+            try:
+                tokens, img_bytes = self.app._web.get_login_page()
+                self.after(0, lambda: self._show_web_captcha(tokens, img_bytes, username, password))
+            except Exception as ex:
+                self.app._web = None
+                self.after(0, lambda: self._web_status_lbl.config(
+                    text=f"✗ 無法載入：{ex}", fg=ERR))
+        import threading; threading.Thread(target=fetch, daemon=True).start()
+
+    def _show_web_captcha(self, tokens: dict, img_bytes: bytes,
+                          username: str, password: str):
+        """Show CAPTCHA dialog; on success set app._web and update status."""
+        dlg = tk.Toplevel(self)
+        dlg.title("驗證碼登入")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        f = tk.Frame(dlg, bg=PAPER, padx=24, pady=20); f.pack()
+        dlg.update_idletasks()
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        w, h   = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{(sw-w)//2}+{(sh-h)//2}")
+
+        tk.Label(f, text="請輸入驗證碼後登入", font=(FONT_FAMILY, _sz(13), "bold"),
+                 bg=PAPER, fg=INK).pack(pady=(0, 12))
+
+        if img_bytes:
+            try:
+                import base64 as _b64
+                img = tk.PhotoImage(data=_b64.b64encode(img_bytes).decode())
+                tk.Label(f, image=img, bg=PAPER).pack(pady=(0, 8))
+                dlg._img = img
+            except Exception:
+                tk.Label(f, text="（無法顯示驗證碼圖片）",
+                         bg=PAPER, fg=MUTED, font=F_SMALL).pack(pady=(0, 8))
+        else:
+            tk.Label(f, text="（無法載入驗證碼圖片）",
+                     bg=PAPER, fg=MUTED, font=F_SMALL).pack(pady=(0, 8))
+
+        cap_var = tk.StringVar()
+        e = tk.Entry(f, textvariable=cap_var, font=(MONO_FAMILY, _sz(14)),
+                     width=10, justify="center", relief="flat",
+                     bg=HAIR3, fg=INK, insertbackground=INK,
+                     highlightthickness=1, highlightbackground=HAIR)
+        e.pack(ipady=6, pady=(0, 14)); e.focus_set()
+
+        msg_lbl = tk.Label(f, text="", font=F_SMALL, bg=PAPER, fg=ERR)
+        msg_lbl.pack()
+
+        def _submit():
+            code = cap_var.get().strip()
+            if not code:
+                msg_lbl.config(text="請輸入驗證碼"); return
+            msg_lbl.config(text="登入中…", fg=MUTED); dlg.update()
+            def do_login():
+                try:
+                    ok = self.app._web.login(username, password, code, tokens)
+                    if ok:
+                        self.after(0, dlg.destroy)
+                        self.after(0, lambda: self._web_status_lbl.config(
+                            text="✓ 已登入契客專區", fg=OK))
+                    else:
+                        self.app._web = None
+                        self.after(0, lambda: msg_lbl.config(
+                            text="登入失敗，請確認帳號密碼與驗證碼", fg=ERR))
+                except Exception as ex:
+                    self.app._web = None
+                    self.after(0, lambda: msg_lbl.config(text=f"錯誤：{ex}", fg=ERR))
+            import threading; threading.Thread(target=do_login, daemon=True).start()
+
+        btn_row = tk.Frame(f, bg=PAPER); btn_row.pack(pady=(8, 0))
+        tk.Button(btn_row, text="確認登入", command=_submit,
+                  font=(FONT_FAMILY, _sz(12), "bold"), bg=HAIR3, fg=INK,
+                  relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left", padx=(0,8))
+        tk.Button(btn_row, text="取消", command=dlg.destroy,
+                  font=(FONT_FAMILY, _sz(12)), bg=HAIR3, fg=INK2,
+                  relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left")
+        e.bind("<Return>", lambda _: _submit())
 
     def _save_pref(self, key: str, val: bool):
         cfg = load_cfg()
@@ -3990,16 +4188,11 @@ class FreightView(tk.Frame):
                                font=F_SMALL, bg=PAPER, fg=MUTED)
         loading_lbl.pack(anchor="w", pady=4)
 
-        # Dynamic labels updated after fetch
-        rec_name_lbl = tk.Label(rec_frame, text="", font=F_NORM, bg=PAPER, fg=INK)
-        rec_addr_lbl = tk.Label(rec_frame, text="",
-                                font=(MONO_FAMILY, _sz(11)), bg=PAPER, fg=MUTED)
         web_detail = {}  # filled by background thread
 
         def _fill_recipient(detail: dict):
             loading_lbl.destroy()
             rec_name = detail.get("recipient_name","")
-            rec_addr = detail.get("recipient_address","")
             sender   = detail.get("sender_name","")
             notes    = detail.get("notes","")
 
@@ -4008,7 +4201,6 @@ class FreightView(tk.Frame):
                 tracking = load_tracking()
                 trk = next((t for t in tracking if t.get("obt_number","") == obt), None)
                 rec_name = (trk or {}).get("recipient_name","")
-                rec_addr = (trk or {}).get("recipient_address","")
 
             def _r(label, value, mono=False):
                 row = tk.Frame(rec_frame, bg=PAPER); row.pack(fill="x", pady=3)
@@ -4020,9 +4212,7 @@ class FreightView(tk.Frame):
                          side="left", padx=(10,0))
 
             _r("收件人", rec_name or "（無法取得）")
-            _r("地址",   rec_addr)
-            if sender:
-                _r("寄件人", sender)
+            _r("寄件人", sender)
             if notes:
                 _r("備註",   notes)
             if not rec_name:
