@@ -254,85 +254,43 @@ class TakkyubinWebClient:
             "notes":             _after_label("備註"),
         }
 
-    def _obt_export_html(self) -> str:
+    def _obt_export_page(self) -> tuple[str, str]:
         """
-        Navigate to 線上印單 → 匯出託運單資料 page.
-        Tries several known FuncNo values and the navigation link text.
-        Raises RuntimeError on failure.
+        Navigate to 匯出託運單資料 (FuncNo=135) and return (page_html, form_url).
+        Raises RuntimeError if session expired or page not found.
         """
-        # Try common FuncNo values for the OBT export / list page
-        # FuncNo=167 = SudaPaymentDetail (fee query)
-        # FuncNo=101~199 = 物流 functions — try candidates
-        candidates_func = ["101", "102", "103", "104", "105", "110", "115", "120",
-                           "150", "160", "161", "162", "163", "164", "165", "166",
-                           "168", "170", "175", "180"]
-        # Also try known direct page names
-        candidates_url  = [
-            f"{BASE}/SudaOBTQuery.aspx",
-            f"{BASE}/SudaOBTExport.aspx",
-            f"{BASE}/SudaObtList.aspx",
-            f"{BASE}/OBTQuery.aspx",
-            f"{BASE}/ExportOBT.aspx",
-        ]
-
-        # First: scan nav HTML for the menu item text
-        try:
-            nav_html = self._req(f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N")
-            # Look for any href near "匯出託運單" text
-            m = re.search(r'href="([^"]+)"[^>]*>[^<]*匯出託運單[^<]*<', nav_html, re.I | re.S)
-            if not m:
-                # Try the pattern FuncNo=xxx inside onClick / href attributes
-                for fn_m in re.finditer(r'FuncNo=(\d+)', nav_html):
-                    candidates_func.insert(0, fn_m.group(1))  # prepend found FuncNos
-            if m:
-                href = m.group(1).strip()
-                url = href if href.startswith("http") else f"{BASE}/{href.lstrip('/')}"
-                html = self._req(url)
-                if "匯出" in html or "託運單" in html:
-                    return html
-        except Exception:
-            pass
-
-        # Try FuncNo redirects
-        for fn in dict.fromkeys(candidates_func):  # deduplicated, order preserved
-            try:
-                html = self._req(f"{BASE}/RedirectFunc.aspx?FuncNo={fn}")
-                if "Login.aspx" in html or "txtUserID" in html:
-                    continue
-                if ("匯出" in html or "ExportOBT" in html.lower()) and "託運單" in html:
-                    return html
-            except Exception:
-                continue
-
-        # Try direct URLs
-        for url in candidates_url:
-            try:
-                html = self._req(url)
-                if "Login.aspx" in html or "txtUserID" in html:
-                    continue
-                if "託運單" in html:
-                    return html
-            except Exception:
-                continue
-
-        raise RuntimeError("找不到匯出託運單資料頁面，請確認已登入且帳號有此功能權限。")
+        # FuncNo=135 confirmed from nav HTML inspection
+        html = self._req(f"{BASE}/RedirectFunc.aspx?FuncNo=135")
+        if "Login.aspx" in html or "txtUserID" in html:
+            raise RuntimeError("session_expired")
+        if "託運單" not in html and "btnQuery" not in html:
+            raise RuntimeError("FuncNo=135 頁面無法載入匯出託運單資料。")
+        # Resolve form action URL
+        action_m = re.search(r'<form[^>]+action="([^"]*)"', html, re.I)
+        if action_m:
+            action = action_m.group(1).strip()
+            form_url = action if action.startswith("http") else f"{BASE}/{action.lstrip('/')}"
+        else:
+            form_url = f"{BASE}/RedirectFunc.aspx?FuncNo=135"
+        return html, form_url
 
     def query_obt_list(self, start_date: str, end_date: str) -> list[dict]:
         """
-        Query 匯出託運單資料 (線上印單) to get OBT list with FULL recipient info.
-        start_date / end_date: YYYYMMDD (will be converted to YYYY/MM/DD for the form).
-        Returns list of dicts:
-          obt, order_id, shipment_date, cod_amount, product_name,
-          recipient_name, phone_last3, mobile_last3, recipient_address,
-          thermosphere, spec, notes
+        Query 匯出託運單資料 (FuncNo=135) for OBTs in the given date range.
+        Handles multi-page results (20 records/page).
+        start_date / end_date: YYYYMMDD → converted to YYYY/MM/DD for the form.
+        Returns list of dicts: obt, order_id, shipment_date, cod_amount,
+          product_name, recipient_name, phone_last3, mobile_last3,
+          recipient_address, thermosphere, spec, notes.
         Returns [] on any error.
         """
-        # Convert YYYYMMDD → YYYY/MM/DD
         def _fmt(d: str) -> str:
             return f"{d[:4]}/{d[4:6]}/{d[6:]}" if len(d) == 8 else d
 
         try:
-            page_html = self._obt_export_html()
+            page_html, form_url = self._obt_export_page()
+        except RuntimeError:
+            return []
         except Exception:
             return []
 
@@ -340,46 +298,68 @@ class TakkyubinWebClient:
         if not tokens:
             return []
 
-        # Find search button value
-        btn_m = (re.search(r'<input[^>]*name="btnQuery"[^>]*value="([^"]*)"', page_html, re.I)
-              or re.search(r'<input[^>]*value="([^"]*)"[^>]*name="btnQuery"', page_html, re.I)
-              or re.search(r'<input[^>]*type="submit"[^>]*value="([^"]*)"', page_html, re.I))
+        # Locate search button (name + value)
+        btn_m = (re.search(r'<input[^>]*name="(btnQuery)"[^>]*value="([^"]*)"', page_html, re.I)
+              or re.search(r'<input[^>]*value="([^"]*)"[^>]*name="(btnQuery)"', page_html, re.I))
         btn_name  = "btnQuery"
-        btn_value = btn_m.group(1) if btn_m else "查詢"
+        btn_value = btn_m.group(2) if btn_m else "查詢"
 
-        # Find date field names from the form
-        ds_m = re.search(r'<input[^>]*name="([^"]*[Dd]ate[Ss][^"]*)"', page_html, re.I) \
-            or re.search(r'<input[^>]*name="([^"]*[Ss]tart[^"]*)"', page_html, re.I) \
-            or re.search(r'<input[^>]*name="(txt[Ss][^"]*)"', page_html, re.I)
-        de_m = re.search(r'<input[^>]*name="([^"]*[Dd]ate[Ee][^"]*)"', page_html, re.I) \
-            or re.search(r'<input[^>]*name="([^"]*[Ee]nd[^"]*)"', page_html, re.I) \
-            or re.search(r'<input[^>]*name="(txt[Ee][^"]*)"', page_html, re.I)
+        # Locate date field names dynamically
+        # The form shows: *出貨日 [date] ~ [date]
+        # Field names likely contain "Date" or "date"
+        all_inputs = re.findall(r'<input[^>]+name="([^"]+)"[^>]+>', page_html, re.I)
+        date_inputs = [n for n in all_inputs if re.search(r'[Dd]ate|[Ss]tart|[Ee]nd|txt[SD]|txt[ED]', n)]
+        start_field = date_inputs[0] if len(date_inputs) >= 1 else "txtDateS"
+        end_field   = date_inputs[1] if len(date_inputs) >= 2 else "txtDateE"
 
-        start_field = ds_m.group(1) if ds_m else "txtDateS"
-        end_field   = de_m.group(1) if de_m else "txtDateE"
+        keep = {start_field: _fmt(start_date), end_field: _fmt(end_date)}
 
-        # Find the page's own URL from a form action, or reuse the redirect URL
-        action_m = re.search(r'<form[^>]+action="([^"]*)"', page_html, re.I)
-        if action_m:
-            action = action_m.group(1).strip()
-            form_url = action if action.startswith("http") else f"{BASE}/{action.lstrip('/')}"
-        else:
-            form_url = f"{BASE}/SudaOBTQuery.aspx"
-
-        post_data = urllib.parse.urlencode({
+        # Page 1: POST the search
+        post1 = urllib.parse.urlencode({
             **tokens,
             "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
-            start_field: _fmt(start_date),
-            end_field:   _fmt(end_date),
-            btn_name:    btn_value,
+            **keep, btn_name: btn_value,
         }, encoding="utf-8").encode("utf-8")
-
         try:
-            result_html = self._req(form_url, post_data)
+            cur_html = self._req(form_url, post1)
         except Exception:
             return []
 
-        return _parse_obt_table(result_html)
+        all_rows = _parse_obt_table(cur_html)
+
+        # Pagination: this page uses ASP.NET GridView Page$N style
+        # or navigation buttons ◄ ► — detect either pattern
+        for page_num in range(2, 200):  # safety cap
+            # Try Page$N style first
+            next_arg = f"Page${page_num}"
+            links = re.findall(r"__doPostBack\('([^']+)','(Page\$\d+)'\)", cur_html)
+            target = next((t for t, a in links if a == next_arg), None)
+
+            # Also try navigation-button style (__doPostBack with 'Next' or numeric arg)
+            if not target:
+                # Look for any postback with an arg indicating "next"
+                nav_links = re.findall(r"__doPostBack\('([^']+)','([^']+)'\)", cur_html)
+                target = next((t for t, a in nav_links
+                               if a.lower() in ("next", "page$next", str(page_num))), None)
+            if not target:
+                break  # no more pages
+
+            page_tokens = self._tokens(cur_html)
+            page_post = urllib.parse.urlencode({
+                **page_tokens,
+                "__EVENTTARGET": target, "__EVENTARGUMENT": next_arg if "Page$" in next_arg else str(page_num),
+                "__LASTFOCUS": "", **keep,
+            }, encoding="utf-8").encode("utf-8")
+            try:
+                cur_html = self._req(form_url, page_post)
+                new_rows = _parse_obt_table(cur_html)
+                if not new_rows:
+                    break
+                all_rows.extend(new_rows)
+            except Exception:
+                break
+
+        return all_rows
 
     def get_account_options(self) -> list[tuple[str,str]]:
         """Return [(value, label), ...] from UC_UserList1$ddlUserList after login."""
