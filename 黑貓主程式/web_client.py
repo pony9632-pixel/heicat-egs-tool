@@ -294,7 +294,7 @@ class TakkyubinWebClient:
         try:
             page_html, form_url = self._obt_export_page()
         except RuntimeError:
-            return []
+            raise   # re-raise session_expired / page-load failures to caller
         except Exception:
             return []
 
@@ -305,8 +305,10 @@ class TakkyubinWebClient:
         # Dump page for debugging (written to Desktop)
         try:
             import os, pathlib
+            all_debug_inputs = re.findall(r'<input[^>]+name="([^"]+)"', page_html, re.I)
+            debug_info = f"<!-- ALL INPUT NAMES: {all_debug_inputs} -->\n"
             pathlib.Path(os.path.expanduser("~/Desktop/heicat_obt_export_debug.html")
-                         ).write_text(page_html, encoding="utf-8")
+                         ).write_text(debug_info + page_html, encoding="utf-8")
         except Exception:
             pass
 
@@ -318,8 +320,10 @@ class TakkyubinWebClient:
 
         # Locate date field names — dump all input names for debugging
         all_inputs = re.findall(r'<input[^>]+name="([^"]+)"', page_html, re.I)
+        # Also check <select> and <textarea> for date-like names
+        all_inputs += re.findall(r'<select[^>]+name="([^"]+)"', page_html, re.I)
         date_inputs = [n for n in all_inputs
-                       if re.search(r'[Dd]ate|[Ss]tart|[Ee]nd|txt[SD]|txt[ED]|Ship|ship', n)]
+                       if re.search(r'[Dd]ate|[Ss]tart|[Ee]nd|txt[SD]|txt[ED]|[Ss]hip|[Yy]ear|[Mm]on', n)]
         start_field = date_inputs[0] if len(date_inputs) >= 1 else "txtShipDateS"
         end_field   = date_inputs[1] if len(date_inputs) >= 2 else "txtShipDateE"
 

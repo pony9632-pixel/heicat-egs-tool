@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "2.0.4"
+VERSION     = "2.0.5"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -2759,9 +2759,17 @@ class TrackingView(tk.Frame):
             if added:
                 save_tracking(existing)
             self.after(0, self.refresh)
-            self.after(0, lambda n=added: messagebox.showinfo(
-                "同步完成",
-                f"同步完成：新增 {n} 筆紀錄。" if n else "同步完成：沒有新增紀錄（已是最新）。"))
+            total_rows = len(rows)
+            if total_rows == 0:
+                self.after(0, lambda: messagebox.showwarning(
+                    "同步完成",
+                    f"網站在近 3 天內查無資料（可能日期範圍無建單，或登入已過期）。\n"
+                    "請到「費用查詢」頁確認登入狀態後再試一次。"))
+            else:
+                self.after(0, lambda n=added: messagebox.showinfo(
+                    "同步完成",
+                    f"同步完成：從網站抓到 {total_rows} 筆，新增 {n} 筆紀錄。"
+                    if n else f"同步完成：從網站抓到 {total_rows} 筆，皆已是最新。"))
 
         threading.Thread(target=run, daemon=True).start()
 
