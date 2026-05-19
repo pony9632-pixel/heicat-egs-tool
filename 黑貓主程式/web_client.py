@@ -141,8 +141,7 @@ class TakkyubinWebClient:
                       html, re.S | re.I)
         dropdown_vals = []
         if m:
-            dropdown_vals = [v for v, _ in
-                re.findall(r'<option[^>]*value="([^"]*)"[^>]*>', m.group(1), re.I)]
+            dropdown_vals = re.findall(r'<option[^>]*value="([^"]*)"[^>]*>', m.group(1), re.I)
         if dropdown_vals and account not in dropdown_vals:
             account = dropdown_vals[0]
 
@@ -163,14 +162,14 @@ class TakkyubinWebClient:
         post_url = f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N"
         result_html = self._req(post_url, post)
 
-        # Save debug files for inspection
+        # Save debug files to Desktop for inspection
         try:
-            import tempfile, os
-            tmp = tempfile.gettempdir()
-            with open(os.path.join(tmp, "heicat_freight_get.html"), "w", encoding="utf-8") as f:
-                f.write(html)      # pre-POST page (has actual btnSearch value + dropdown options)
-            with open(os.path.join(tmp, "heicat_freight_debug.html"), "w", encoding="utf-8") as f:
-                f.write(result_html)   # POST result (should contain the data table)
+            import os
+            desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+            with open(os.path.join(desktop, "heicat_freight_get.html"), "w", encoding="utf-8") as f:
+                f.write(html)
+            with open(os.path.join(desktop, "heicat_freight_debug.html"), "w", encoding="utf-8") as f:
+                f.write(result_html)
         except Exception:
             pass
 

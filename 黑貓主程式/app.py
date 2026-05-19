@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.8.2"
+VERSION     = "1.8.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3750,9 +3750,9 @@ class FreightView(tk.Frame):
         e_str = f"{end[:4]}/{end[4:6]}/{end[6:]}"
         self._summary_lbl.config(
             text=f"  {s} ～ {e_str}   共 {n} 筆，運費計 {total:,} 元", fg=INK)
-        import tempfile, os
-        debug_path = os.path.join(tempfile.gettempdir(), "heicat_freight_debug.html")
-        debug_hint = f"（診斷：{debug_path}）" if n == 0 else ""
+        import os
+        debug_path = os.path.join(os.path.expanduser("~"), "Desktop", "heicat_freight_debug.html")
+        debug_hint = "（診斷檔已存至桌面 heicat_freight_debug.html）" if n == 0 else ""
         self._status_lbl.config(text=f"✓ 查詢完成，共 {n} 筆 {debug_hint}", fg=OK if n > 0 else WARN)
         self._render_rows()
 
