@@ -100,20 +100,53 @@ class TakkyubinWebClient:
         except Exception:
             return False
 
+    def get_account_options(self) -> list[tuple[str,str]]:
+        """Return [(value, label), ...] from UC_UserList1$ddlUserList after login."""
+        html = self._req(f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N")
+        if "Login.aspx" in html or "txtUserID" in html:
+            return []
+        m = re.search(r'<select[^>]*name="UC_UserList1\$ddlUserList"[^>]*>(.*?)</select>',
+                      html, re.S | re.I)
+        if not m:
+            return []
+        opts = re.findall(r'<option[^>]*value="([^"]*)"[^>]*>([^<]*)', m.group(1), re.I)
+        return [(v.strip(), lbl.strip()) for v, lbl in opts]
+
     def query_payment(self, start_date: str, end_date: str, account: str) -> list[dict]:
         """Query and parse payment detail table."""
         html = self._req(f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N")
         if "Login.aspx" in html or "txtUserID" in html:
             raise RuntimeError("session_expired")
         tokens = self._tokens(html)
+
+        # Auto-resolve account: if specified value isn't in dropdown, use first option
+        m = re.search(r'<select[^>]*name="UC_UserList1\$ddlUserList"[^>]*>(.*?)</select>',
+                      html, re.S | re.I)
+        dropdown_vals = []
+        if m:
+            dropdown_vals = [v for v, _ in
+                re.findall(r'<option[^>]*value="([^"]*)"[^>]*>', m.group(1), re.I)]
+        if dropdown_vals and account not in dropdown_vals:
+            account = dropdown_vals[0]
+
         post = urllib.parse.urlencode({
             **tokens,
             "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
             "txtDateS": start_date, "txtDateE": end_date,
             "UC_UserList1$ddlUserList": account, "btnSearch": "搜尋",
         }, encoding="utf-8").encode("utf-8")
-        html = self._req(f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N", post)
-        return _parse_table(html)
+        result_html = self._req(f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N", post)
+
+        # Save debug file so user can inspect actual response
+        try:
+            import tempfile, os
+            debug_path = os.path.join(tempfile.gettempdir(), "heicat_freight_debug.html")
+            with open(debug_path, "w", encoding="utf-8") as f:
+                f.write(result_html)
+        except Exception:
+            pass
+
+        return _parse_table(result_html)
 
 
 _COL_KEYS = ["customer_id","pickup_date","pickup_place","delivery_date","delivery_place",
