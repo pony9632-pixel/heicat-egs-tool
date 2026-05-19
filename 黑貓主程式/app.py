@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "2.0.1"
+VERSION     = "2.0.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -2721,32 +2721,21 @@ class TrackingView(tk.Frame):
         account = cfg.get("web_username", "").strip()
 
         def run():
-            # Prefer 匯出託運單資料 (has full recipient info); fall back to 費用查詢
-            rows = []
-            source = "費用查詢"
             try:
                 rows = self.app._web.query_obt_list(start, end)
-                if rows:
-                    source = "線上印單"
-            except Exception:
-                pass
-
-            if not rows:
-                try:
-                    rows = self.app._web.query_payment(start, end, account)
-                except RuntimeError as ex:
-                    if "session_expired" in str(ex):
-                        self.app._web = None
-                        self.after(0, lambda: messagebox.showwarning(
-                            "工作階段已過期", "請到「費用查詢」頁重新登入後再同步。"))
-                    else:
-                        self.after(0, lambda msg=str(ex): messagebox.showerror("同步失敗", msg))
-                    return
-                except Exception as ex:
+            except RuntimeError as ex:
+                if "session_expired" in str(ex):
+                    self.app._web = None
+                    self.after(0, lambda: messagebox.showwarning(
+                        "工作階段已過期", "請到「費用查詢」頁重新登入後再同步。"))
+                else:
                     self.after(0, lambda msg=str(ex): messagebox.showerror("同步失敗", msg))
-                    return
+                return
+            except Exception as ex:
+                self.after(0, lambda msg=str(ex): messagebox.showerror("同步失敗", msg))
+                return
 
-            # Merge: add records whose OBT is not already in tracking.json
+            # Merge: only 4 fields needed — 出貨日, 託運單號, 收件人姓名, 代收金額
             existing = load_tracking()
             existing_obts = {r.get("obt_number", "") for r in existing}
 
@@ -2755,16 +2744,13 @@ class TrackingView(tk.Frame):
                 obt = row.get("obt", "").strip()
                 if not obt or obt in existing_obts:
                     continue
-                # recipient_name comes from 線上印單 (full) or 費用查詢 (delivery_place fallback)
-                rec_name = (row.get("recipient_name") or row.get("delivery_place") or "").strip()
                 new_rec = {
-                    "obt_number":        obt,
-                    "recipient_name":    rec_name,
-                    "recipient_address": row.get("recipient_address", "").strip(),
-                    "order_id":          row.get("order_id", "").strip(),
-                    "status":            "已送達",
-                    "created_at":        (row.get("shipment_date") or row.get("pickup_date") or "").strip(),
-                    "note":              f"由{source}同步",
+                    "obt_number":     obt,
+                    "recipient_name": row.get("recipient_name", "").strip(),
+                    "cod_amount":     row.get("cod_amount", "").strip(),
+                    "created_at":     row.get("shipment_date", "").strip(),
+                    "status":         "配送中",
+                    "order_id":       row.get("order_id", "").strip(),
                 }
                 existing.append(new_rec)
                 existing_obts.add(obt)
