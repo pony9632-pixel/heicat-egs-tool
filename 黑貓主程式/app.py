@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.9.0"
+VERSION     = "1.9.1"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -2563,6 +2563,8 @@ class TrackingView(tk.Frame):
                  command=lambda _obt=obt: self._query_one(_obt)).pack(side="left", padx=(0, 4))
         TwButton(btns, "複製", variant="ghost",
                  command=lambda _obt=obt: self._copy(_obt)).pack(side="left", padx=(0, 4))
+        TwButton(btns, "取消宅配", variant="danger",
+                 command=lambda _obt=obt, _name=name: self._cancel_obt(_obt, _name)).pack(side="left", padx=(0, 4))
         TwButton(btns, "刪除", variant="ghost",
                  command=lambda _obt=obt: self._delete_one(_obt)).pack(side="left")
 
@@ -2583,6 +2585,66 @@ class TrackingView(tk.Frame):
         self._add_obt_var.set("")
         self._add_name_var.set("")
         self.refresh()
+
+    def _cancel_obt(self, obt: str, name: str):
+        """Show confirmation dialog then call CancelOBT API."""
+        dlg = tk.Toplevel(self)
+        dlg.title("取消宅配單")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.configure(bg=PAPER)
+
+        f = tk.Frame(dlg, bg=PAPER, padx=32, pady=24); f.pack()
+        tk.Label(f, text="確認取消宅配單？", font=(FONT_FAMILY, _sz(14), "bold"),
+                 bg=PAPER, fg=INK).pack(pady=(0, 18))
+
+        info = tk.Frame(f, bg=HAIR3, padx=18, pady=14); info.pack(fill="x", pady=(0, 18))
+        for label, val in [("宅配單號", obt), ("收件人", name)]:
+            row = tk.Frame(info, bg=HAIR3); row.pack(fill="x", pady=3)
+            tk.Label(row, text=label, font=F_KICKER, bg=HAIR3, fg=MUTED, width=8, anchor="w").pack(side="left")
+            tk.Label(row, text=val,   font=F_MONO,   bg=HAIR3, fg=INK,   anchor="w").pack(side="left")
+
+        msg_lbl = tk.Label(f, text="", font=F_SMALL, bg=PAPER, fg=ERR)
+        msg_lbl.pack(pady=(0, 10))
+
+        btn_row = tk.Frame(f, bg=PAPER); btn_row.pack()
+
+        def _do_cancel():
+            msg_lbl.config(text="取消中…", fg=MUTED)
+            for b in btn_row.winfo_children(): b.configure(state="disabled")
+            cfg = load_cfg()
+            client = SudaClient(cfg.get("customer_id",""), cfg.get("customer_token",""))
+            def run():
+                try:
+                    resp = client.cancel_obt([obt])
+                    ok = resp.get("IsSuccess") or resp.get("Success") or \
+                         str(resp.get("ReturnCode","")) == "0000"
+                    if ok:
+                        _append_build_log(f"✗ 取消 OBT:{obt} 收件人:{name}")
+                        records = load_tracking()
+                        for r in records:
+                            if r.get("obt_number") == obt:
+                                r["status"] = "已取消"
+                        save_tracking(records)
+                        self.after(0, lambda: (dlg.destroy(), self.refresh(),
+                            messagebox.showinfo("取消成功", f"宅配單 {obt} 已成功取消。", parent=self)))
+                    else:
+                        raw = resp.get("Message") or resp.get("ReturnMessage") or str(resp)
+                        self.after(0, lambda m=raw: (
+                            msg_lbl.config(text=f"取消失敗：{m[:60]}", fg=ERR),
+                            [b.configure(state="normal") for b in btn_row.winfo_children()]))
+                except Exception as ex:
+                    self.after(0, lambda m=str(ex): (
+                        msg_lbl.config(text=f"錯誤：{m[:60]}", fg=ERR),
+                        [b.configure(state="normal") for b in btn_row.winfo_children()]))
+            import threading; threading.Thread(target=run, daemon=True).start()
+
+        tk.Button(btn_row, text="確認取消宅配", font=(FONT_FAMILY, _sz(12)),
+                  bg=ERR, fg="#FFFFFF", relief="flat", padx=16, pady=6,
+                  cursor="hand2", command=_do_cancel).pack(side="left", padx=(0, 10))
+        tk.Button(btn_row, text="返回", font=(FONT_FAMILY, _sz(12)),
+                  bg=HAIR3, fg=INK2, relief="flat", padx=16, pady=6,
+                  cursor="hand2", command=dlg.destroy).pack(side="left")
 
     def _delete_one(self, obt: str):
         if not messagebox.askyesno("確認刪除", f"確定要刪除單號 {obt} 的紀錄嗎？", parent=self):
