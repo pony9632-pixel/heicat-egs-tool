@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "2.0.2"
+VERSION     = "2.0.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -2714,7 +2714,7 @@ class TrackingView(tk.Frame):
 
         import datetime, threading
         today = datetime.date.today()
-        start = (today - datetime.timedelta(days=14)).strftime("%Y%m%d")
+        start = today.strftime("%Y%m%d")   # 同步今天
         end   = today.strftime("%Y%m%d")
 
         cfg     = load_cfg()
@@ -3793,6 +3793,10 @@ class FreightView(tk.Frame):
         dlg.resizable(False, False)
         dlg.grab_set()
         f = tk.Frame(dlg, bg=PAPER, padx=24, pady=20); f.pack()
+        dlg.update_idletasks()
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        w, h   = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{(sw-w)//2}+{(sh-h)//2}")
 
         tk.Label(f, text="請輸入驗證碼後登入", font=(FONT_FAMILY, _sz(13), "bold"),
                  bg=PAPER, fg=INK).pack(pady=(0, 12))

@@ -225,20 +225,24 @@ class TakkyubinWebClient:
     @staticmethod
     def _parse_obt_detail(html: str) -> dict:
         """Parse 電子訂單明細 fields from the detail panel HTML."""
+        import html as _html_mod
+
+        def _clean(s: str) -> str:
+            return _html_mod.unescape(s).replace("\xa0", "").strip()
+
         def _span(sid: str) -> str:
             # Try with display:none (unmasked) first
             m = re.search(rf'id="{sid}"[^>]*style="[^"]*display\s*:\s*none[^"]*"[^>]*>([^<]+)<',
                           html, re.I)
             if not m:
                 m = re.search(rf'id="{sid}"[^>]*>([^<]+)<', html, re.I)
-            return m.group(1).strip().replace("\xa0", "") if m else ""
+            return _clean(m.group(1)) if m else ""
 
         def _after_label(label: str) -> str:
-            # Match label cell then grab next td value
             m = re.search(
                 rf'{re.escape(label)}[^<]*</td>\s*(?:<td[^>]*>\s*)*([^<{{}}]+?)\s*</td>',
                 html, re.S | re.I)
-            return m.group(1).strip().replace("\xa0", "") if m else ""
+            return _clean(m.group(1)) if m else ""
 
         rec_name = _span("LBLOUTPUT_RECNAME") or _span("LBLOUTPUT_MASKRECNAME")
 
@@ -298,19 +302,26 @@ class TakkyubinWebClient:
         if not tokens:
             return []
 
-        # Locate search button (name + value)
-        btn_m = (re.search(r'<input[^>]*name="(btnQuery)"[^>]*value="([^"]*)"', page_html, re.I)
-              or re.search(r'<input[^>]*value="([^"]*)"[^>]*name="(btnQuery)"', page_html, re.I))
-        btn_name  = "btnQuery"
-        btn_value = btn_m.group(2) if btn_m else "查詢"
+        # Dump page for debugging (written to Desktop)
+        try:
+            import os, pathlib
+            pathlib.Path(os.path.expanduser("~/Desktop/heicat_obt_export_debug.html")
+                         ).write_text(page_html, encoding="utf-8")
+        except Exception:
+            pass
 
-        # Locate date field names dynamically
-        # The form shows: *出貨日 [date] ~ [date]
-        # Field names likely contain "Date" or "date"
-        all_inputs = re.findall(r'<input[^>]+name="([^"]+)"[^>]+>', page_html, re.I)
-        date_inputs = [n for n in all_inputs if re.search(r'[Dd]ate|[Ss]tart|[Ee]nd|txt[SD]|txt[ED]', n)]
-        start_field = date_inputs[0] if len(date_inputs) >= 1 else "txtDateS"
-        end_field   = date_inputs[1] if len(date_inputs) >= 2 else "txtDateE"
+        # Locate search button value (name=btnQuery is confirmed from page)
+        btn_name = "btnQuery"
+        btn_m = re.search(r'<input[^>]*name="btnQuery"[^>]*value="([^"]*)"', page_html, re.I) \
+             or re.search(r'<input[^>]*value="([^"]*)"[^>]*name="btnQuery"', page_html, re.I)
+        btn_value = btn_m.group(1) if btn_m else "查詢"
+
+        # Locate date field names — dump all input names for debugging
+        all_inputs = re.findall(r'<input[^>]+name="([^"]+)"', page_html, re.I)
+        date_inputs = [n for n in all_inputs
+                       if re.search(r'[Dd]ate|[Ss]tart|[Ee]nd|txt[SD]|txt[ED]|Ship|ship', n)]
+        start_field = date_inputs[0] if len(date_inputs) >= 1 else "txtShipDateS"
+        end_field   = date_inputs[1] if len(date_inputs) >= 2 else "txtShipDateE"
 
         keep = {start_field: _fmt(start_date), end_field: _fmt(end_date)}
 
