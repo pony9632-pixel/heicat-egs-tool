@@ -73,7 +73,10 @@ echo ""
 
 # ── 4. 下載 ──────────────────────────────────────────────────────────────────
 echo "📥 下載中（請稍候）..."
-TMP_ZIP=$(mktemp /tmp/heicat_XXXXXX.zip)
+# macOS mktemp 不支援副檔名在 template 內，先建暫存檔再重命名
+TMP_BASE=$(mktemp /tmp/heicat_XXXXXX)
+TMP_ZIP="${TMP_BASE}.zip"
+mv "$TMP_BASE" "$TMP_ZIP"
 curl -fsSL -L "$ZIPBALL_URL" -o "$TMP_ZIP"
 echo "✅ 下載完成"
 echo ""
