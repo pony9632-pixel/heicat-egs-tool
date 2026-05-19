@@ -37,23 +37,33 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.6.9"
+VERSION     = "1.7.0"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
-# ─── Tidewater palette ───────────────────────────────────────────────────────
-PAPER   = "#FBF9F4"
+# ─── Pro palette ─────────────────────────────────────────────────────────────
+PAPER   = "#F4F1EA"   # warm cream
+PAPER2  = "#EFEBE3"
 CARD    = "#FFFFFF"
-INK     = "#1B2330"
-INK2    = "#4A5462"
-MUTED   = "#8A95A6"
-HAIR    = "#E8E2D6"
-HAIR2   = "#F1ECE0"
-ACCENT  = "#C2552C"
-ACCENT2 = "#FFF1E9"
-OK      = "#2F7A4E"
-WARN    = "#B07A1F"
-ERR     = "#B3382A"
-RAIL    = "#F4EFE3"
+INK     = "#15171C"
+INK2    = "#3B404B"
+INK3    = "#5F6573"
+MUTED   = "#8E94A1"
+MUTED2  = "#B5BAC4"
+HAIR    = "#E3DFD5"
+HAIR2   = "#EDE9DF"
+HAIR3   = "#F4F0E6"
+ACCENT  = "#D8352B"
+ACCENT2 = "#FAEAE9"   # ~7% tint of accent
+OK      = "#1F7A4D"
+OK2     = "#E4F2EA"
+WARN    = "#A0681A"
+WARN2   = "#FAEFD6"
+ERR     = "#B5342A"
+ERR2    = "#FBE5E2"
+INFO    = "#2469A8"
+INFO2   = "#E1EEF8"
+RAIL    = "#F0ECE2"
+RAIL2   = "#E6E1D5"
 
 import platform
 _IS_MAC = platform.system() == "Darwin"
@@ -470,29 +480,41 @@ class App(tk.Tk):
         # mac copy/paste
         self._install_mac_clipboard()
 
-        # title bar (custom, soft)
-        hdr = tk.Frame(self, bg=RAIL, height=44)
-        hdr.pack(fill="x")
-        hdr.pack_propagate(False)
-        self._hdr_logo = _load_logo(28)
-        if self._hdr_logo:
-            tk.Label(hdr, image=self._hdr_logo, bg=RAIL).pack(side="left", padx=(12, 4))
-        tk.Label(hdr, text="STUDIO A 黑貓宅急便工具",
-                 bg=RAIL, fg=INK2, font=F_BOLD).pack(side="left", padx=(4 if self._hdr_logo else 16, 0))
-        tk.Label(hdr, text=f"v{VERSION}",
-                 bg=RAIL, fg=MUTED, font=F_TINY).pack(side="right", padx=16)
+        # ── Window chrome — macOS traffic lights + centred title ──────────────
+        chrome = tk.Frame(self, bg=RAIL, height=36)
+        chrome.pack(fill="x")
+        chrome.pack_propagate(False)
+        # traffic lights (decorative — real ones are in native title bar area)
+        lights = tk.Frame(chrome, bg=RAIL)
+        lights.place(x=12, rely=0.5, anchor="w")
+        for col in ("#FF5F57", "#FEBC2E", "#28C840"):
+            c_dot = tk.Canvas(lights, width=12, height=12, bg=RAIL,
+                              highlightthickness=0)
+            c_dot.create_oval(1, 1, 11, 11, fill=col, outline="")
+            c_dot.pack(side="left", padx=3)
+        tk.Label(chrome, text="STUDIO A · 黑貓宅急便工具",
+                 bg=RAIL, fg=INK2, font=(FONT_FAMILY, _sz(11), "bold")).place(
+                 relx=0.5, rely=0.5, anchor="center")
 
-        # body — sidebar + content
+        # ── Body — sidebar + right column ────────────────────────────────────
         body = tk.Frame(self, bg=PAPER)
         body.pack(fill="both", expand=True)
 
         self.sidebar = Sidebar(body, self)
         self.sidebar.pack(side="left", fill="y")
 
-        Hairline(body, horizontal=False, color=HAIR).pack(side="left", fill="y")
+        tk.Frame(body, bg=HAIR, width=1).pack(side="left", fill="y")
 
-        self.content_host = tk.Frame(body, bg=PAPER)
-        self.content_host.pack(side="left", fill="both", expand=True)
+        right = tk.Frame(body, bg=PAPER)
+        right.pack(side="left", fill="both", expand=True)
+
+        # ── TopBar ────────────────────────────────────────────────────────────
+        self._topbar = TopBar(right, self)
+        self._topbar.pack(fill="x")
+        tk.Frame(right, bg=HAIR2, height=1).pack(fill="x")
+
+        self.content_host = tk.Frame(right, bg=PAPER)
+        self.content_host.pack(fill="both", expand=True)
 
         self.views = {
             "single":   SingleOrderView(self.content_host, self),
@@ -517,6 +539,7 @@ class App(tk.Tk):
         v.lift()
         if hasattr(v, "on_show"): v.on_show()
         self.sidebar.set_active(name)
+        if hasattr(self, "_topbar"): self._topbar.set_view(name)
         # 切換頁面時立刻把 MouseWheel 綁到該頁的主 canvas，
         # 讓使用者在視窗任何地方都能捲動
         if hasattr(v, "_scroll_canvas"):
@@ -989,72 +1012,120 @@ def _load_logo(px: int = 36):
 
 # ─── sidebar ─────────────────────────────────────────────────────────────────
 
+_NAV_ITEMS = [
+    ("single",   "建立寄件單",  "1", "📤"),
+    ("batch",    "批次建單",    "2", "☰"),
+    ("tracking", "貨運查詢",    "3", "⊙"),
+    ("contacts", "通訊錄",      "4", "⊞"),
+    ("settings", "設定",        "5", "⚙"),
+]
+
 class Sidebar(tk.Frame):
     def __init__(self, master, app):
-        super().__init__(master, bg=RAIL, width=220)
+        super().__init__(master, bg=RAIL, width=234)
         self.pack_propagate(False)
         self.app = app
         self._items = {}
 
-        # brand
+        # ── brand ──────────────────────────────────────────────────────────
         brand = tk.Frame(self, bg=RAIL)
-        brand.pack(fill="x", padx=18, pady=(20, 16))
-        self._logo_img = _load_logo(52)
+        brand.pack(fill="x", padx=16, pady=(18, 14))
+        tk.Frame(brand, bg=RAIL, width=1).pack(side="left")  # spacer
+
+        # Logo circle
+        self._logo_img = _load_logo(32)
+        logo_c = tk.Canvas(brand, width=40, height=40, bg=RAIL, highlightthickness=0)
+        logo_c.pack(side="left", padx=(0, 10))
+        logo_c.create_oval(1, 1, 39, 39, fill=CARD, outline=HAIR, width=1)
         if self._logo_img:
-            tk.Label(brand, image=self._logo_img, bg=RAIL).pack(side="left", padx=(0, 10))
+            logo_c.create_image(20, 20, image=self._logo_img)
         else:
-            m = tk.Canvas(brand, width=28, height=28, bg=RAIL, highlightthickness=0)
-            m.create_rectangle(4, 4, 26, 26, fill=INK, outline=INK)
-            m.create_rectangle(9, 11, 21, 19, outline="#FFFFFF", width=2)
-            m.pack(side="left", padx=(0, 10))
+            logo_c.create_rectangle(12, 12, 28, 28, fill=INK, outline=INK)
+
         info = tk.Frame(brand, bg=RAIL)
         info.pack(side="left")
-        tk.Label(info, text="STUDIO A", font=F_BOLD, bg=RAIL, fg=INK).pack(anchor="w")
-        tk.Label(info, text="黑貓宅急便工具", font=F_TINY, bg=RAIL, fg=MUTED).pack(anchor="w")
+        tk.Label(info, text="STUDIO A",
+                 font=(FONT_FAMILY, _sz(12), "bold"),
+                 bg=RAIL, fg=INK).pack(anchor="w")
+        tk.Label(info, text="黑貓宅急便工具",
+                 font=(FONT_FAMILY, _sz(9)),
+                 bg=RAIL, fg=INK3).pack(anchor="w")
 
-        # nav items
+        tk.Frame(self, bg=HAIR2, height=1).pack(fill="x")
+
+        # ── ⌘K search placeholder ─────────────────────────────────────────
+        srch = tk.Frame(self, bg=RAIL)
+        srch.pack(fill="x", padx=12, pady=(10, 6))
+        srch_inner = tk.Frame(srch, bg=CARD,
+                              highlightbackground=HAIR, highlightthickness=1)
+        srch_inner.pack(fill="x", ipady=5, ipadx=8)
+        tk.Label(srch_inner, text="🔍", bg=CARD, fg=MUTED,
+                 font=(FONT_FAMILY, _sz(10))).pack(side="left", padx=(6, 4))
+        tk.Label(srch_inner, text="快速指令…", bg=CARD, fg=MUTED,
+                 font=(FONT_FAMILY, _sz(11)), anchor="w").pack(side="left", fill="x", expand=True)
+        tk.Label(srch_inner, text="⌘K", bg=CARD, fg=MUTED2,
+                 font=(MONO_FAMILY, _sz(9))).pack(side="right", padx=(0, 6))
+
+        # ── nav ────────────────────────────────────────────────────────────
         nav = tk.Frame(self, bg=RAIL)
-        nav.pack(fill="x", padx=10, pady=4)
-        for key, label, kbd in [
-            ("single",   "建立寄件單", "1"),
-            ("batch",    "批次建單",   "2"),
-            ("tracking", "貨運單號查詢", "3"),
-            ("contacts", "通訊錄",     "4"),
-            ("settings", "設定",       "5"),
-        ]:
-            self._items[key] = NavItem(nav, label, kbd, lambda k=key: self.app.show_view(k))
+        nav.pack(fill="x", padx=8, pady=4)
+        for key, label, kbd, icon in _NAV_ITEMS:
+            self._items[key] = NavItem(nav, label, kbd, icon,
+                                       lambda k=key: self.app.show_view(k))
             self._items[key].pack(fill="x", pady=1)
 
         # spacer
         tk.Frame(self, bg=RAIL).pack(fill="both", expand=True)
 
-        # sender preview card
+        # ── sender card ────────────────────────────────────────────────────
         self.sender_card = tk.Frame(self, bg=RAIL)
-        self.sender_card.pack(fill="x", padx=12, pady=12)
+        self.sender_card.pack(fill="x", padx=10, pady=10)
         self._render_sender()
+
+        # version line
+        ver_row = tk.Frame(self, bg=RAIL)
+        ver_row.pack(fill="x", padx=16, pady=(0, 10))
+        tk.Label(ver_row, text=f"v{VERSION}",
+                 font=(MONO_FAMILY, _sz(9)), bg=RAIL, fg=MUTED).pack(side="left")
 
     def _render_sender(self):
         for w in self.sender_card.winfo_children():
             w.destroy()
         cfg = load_cfg()
         sender = cfg.get("sender") or {}
-        wrap = tk.Frame(self.sender_card, bg=CARD, highlightbackground=HAIR, highlightthickness=1)
-        wrap.pack(fill="x")
-        inner = tk.Frame(wrap, bg=CARD)
-        inner.pack(fill="x", padx=12, pady=12)
-        Kicker(inner, "寄件人").pack(anchor="w")
-        tk.Label(inner, text=sender.get("name") or "（未設定）",
-                 font=F_BOLD, bg=CARD, fg=INK, wraplength=170, justify="left").pack(anchor="w", pady=(6, 2))
-        addr = sender.get("address") or "請至設定頁填寫"
-        tk.Label(inner, text=addr, font=F_TINY, bg=CARD, fg=INK2,
-                 wraplength=170, justify="left").pack(anchor="w")
-        # status pill
         has_token = bool(cfg.get("api_token") and cfg.get("username"))
-        s = tk.Frame(inner, bg=CARD); s.pack(anchor="w", pady=(8, 0))
-        tk.Label(s, text="●", font=F_TINY, bg=CARD,
-                 fg=OK if has_token else WARN).pack(side="left")
-        tk.Label(s, text="API 已設定" if has_token else "尚未設定 API",
-                 font=F_TINY, bg=CARD, fg=OK if has_token else WARN).pack(side="left", padx=(4, 0))
+
+        wrap = tk.Frame(self.sender_card, bg=CARD,
+                        highlightbackground=HAIR, highlightthickness=1)
+        wrap.pack(fill="x")
+        wrap.columnconfigure(0, weight=1)
+        inner = tk.Frame(wrap, bg=CARD)
+        inner.pack(fill="x", padx=12, pady=10)
+
+        # header row
+        hrow = tk.Frame(inner, bg=CARD)
+        hrow.pack(fill="x", pady=(0, 6))
+        Kicker(hrow, "寄件人").pack(side="left")
+        # status pill
+        pill = tk.Frame(hrow, bg=OK2)
+        pill.pack(side="right")
+        tk.Label(pill, text=f"● {'已連線' if has_token else '未設定'}",
+                 font=(FONT_FAMILY, _sz(9), "bold"),
+                 bg=OK2 if has_token else WARN2,
+                 fg=OK if has_token else WARN,
+                 padx=6, pady=2).pack()
+        pill.configure(bg=OK2 if has_token else WARN2)
+
+        tk.Label(inner,
+                 text=sender.get("name") or "（未設定）",
+                 font=(FONT_FAMILY, _sz(12), "bold"),
+                 bg=CARD, fg=INK, wraplength=180, justify="left",
+                 anchor="w").pack(fill="x", pady=(0, 2))
+        tk.Label(inner,
+                 text=sender.get("address") or "請至設定頁填寫",
+                 font=(FONT_FAMILY, _sz(9)),
+                 bg=CARD, fg=INK3, wraplength=180, justify="left",
+                 anchor="w").pack(fill="x")
 
     def set_active(self, key):
         for k, item in self._items.items():
@@ -1065,43 +1136,131 @@ class Sidebar(tk.Frame):
 
 
 class NavItem(tk.Frame):
-    def __init__(self, master, label, kbd, on_click):
+    def __init__(self, master, label, kbd, icon, on_click):
         super().__init__(master, bg=RAIL)
         self._active = False
         self._on_click = on_click
         self.inner = tk.Frame(self, bg=RAIL)
-        self.inner.pack(fill="x", padx=0)
+        self.inner.pack(fill="x")
+        # icon
+        self.icn = tk.Label(self.inner, text=icon,
+                            font=(FONT_FAMILY, _sz(12)), bg=RAIL, fg=MUTED,
+                            width=2, padx=2, pady=7)
+        self.icn.pack(side="left", padx=(6, 0))
         self.lbl = tk.Label(self.inner, text=label, font=F_NAV,
-                            bg=RAIL, fg=INK2, anchor="w", padx=12, pady=8)
-        self.lbl.pack(side="left", fill="x", expand=True)
-        self.kbd = tk.Label(self.inner, text=f"⌘{kbd}", font=F_TINY,
-                            bg=RAIL, fg=MUTED, padx=10)
+                            bg=RAIL, fg=INK2, anchor="w", pady=7)
+        self.lbl.pack(side="left", fill="x", expand=True, padx=4)
+        self.kbd = tk.Label(self.inner, text=f"⌘{kbd}",
+                            font=(MONO_FAMILY, _sz(9)),
+                            bg=RAIL, fg=MUTED2, padx=8)
         self.kbd.pack(side="right")
-        for w in (self.inner, self.lbl, self.kbd):
+        for w in (self.inner, self.icn, self.lbl, self.kbd):
             w.bind("<Button-1>", lambda e: self._on_click())
             w.bind("<Enter>", self._hover)
             w.bind("<Leave>", self._unhover)
             w.configure(cursor="hand2")
 
+    def _all(self): return (self.inner, self.icn, self.lbl, self.kbd)
+
     def _hover(self, e):
         if self._active: return
-        for w in (self.inner, self.lbl, self.kbd):
+        for w in self._all():
             w.configure(bg=HAIR2)
 
     def _unhover(self, e):
         if self._active: return
-        for w in (self.inner, self.lbl, self.kbd):
+        for w in self._all():
             w.configure(bg=RAIL)
 
     def set_active(self, on):
         self._active = on
-        bg = CARD if on else RAIL
-        fg = INK if on else INK2
-        kbd_bg = HAIR2 if on else RAIL
-        for w in (self.inner, self.lbl, self.kbd):
+        bg  = CARD if on else RAIL
+        fg  = INK  if on else INK2
+        ifg = ACCENT if on else MUTED
+        for w in self._all():
             w.configure(bg=bg)
-        self.lbl.configure(fg=fg, font=(FONT_FAMILY, _sz(12), "bold") if on else F_NAV)
-        self.kbd.configure(bg=kbd_bg, fg=MUTED)
+        self.lbl.configure(fg=fg,
+                           font=(FONT_FAMILY, _sz(12), "bold") if on else F_NAV)
+        self.icn.configure(fg=ifg)
+        self.kbd.configure(fg=MUTED2)
+
+
+# ─── top bar ─────────────────────────────────────────────────────────────────
+
+_VIEW_NAMES = {
+    "single":   "建立寄件單",
+    "batch":    "批次建單",
+    "tracking": "貨運查詢",
+    "contacts": "通訊錄",
+    "settings": "設定",
+}
+
+class TopBar(tk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, bg=PAPER, height=52)
+        self.pack_propagate(False)
+        self.app = app
+        self._current = "single"
+
+        # breadcrumb
+        bc = tk.Frame(self, bg=PAPER)
+        bc.pack(side="left", padx=22, fill="y")
+        tk.Label(bc, text="黑貓宅急便工具",
+                 font=(FONT_FAMILY, _sz(11)), bg=PAPER, fg=MUTED).pack(side="left")
+        tk.Label(bc, text=" ›", font=(FONT_FAMILY, _sz(11)), bg=PAPER, fg=MUTED2).pack(side="left")
+        self._bc_lbl = tk.Label(bc, text="建立寄件單",
+                                font=(FONT_FAMILY, _sz(11), "bold"),
+                                bg=PAPER, fg=INK)
+        self._bc_lbl.pack(side="left", padx=(4, 0))
+
+        # right cluster
+        right = tk.Frame(self, bg=PAPER)
+        right.pack(side="right", padx=18, fill="y")
+
+        # 新增寄件單 button
+        TwButton(right, "＋ 新增寄件單", variant="default",
+                 command=lambda: self.app.show_view("single")).pack(
+                 side="right", padx=(8, 0))
+
+        # divider
+        tk.Frame(right, bg=HAIR, width=1, height=20).pack(side="right", padx=10)
+
+        # API status
+        self._api_dot = tk.Label(right, text="●",
+                                 font=(FONT_FAMILY, _sz(10)), bg=PAPER, fg=MUTED)
+        self._api_dot.pack(side="right")
+        self._api_lbl = tk.Label(right, text="API",
+                                 font=(FONT_FAMILY, _sz(10)), bg=PAPER, fg=MUTED)
+        self._api_lbl.pack(side="right", padx=(0, 4))
+
+        # clock
+        self._clk = tk.Label(right, text="",
+                             font=(MONO_FAMILY, _sz(10)), bg=PAPER, fg=MUTED)
+        self._clk.pack(side="right", padx=(0, 10))
+        self._tick()
+
+        # divider
+        tk.Frame(right, bg=HAIR, width=1, height=20).pack(side="right", padx=10)
+
+        self._refresh_api_status()
+
+    def _tick(self):
+        import datetime
+        now = datetime.datetime.now()
+        self._clk.config(text=now.strftime("%Y-%m-%d  %H:%M"))
+        self.after(30000, self._tick)
+
+    def _refresh_api_status(self):
+        cfg = load_cfg()
+        has = bool(cfg.get("api_token") and cfg.get("username"))
+        self._api_dot.config(fg=OK if has else WARN)
+        self._api_lbl.config(text="已連線" if has else "未設定",
+                             fg=INK2 if has else WARN)
+
+    def set_view(self, name):
+        self._current = name
+        self._bc_lbl.config(text=_VIEW_NAMES.get(name, name))
+        self._refresh_api_status()
 
 
 # ─── section header ──────────────────────────────────────────────────────────
@@ -1913,7 +2072,22 @@ class BatchOrderView(tk.Frame):
         self._build()
 
     def _build(self):
-        wrap = tk.Frame(self, bg=PAPER)
+        # outer canvas so the whole batch view scrolls
+        canvas = tk.Canvas(self, bg=PAPER, highlightthickness=0)
+        vsb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview,
+                            style="Tw.Vertical.TScrollbar")
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        self._scroll_canvas = canvas
+        _bind_mousewheel_on_hover(self, canvas)
+        _bind_mousewheel_on_hover(canvas, canvas)
+
+        wrap = tk.Frame(canvas, bg=PAPER)
+        win = canvas.create_window((0, 0), window=wrap, anchor="nw")
+        wrap.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
+
         wrap.pack(fill="both", expand=True, padx=28, pady=24)
 
         # header
@@ -2217,14 +2391,18 @@ class TrackingView(tk.Frame):
         super().__init__(master, bg=PAPER)
         self.app = app
         self._records = []
-        self._status_labels: dict[str, tk.Label] = {}   # obt → label
+        self._filter = "all"   # all / progress / ok / err
+        self._status_labels: dict[str, tk.Label] = {}
+        self._filter_btns: dict[str, tk.Label] = {}
+        self._count_lbls: dict[str, tk.Label] = {}
         self._build()
 
     def _build(self):
         wrap = tk.Frame(self, bg=PAPER)
         wrap.pack(fill="both", expand=True, padx=28, pady=24)
 
-        head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
+        # section header
+        head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 14))
         SectionHeader(head, "貨運查詢", "貨運單號查詢").pack(side="left")
         ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
         TwButton(ba, "全部查詢狀態", variant="default",
@@ -2232,47 +2410,90 @@ class TrackingView(tk.Frame):
         TwButton(ba, "重新整理", variant="ghost", command=self.refresh).pack(side="left", padx=4)
         TwButton(ba, "清除兩週前紀錄", variant="ghost", command=self._prune).pack(side="left", padx=4)
 
-        # manual add row
-        add_bar = tk.Frame(wrap, bg=PAPER)
-        add_bar.pack(fill="x", pady=(0, 10))
-        tk.Label(add_bar, text="手動新增單號：", font=F_SMALL, bg=PAPER, fg=INK2).pack(side="left")
+        # stats row (4 cards)
+        self.stats_row = tk.Frame(wrap, bg=PAPER)
+        self.stats_row.pack(fill="x", pady=(0, 14))
+        for i, (key, label, color) in enumerate([
+            ("total",    "近 14 天紀錄", INK),
+            ("ok",       "順利送達",     OK),
+            ("progress", "配送中",       WARN),
+            ("err",      "異常",         ERR),
+        ]):
+            sc = Card(self.stats_row, padding=14)
+            sc.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 8, 0))
+            self.stats_row.columnconfigure(i, weight=1)
+            krow = tk.Frame(sc.body, bg=CARD); krow.pack(fill="x")
+            Kicker(krow, label).pack(side="left")
+            if key != "total":
+                tk.Label(krow, text="●", font=(FONT_FAMILY, _sz(8)),
+                         bg=CARD, fg=color).pack(side="right")
+            vrow = tk.Frame(sc.body, bg=CARD); vrow.pack(anchor="w")
+            num = tk.Label(vrow, text="0", font=(MONO_FAMILY, _sz(20), "bold"),
+                           bg=CARD, fg=color)
+            num.pack(side="left")
+            tk.Label(vrow, text=" 筆", font=F_TINY, bg=CARD, fg=MUTED).pack(side="left", pady=(4, 0))
+            self._count_lbls[key] = num
+
+        # manual add card
+        ac = Card(wrap, padding=14); ac.pack(fill="x", pady=(0, 14))
+        add_bar = tk.Frame(ac.body, bg=CARD); add_bar.pack(fill="x")
+        Kicker(add_bar, "手動新增").pack(side="left", padx=(0, 14))
         self._add_obt_var  = tk.StringVar()
         self._add_name_var = tk.StringVar()
         e_obt = tk.Entry(add_bar, textvariable=self._add_obt_var,
-                         font=F_MONO, relief="flat", bg=CARD, fg=INK,
-                         highlightthickness=1, highlightbackground=HAIR2,
-                         width=18)
-        e_obt.pack(side="left", padx=(6, 4), ipady=4)
-        tk.Label(add_bar, text="收件人：", font=F_SMALL, bg=PAPER, fg=INK2).pack(side="left")
+                         font=F_MONO, relief="flat", bg=HAIR3, fg=INK,
+                         highlightthickness=1, highlightbackground=HAIR,
+                         width=20)
+        e_obt.pack(side="left", padx=(0, 8), ipady=5)
         e_name = tk.Entry(add_bar, textvariable=self._add_name_var,
-                          font=F_NORM, relief="flat", bg=CARD, fg=INK,
-                          highlightthickness=1, highlightbackground=HAIR2,
-                          width=12)
-        e_name.pack(side="left", padx=(4, 8), ipady=4)
-        TwButton(add_bar, "新增", variant="default",
+                          font=F_NORM, relief="flat", bg=HAIR3, fg=INK,
+                          highlightthickness=1, highlightbackground=HAIR,
+                          width=14)
+        e_name.pack(side="left", padx=(0, 8), ipady=5)
+        TwButton(add_bar, "新增到清單", variant="default",
                  command=self._manual_add).pack(side="left")
         e_obt.bind("<Return>", lambda _: self._manual_add())
 
-        # table header
-        hdr = tk.Frame(wrap, bg=HAIR2)
+        # table card (filter tabs + rows)
+        tcard = Card(wrap, padding=0)
+        tcard.pack(fill="both", expand=True)
+
+        # filter tab bar
+        tab_bar = tk.Frame(tcard.inner, bg=CARD)
+        tab_bar.pack(fill="x", pady=(0, 0))
+        tab_inner = tk.Frame(tab_bar, bg=CARD); tab_inner.pack(side="left", padx=10, pady=10)
+        for fid, flabel in [("all","全部"),("progress","配送中"),("ok","順利送達"),("err","異常")]:
+            btn = tk.Label(tab_inner, text=flabel, font=(FONT_FAMILY, _sz(11), "bold"),
+                           bg=INK if fid == "all" else CARD,
+                           fg="#FFFFFF" if fid == "all" else INK2,
+                           padx=10, pady=5, cursor="hand2")
+            btn.pack(side="left", padx=(0, 4))
+            btn.bind("<Button-1>", lambda e, _f=fid: self._set_filter(_f))
+            self._filter_btns[fid] = btn
+        self._result_count = tk.Label(tab_bar, text="", font=F_TINY, bg=CARD, fg=MUTED)
+        self._result_count.pack(side="right", padx=14)
+        Hairline(tcard.inner).pack(fill="x")
+
+        # column header
+        hdr = tk.Frame(tcard.inner, bg=PAPER2)
         hdr.pack(fill="x")
         cols = [("建單時間", 17), ("收件人", 12), ("貨運單號", 16),
                 ("訂單編號", 14), ("配送狀態", 14), ("", 0)]
         for txt, w in cols:
-            tk.Label(hdr, text=txt, font=F_KICKER, bg=HAIR2, fg=MUTED,
+            tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
                      width=w if w else 1, anchor="w", padx=10, pady=8).pack(side="left")
-        Hairline(wrap).pack(fill="x")
+        Hairline(tcard.inner).pack(fill="x")
 
         # scrollable list
-        lf = tk.Frame(wrap, bg=PAPER)
-        lf.pack(fill="both", expand=True, pady=(4, 0))
-        canvas = tk.Canvas(lf, bg=PAPER, highlightthickness=0)
+        lf = tk.Frame(tcard.inner, bg=CARD)
+        lf.pack(fill="both", expand=True)
+        canvas = tk.Canvas(lf, bg=CARD, highlightthickness=0)
         vsb = ttk.Scrollbar(lf, orient="vertical", command=canvas.yview,
                             style="Tw.Vertical.TScrollbar")
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
         canvas.configure(yscrollcommand=vsb.set)
-        self._list_body = tk.Frame(canvas, bg=PAPER)
+        self._list_body = tk.Frame(canvas, bg=CARD)
         self._list_win = canvas.create_window((0, 0), window=self._list_body, anchor="nw")
         self._list_body.bind("<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -2283,32 +2504,63 @@ class TrackingView(tk.Frame):
         _bind_mousewheel_on_hover(canvas, canvas)
         self.refresh()
 
+    def _status_tone(self, status: str) -> str:
+        if _status_fg(status) == OK:  return "ok"
+        if _status_fg(status) == ERR: return "err"
+        if status in ("—", "查詢中…"): return "neutral"
+        return "progress"
+
+    def _set_filter(self, fid: str):
+        self._filter = fid
+        for k, btn in self._filter_btns.items():
+            sel = k == fid
+            btn.configure(bg=INK if sel else CARD,
+                          fg="#FFFFFF" if sel else INK2)
+        self._render_rows()
+
     def on_show(self):
         self.refresh()
 
     def refresh(self):
         import datetime
-        for w in self._list_body.winfo_children():
-            w.destroy()
-        self._status_labels.clear()
-
         records = load_tracking()
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
         records = [r for r in records if r.get("created_at", "") >= cutoff]
         records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
         self._records = records
 
-        if not records:
-            tk.Label(self._list_body,
-                     text="尚無建單紀錄\n（建立寄件單後會自動顯示在這裡）",
-                     bg=PAPER, fg=MUTED, font=F_SMALL, justify="center").pack(pady=60)
+        # update stats cards
+        counts = {"total": len(records), "ok": 0, "progress": 0, "err": 0}
+        for r in records:
+            tone = self._status_tone(r.get("status", "—"))
+            if tone in counts: counts[tone] += 1
+        for key, lbl in self._count_lbls.items():
+            lbl.config(text=str(counts.get(key, 0)))
+
+        self._render_rows()
+
+    def _render_rows(self):
+        for w in self._list_body.winfo_children():
+            w.destroy()
+        self._status_labels.clear()
+
+        filt = self._filter
+        shown = [r for r in self._records
+                 if filt == "all" or self._status_tone(r.get("status","—")) == filt]
+
+        self._result_count.config(text=f"顯示 {len(shown)} 筆")
+
+        if not shown:
+            msg = "尚無建單紀錄\n（建立寄件單後會自動顯示在這裡）" if filt == "all" else "此分類沒有資料"
+            tk.Label(self._list_body, text=msg,
+                     bg=CARD, fg=MUTED, font=F_SMALL, justify="center").pack(pady=60)
             return
 
-        for r in records:
-            self._make_row(r)
-        tk.Frame(self._list_body, bg=PAPER, height=20).pack()
+        for i, r in enumerate(shown):
+            self._make_row(r, i < len(shown) - 1)
+        tk.Frame(self._list_body, bg=CARD, height=12).pack()
 
-    def _make_row(self, r: dict):
+    def _make_row(self, r: dict, divider=True):
         obt     = r.get("obt_number", "—")
         name    = r.get("recipient_name", "—")
         oid     = r.get("order_id", "—")
@@ -2316,37 +2568,46 @@ class TrackingView(tk.Frame):
         status  = r.get("status", "—")
         queried = r.get("queried_at", "")
 
-        # colour by status
         s_fg = _status_fg(status)
 
         row = tk.Frame(self._list_body, bg=CARD)
-        row.pack(fill="x", pady=(0, 1))
+        row.pack(fill="x")
         inner = tk.Frame(row, bg=CARD)
-        inner.pack(fill="x", pady=8)
+        inner.pack(fill="x", padx=4, pady=10)
 
-        tk.Label(inner, text=created,    font=F_TINY, bg=CARD, fg=MUTED, width=17, anchor="w").pack(side="left", padx=(12, 0))
+        tk.Label(inner, text=created,    font=F_TINY, bg=CARD, fg=MUTED, width=17, anchor="w").pack(side="left", padx=(8, 0))
         tk.Label(inner, text=name[:12],  font=F_NORM, bg=CARD, fg=INK,   width=12, anchor="w").pack(side="left", padx=(8, 0))
         tk.Label(inner, text=obt,        font=F_MONO, bg=CARD, fg=INK,   width=16, anchor="w").pack(side="left", padx=(8, 0))
         tk.Label(inner, text=oid[:14],   font=F_TINY, bg=CARD, fg=INK2,  width=14, anchor="w").pack(side="left", padx=(8, 0))
 
-        # status label (updateable)
-        slbl = tk.Label(inner, text=status, font=F_SMALL, bg=CARD, fg=s_fg, width=14, anchor="w")
+        # status pill
+        stone = self._status_tone(status)
+        pill_bg = {
+            "ok": OK2, "err": ERR2, "progress": WARN2, "neutral": HAIR3,
+        }.get(stone, HAIR3)
+        pill_fg = {
+            "ok": OK, "err": ERR, "progress": WARN, "neutral": MUTED,
+        }.get(stone, MUTED)
+        slbl = tk.Label(inner, text=f"● {status}", font=F_TINY, bg=pill_bg, fg=pill_fg,
+                        padx=7, pady=3, width=14, anchor="w")
         slbl.pack(side="left", padx=(8, 0))
         self._status_labels[obt] = slbl
 
-        # tooltip: last queried time
         if queried:
-            slbl.bind("<Enter>", lambda e, t=queried: slbl.config(text=f"查詢於 {t[11:16]}"))
-            slbl.bind("<Leave>", lambda e, s=status: slbl.config(text=s))
+            slbl.bind("<Enter>", lambda e, t=queried: slbl.config(text=f"查詢 {t[11:16]}"))
+            slbl.bind("<Leave>", lambda e, s=status: slbl.config(text=f"● {s}"))
 
         btns = tk.Frame(inner, bg=CARD)
-        btns.pack(side="left", padx=(8, 12))
-        TwButton(btns, "查詢狀態", variant="ghost",
+        btns.pack(side="right", padx=(4, 8))
+        TwButton(btns, "查詢", variant="ghost",
                  command=lambda _obt=obt: self._query_one(_obt)).pack(side="left", padx=(0, 4))
-        TwButton(btns, "複製單號", variant="ghost",
+        TwButton(btns, "複製", variant="ghost",
                  command=lambda _obt=obt: self._copy(_obt)).pack(side="left", padx=(0, 4))
         TwButton(btns, "刪除", variant="ghost",
                  command=lambda _obt=obt: self._delete_one(_obt)).pack(side="left")
+
+        if divider:
+            Hairline(self._list_body).pack(fill="x")
 
     def _manual_add(self):
         obt  = self._add_obt_var.get().strip()
@@ -2372,11 +2633,13 @@ class TrackingView(tk.Frame):
         self.refresh()
 
     def _set_status(self, obt: str, status: str):
-        """Update status label and persist to tracking.json."""
         import datetime
         lbl = self._status_labels.get(obt)
         if lbl and lbl.winfo_exists():
-            lbl.config(text=status, fg=_status_fg(status))
+            stone = self._status_tone(status)
+            pill_bg = {"ok": OK2, "err": ERR2, "progress": WARN2, "neutral": HAIR3}.get(stone, HAIR3)
+            pill_fg = {"ok": OK, "err": ERR, "progress": WARN, "neutral": MUTED}.get(stone, MUTED)
+            lbl.config(text=f"● {status}", bg=pill_bg, fg=pill_fg)
 
         # persist
         now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -2391,7 +2654,7 @@ class TrackingView(tk.Frame):
     def _query_one(self, obt: str):
         lbl = self._status_labels.get(obt)
         if lbl and lbl.winfo_exists():
-            lbl.config(text="查詢中…", fg=MUTED)
+            lbl.config(text="● 查詢中…", bg=HAIR3, fg=MUTED)
 
         def run():
             result = _fetch_obt_status(obt)
@@ -2404,7 +2667,7 @@ class TrackingView(tk.Frame):
         for obt in obts:
             lbl = self._status_labels.get(obt)
             if lbl and lbl.winfo_exists():
-                lbl.config(text="查詢中…", fg=MUTED)
+                lbl.config(text="● 查詢中…", bg=HAIR3, fg=MUTED)
 
         def run():
             for obt in obts:
@@ -2447,7 +2710,7 @@ class ContactsView(tk.Frame):
 
     def _build(self):
         wrap = tk.Frame(self, bg=PAPER)
-        wrap.pack(fill="x", expand=False, padx=28, pady=24)
+        wrap.pack(fill="both", expand=True, padx=28, pady=24)
 
         head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
         SectionHeader(head, "通訊錄", "收件人管理").pack(side="left")
@@ -2458,18 +2721,19 @@ class ContactsView(tk.Frame):
                  command=self._import_csv).pack(side="left", padx=4)
         self._del_sel_btn = TwButton(ba, "刪除選取 (0)", variant="danger",
                                       command=self._delete_checked)
-        # _del_sel_btn is shown/hidden dynamically via _update_del_btn()
         self._add_btn = TwButton(ba, "＋ 新增聯絡人", variant="primary",
                                   command=self._add)
         self._add_btn.pack(side="left", padx=4)
 
         # split: list (left) + detail (right)
-        split = tk.Frame(wrap, bg=PAPER); split.pack(fill="x", expand=False)
+        split = tk.Frame(wrap, bg=PAPER); split.pack(fill="both", expand=True)
         split.columnconfigure(0, weight=2); split.columnconfigure(1, weight=1)
+        split.rowconfigure(0, weight=1)
 
         # left list
         lcard = Card(split, padding=0)
         lcard.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        split.rowconfigure(0, weight=1)
 
         # tab bar
         tab_bar = tk.Frame(lcard.inner, bg=CARD)
@@ -2517,9 +2781,9 @@ class ContactsView(tk.Frame):
 
         # list
         list_holder = tk.Frame(lcard.inner, bg=CARD)
-        list_holder.pack(fill="x")
-        self.list_canvas = tk.Canvas(list_holder, bg=CARD, highlightthickness=0, height=420)
-        self.list_canvas.pack(side="left", fill="x", expand=False)
+        list_holder.pack(fill="both", expand=True)
+        self.list_canvas = tk.Canvas(list_holder, bg=CARD, highlightthickness=0)
+        self.list_canvas.pack(side="left", fill="both", expand=True)
         vsb = ttk.Scrollbar(list_holder, orient="vertical",
                              command=self.list_canvas.yview,
                              style="Tw.Vertical.TScrollbar")
@@ -2913,17 +3177,56 @@ class ConfigView(tk.Frame):
         TwButton(ba3, "套用並重新啟動", variant="primary",
                  command=self._apply_font_scale).pack(side="left")
 
-        Hairline(apc.body).pack(fill="x", pady=(16, 0))
-        mz_cell = tk.Frame(apc.body, bg=CARD); mz_cell.pack(fill="x", pady=(12, 0))
         self.maximized_var = tk.BooleanVar()
-        tk.Checkbutton(
-            mz_cell, text="預設全視窗開啟（下次啟動生效）",
-            variable=self.maximized_var,
-            font=F_NORM, bg=CARD, fg=INK,
-            activebackground=CARD, activeforeground=INK,
-            selectcolor=CARD, relief="flat",
-            command=self._save_maximized,
-        ).pack(anchor="w")
+
+        # Preferences card (toggles)
+        prefc = Card(wrap, padding=0); prefc.pack(fill="x", pady=(0, 14))
+        tk.Frame(prefc.inner, bg=CARD, height=1).pack(fill="x")
+        pref_head = tk.Frame(prefc.inner, bg=CARD); pref_head.pack(fill="x", padx=20, pady=(14, 8))
+        Kicker(pref_head, "偏好").pack(side="left")
+        Hairline(prefc.inner).pack(fill="x")
+        prefs = [
+            ("auto_open_pdf",  "建單成功後自動開啟 PDF",   "使用系統預設 PDF 檢視器"),
+            ("check_updates",  "啟動時檢查更新",           f"目前版本 v{VERSION} · GitHub release"),
+            ("validate_phone", "批次匯入時驗證電話格式",   "不符會在表格中標示警示"),
+            ("start_maximized","預設全視窗開啟",           "下次啟動生效"),
+        ]
+        self.pref_vars = {}
+        for i, (key, label, sub) in enumerate(prefs):
+            prow = tk.Frame(prefc.inner, bg=CARD)
+            prow.pack(fill="x")
+            inner = tk.Frame(prow, bg=CARD); inner.pack(fill="x", padx=20, pady=12)
+            info = tk.Frame(inner, bg=CARD); info.pack(side="left", fill="x", expand=True)
+            tk.Label(info, text=label, font=F_NORM, bg=CARD, fg=INK, anchor="w").pack(fill="x")
+            tk.Label(info, text=sub, font=F_TINY, bg=CARD, fg=MUTED, anchor="w").pack(fill="x")
+            v = tk.BooleanVar()
+            self.pref_vars[key] = v
+            chk = tk.Checkbutton(inner, variable=v, font=F_SMALL,
+                                  text="", bg=CARD, activebackground=CARD,
+                                  fg=ACCENT, selectcolor=CARD, relief="flat",
+                                  bd=0, highlightthickness=0,
+                                  command=lambda _k=key, _v=v: self._save_pref(_k, _v.get()))
+            chk.pack(side="right")
+            if i < len(prefs) - 1:
+                Hairline(prefc.inner).pack(fill="x")
+        tk.Frame(prefc.inner, bg=CARD, height=4).pack()
+
+        # Paths card
+        pc = Card(wrap, padding=22); pc.pack(fill="x", pady=(0, 14))
+        Kicker(pc.body, "檔案路徑").pack(anchor="w", pady=(0, 12))
+        paths = [
+            ("PDF 輸出目錄", "~/黑貓單號"),
+            ("設定檔",       "./config.yaml"),
+            ("通訊錄資料",   "./contacts.json"),
+            ("建單紀錄",     "./tracking.json"),
+            ("建單日誌",     "~/黑貓單號/build_log.txt"),
+        ]
+        for i, (k, v) in enumerate(paths):
+            pr = tk.Frame(pc.body, bg=HAIR3)
+            pr.pack(fill="x", pady=(0 if i == 0 else 4, 0))
+            inner = tk.Frame(pr, bg=HAIR3); inner.pack(fill="x", padx=12, pady=8)
+            tk.Label(inner, text=k, font=F_TINY, bg=HAIR3, fg=MUTED, width=12, anchor="w").pack(side="left")
+            tk.Label(inner, text=v, font=F_MONO, bg=HAIR3, fg=INK).pack(side="left", padx=(8, 0))
 
         # status text
         self.status = tk.Label(wrap, text="", bg=PAPER, font=F_SMALL, anchor="w")
@@ -2950,6 +3253,16 @@ class ConfigView(tk.Frame):
                           if abs(v - cur_scale) < 1e-3), "標準")
         self.fs_var.set(cur_label)
         self.maximized_var.set(bool(cfg.get("start_maximized", False)))
+        # load pref toggles
+        for key, v in self.pref_vars.items():
+            v.set(bool(cfg.get(key, key in ("auto_open_pdf", "check_updates"))))
+
+    def _save_pref(self, key: str, val: bool):
+        cfg = load_cfg()
+        cfg[key] = val
+        save_cfg(cfg)
+        if key == "start_maximized":
+            pass  # applied on next restart
 
     def _save_maximized(self):
         cfg = load_cfg()
