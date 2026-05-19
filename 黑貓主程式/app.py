@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.8.4"
+VERSION     = "1.8.5"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3562,11 +3562,13 @@ class FreightView(tk.Frame):
                                     font=F_TINY, bg=CARD, fg=MUTED)
         self._status_lbl.pack(anchor="w")
 
-        # ── summary stat cards ────────────────────────────────────────────────
+        # ── summary stat cards（4 張）────────────────────────────────────────
         sc_row = tk.Frame(wrap, bg=PAPER); sc_row.pack(fill="x", pady=(0, 10))
-        self._stat_count = self._make_stat_card(sc_row, "查詢筆數", "—", "筆")
-        self._stat_total = self._make_stat_card(sc_row, "運費合計", "—", "元")
-        for col in range(2):
+        self._stat_my_n    = self._make_stat_card(sc_row, "我方付費（9開頭）筆數", "—", "筆",  col=0)
+        self._stat_my_fee  = self._make_stat_card(sc_row, "我方付費金額",          "—", "元",  col=1)
+        self._stat_th_n    = self._make_stat_card(sc_row, "對方到付（5開頭）筆數", "—", "筆",  col=2)
+        self._stat_th_fee  = self._make_stat_card(sc_row, "對方到付金額",          "—", "元",  col=3)
+        for col in range(4):
             sc_row.columnconfigure(col, weight=1, uniform="sc")
 
         # ── results table (Treeview) ──────────────────────────────────────────
@@ -3596,17 +3598,18 @@ class FreightView(tk.Frame):
         _bind_mousewheel_on_hover(self._tree, self._tree)
 
     @staticmethod
-    def _make_stat_card(parent, title: str, value: str, unit: str):
-        f = tk.Frame(parent, bg=CARD, padx=20, pady=14,
+    def _make_stat_card(parent, title: str, value: str, unit: str, col: int = 0):
+        f = tk.Frame(parent, bg=CARD, padx=16, pady=14,
                      highlightthickness=1, highlightbackground=HAIR)
-        f.grid(sticky="nsew", padx=(0, 8), pady=0)
-        tk.Label(f, text=title, font=F_KICKER, bg=CARD, fg=MUTED).pack(anchor="w")
+        f.grid(row=0, column=col, sticky="nsew", padx=(0, 8) if col < 3 else 0)
+        tk.Label(f, text=title, font=F_KICKER, bg=CARD, fg=MUTED,
+                 wraplength=140, justify="left").pack(anchor="w")
         val_row = tk.Frame(f, bg=CARD); val_row.pack(anchor="w", pady=(4, 0))
         v_lbl = tk.Label(val_row, text=value,
-                         font=(FONT_FAMILY, _sz(24), "bold"), bg=CARD, fg=INK)
+                         font=(FONT_FAMILY, _sz(22), "bold"), bg=CARD, fg=INK)
         v_lbl.pack(side="left")
         tk.Label(val_row, text=f" {unit}", font=F_SMALL, bg=CARD, fg=MUTED).pack(
-            side="left", anchor="s", pady=(0, 3))
+            side="left", anchor="s", pady=(0, 2))
         return v_lbl
 
     # ── internals ──────────────────────────────────────────────────────────────
@@ -3738,20 +3741,23 @@ class FreightView(tk.Frame):
 
     def _on_result(self, data: list, start: str, end: str):
         self._results = data
+        my_rows = [r for r in data if (r.get("obt","") or "").startswith("9")]
+        th_rows = [r for r in data if (r.get("obt","") or "").startswith("5")]
+        def _sum(rows):
+            try: return sum(int(r.get("freight","0") or 0) for r in rows)
+            except Exception: return 0
+        self._stat_my_n.config(text=str(len(my_rows)))
+        self._stat_my_fee.config(text=f"{_sum(my_rows):,}")
+        self._stat_th_n.config(text=str(len(th_rows)))
+        self._stat_th_fee.config(text=f"{_sum(th_rows):,}")
         n = len(data)
-        try:
-            total = sum(int(r.get("freight","0") or 0) for r in data)
-        except Exception: total = 0
-        self._stat_count.config(text=str(n))
-        self._stat_total.config(text=f"{total:,}")
-        debug_hint = "（診斷檔已存至桌面 heicat_freight_debug.html）" if n == 0 else ""
-        self._status_lbl.config(text=f"✓ 查詢完成，共 {n} 筆 {debug_hint}", fg=OK if n > 0 else WARN)
+        self._status_lbl.config(text=f"✓ 查詢完成，共 {n} 筆", fg=OK if n > 0 else WARN)
         self._render_rows()
 
     def _on_error(self, msg: str):
         self._status_lbl.config(text=f"✗ 查詢失敗：{msg[:80]}", fg=ERR)
-        self._stat_count.config(text="—")
-        self._stat_total.config(text="—")
+        for lbl in (self._stat_my_n, self._stat_my_fee, self._stat_th_n, self._stat_th_fee):
+            lbl.config(text="—")
         for item in self._tree.get_children():
             self._tree.delete(item)
 

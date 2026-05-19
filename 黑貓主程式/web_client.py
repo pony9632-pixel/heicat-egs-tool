@@ -132,11 +132,11 @@ class TakkyubinWebClient:
         return [(v.strip(), lbl.strip()) for v, lbl in opts]
 
     def query_payment(self, start_date: str, end_date: str, account: str) -> list[dict]:
-        """Query and parse payment detail table."""
+        """Query and parse payment detail table, following all pages."""
         html = self._payment_page_html()
         tokens = self._tokens(html)
 
-        # Auto-resolve account: if specified value isn't in dropdown, use first option
+        # Auto-resolve account
         m = re.search(r'<select[^>]*name="UC_UserList1\$ddlUserList"[^>]*>(.*?)</select>',
                       html, re.S | re.I)
         dropdown_vals = []
@@ -145,36 +145,46 @@ class TakkyubinWebClient:
         if dropdown_vals and account not in dropdown_vals:
             account = dropdown_vals[0]
 
-        # Extract actual btnSearch value from page (may have trailing spaces)
         btn_val_m = re.search(r'<input[^>]*name="btnSearch"[^>]*value="([^"]*)"', html, re.I)
         if not btn_val_m:
             btn_val_m = re.search(r'<input[^>]*value="([^"]*)"[^>]*name="btnSearch"', html, re.I)
         btn_val = btn_val_m.group(1) if btn_val_m else "搜尋"
 
-        post = urllib.parse.urlencode({
+        post_url = f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N"
+        # Fields to keep between pagination POSTs
+        keep = {"txtDateS": start_date, "txtDateE": end_date,
+                "UC_UserList1$ddlUserList": account}
+
+        # --- Page 1 ---
+        page1_post = urllib.parse.urlencode({
             **tokens,
             "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
-            "txtDateS": start_date, "txtDateE": end_date,
-            "UC_UserList1$ddlUserList": account, "btnSearch": btn_val,
+            **keep, "btnSearch": btn_val,
         }, encoding="utf-8").encode("utf-8")
+        cur_html = self._req(post_url, page1_post)
+        all_rows = _parse_table(cur_html)
 
-        # POST to the same page URL that served the form
-        post_url = f"{BASE}/SudaPaymentDetail.aspx?TimeOut=N"
-        result_html = self._req(post_url, post)
+        # --- Additional pages via ASP.NET __doPostBack pagination ---
+        for page_num in range(2, 50):  # safety cap at 50 pages
+            next_arg = f"Page${page_num}"
+            # Find doPostBack target for this page number
+            links = re.findall(r"__doPostBack\('([^']+)','(Page\$\d+)'\)", cur_html)
+            target = next((t for t, a in links if a == next_arg), None)
+            if not target:
+                break  # no more pages
+            page_tokens = self._tokens(cur_html)
+            page_post = urllib.parse.urlencode({
+                **page_tokens,
+                "__EVENTTARGET": target, "__EVENTARGUMENT": next_arg,
+                "__LASTFOCUS": "", **keep,
+            }, encoding="utf-8").encode("utf-8")
+            cur_html = self._req(post_url, page_post)
+            new_rows = _parse_table(cur_html)
+            if not new_rows:
+                break
+            all_rows.extend(new_rows)
 
-        # Save debug files to Desktop for inspection
-        try:
-            import os
-            desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-            with open(os.path.join(desktop, "heicat_freight_get.html"), "w", encoding="utf-8") as f:
-                f.write(html)
-            with open(os.path.join(desktop, "heicat_freight_debug.html"), "w", encoding="utf-8") as f:
-                f.write(result_html)
-        except Exception:
-            pass
-
-        rows = _parse_table(result_html)
-        return rows
+        return all_rows
 
 
 _COL_KEYS = ["customer_id","pickup_date","pickup_place","delivery_date","delivery_place",
