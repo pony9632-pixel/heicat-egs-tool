@@ -18,7 +18,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import yaml
 
-from api_client import SudaClient, save_pdf, default_shipment_date, default_delivery_date
+from api_client import SudaClient, save_pdf, default_shipment_date, default_delivery_date, _skip_sunday
 from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS, _csv_row_to_api_order
 
 CONFIG_PATH   = "config.yaml"
@@ -26,7 +26,17 @@ CONTACTS_PATH         = "contacts.json"
 DEFAULT_CONTACTS_PATH = "default_contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.8"
+
+def _append_build_log(msg: str):
+    """將建單結果 append 到 黑貓單號/build_log.txt"""
+    import datetime
+    log_path = Path(OUTPUT_DIR) / "build_log.txt"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as _f:
+        _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
+
+
+VERSION     = "1.5.9"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -852,6 +862,32 @@ class SingleOrderView(tk.Frame):
         self._combo_field(gp3, 0, 2, "配送時段", "delivery_time",
                           list(DTIME_OPTIONS.keys()), default="01 不指定")
 
+        # 快速日期按鈕（出貨日）
+        def _quick_ship(offset):
+            from datetime import date, timedelta
+            d = _skip_sunday(date.today() + timedelta(days=offset))
+            self._vars["shipment_date"].set(d.strftime("%Y%m%d"))
+        sbtn_row = tk.Frame(gp3, bg=CARD)
+        sbtn_row.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(2, 0))
+        for _lbl, _off in [("今天", 0), ("明天", 1), ("後天", 2)]:
+            tk.Label(sbtn_row, text=_lbl, font=F_TINY, bg=CARD, fg=ACCENT,
+                     cursor="hand2").pack(side="left", padx=(0, 6))
+        for w, off in zip(sbtn_row.winfo_children(), [0, 1, 2]):
+            w.bind("<Button-1>", lambda _, o=off: _quick_ship(o))
+
+        # 快速日期按鈕（配送日）
+        def _quick_deliv(offset):
+            from datetime import date, timedelta
+            d = _skip_sunday(date.today() + timedelta(days=offset))
+            self._vars["delivery_date"].set(d.strftime("%Y%m%d"))
+        dbtn_row = tk.Frame(gp3, bg=CARD)
+        dbtn_row.grid(row=1, column=1, sticky="w", padx=(0, 8), pady=(2, 0))
+        for _lbl, _off in [("今天", 0), ("明天", 1), ("後天", 2)]:
+            tk.Label(dbtn_row, text=_lbl, font=F_TINY, bg=CARD, fg=ACCENT,
+                     cursor="hand2").pack(side="left", padx=(0, 6))
+        for w, off in zip(dbtn_row.winfo_children(), [0, 1, 2]):
+            w.bind("<Button-1>", lambda _, o=off: _quick_deliv(o))
+
         # payment card
         pmc = Card(wrap, padding=22); pmc.pack(fill="x", pady=(0, 14))
         Kicker(pmc.body, "付款設定").pack(anchor="w", pady=(0, 12))
@@ -1334,6 +1370,12 @@ class SingleOrderView(tk.Frame):
             if not values.get(k):
                 messagebox.showwarning("缺少必填欄位", f"請填寫「{label}」"); return
 
+        # S2：電話格式寬鬆檢查（不擋送出，只警告）
+        phone = values.get("recipient_phone", "")
+        if phone and len(re.sub(r"\D", "", phone)) < 8:
+            messagebox.showwarning("電話格式可能有誤",
+                f"收件人電話「{phone}」數字不足 8 碼，請確認後再送出。\n（仍可繼續送出）")
+
         for key, label in [("shipment_date", "出貨日"), ("delivery_date", "配送日")]:
             val = values.get(key, "")
             if val:
@@ -1348,6 +1390,14 @@ class SingleOrderView(tk.Frame):
                 except ValueError:
                     messagebox.showwarning("日期格式錯誤",
                         f"「{label}」日期無效，請輸入正確的 YYYYMMDD。"); return
+
+        # D1：出貨日不能晚於配送日
+        s_val = values.get("shipment_date", "")
+        d_val = values.get("delivery_date", "")
+        if s_val and d_val and len(s_val) == 8 and len(d_val) == 8 and s_val.isdigit() and d_val.isdigit():
+            if s_val > d_val:
+                messagebox.showwarning("日期錯誤",
+                    f"出貨日（{s_val}）不能晚於配送日（{d_val}），請重新確認。"); return
 
         cfg = load_cfg()
         sender = cfg.get("sender") or {}
@@ -1365,6 +1415,7 @@ class SingleOrderView(tk.Frame):
                 r = results[0]
                 if r["success"]:
                     msg = f"✓ 建單成功！OBT：{r['obt_number']}"
+                    _append_build_log(f"✓ OBT:{r['obt_number']} 收件人:{values.get('recipient_name','')} 訂單:{values.get('order_id','')}")
                     if r["pdf_path"]:
                         self._normalize_pdf_rotation(r["pdf_path"])
                         self.after(0, lambda obt=r["obt_number"], nm=values["recipient_name"],
@@ -1378,6 +1429,7 @@ class SingleOrderView(tk.Frame):
                     if "E009" in raw:
                         raw += "\n→ 品名類別已固定為 0006 3C，請確認版本為 v1.5.1 以上並在「設定」頁儲存設定後重試。"
                     msg = f"✗ 建單失敗：{raw}"
+                    _append_build_log(f"✗ 訂單:{values.get('order_id','')} {raw[:80]}")
                     self.after(0, lambda: self.result_lbl.configure(fg=ERR))
                 self.after(0, lambda: self.result_var.set(msg))
             except Exception as ex:
@@ -1453,14 +1505,18 @@ class BatchOrderView(tk.Frame):
                  command=self._submit_all, width=14).pack(side="left", padx=4)
 
         # log card
+        self.progress_lbl = tk.Label(wrap, text="", font=F_SMALL, bg=PAPER, fg=MUTED, anchor="w")
+        self.progress_lbl.pack(fill="x", pady=(14, 2))
         self.log = scrolledtext.ScrolledText(wrap, height=6, font=F_MONO,
             bg=CARD, fg=INK2, relief="flat", state="disabled",
             highlightbackground=HAIR, highlightthickness=1)
-        self.log.pack(fill="x", pady=(14, 0))
+        self.log.pack(fill="x")
 
     def _render_stats(self):
         for w in self.stats_row.winfo_children(): w.destroy()
-        ok_n   = sum(1 for o in self.orders if (o.get("recipient_address") or "").strip())
+        ok_n   = sum(1 for o in self.orders
+                    if all((o.get(k) or "").strip()
+                           for k in ("recipient_name", "recipient_phone", "recipient_address")))
         warn_n = len(self.orders) - ok_n
         stats = [
             ("已載入", str(len(self.orders)), "筆", INK),
@@ -1541,31 +1597,44 @@ class BatchOrderView(tk.Frame):
             messagebox.showwarning("寄件人資料未設定", "請先到「設定」頁填寫寄件人資料。"); return
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
-        self._log(f"開始建單，共 {len(self.orders)} 筆…")
+        total = len(self.orders)
+        self._log(f"開始建單，共 {total} 筆…")
+        self.after(0, lambda: self.progress_lbl.config(text=f"建單中 0 / {total} 筆…", fg=MUTED))
 
         def run():
             client = make_client(cfg)
             for i, order in enumerate(self.orders, 1):
-                api_order = _csv_row_to_api_order(order, sender)
-                resp = client.print_obt([api_order])
                 oid = order.get("order_id", f"#{i}")
-                if resp.get("IsOK") == "Y":
-                    data = resp.get("Data") or {}
-                    if isinstance(data, list) and data: data = data[0]
-                    obt = data.get("OBTNumber", "")
-                    pdf = data.get("PDF", "")
-                    if pdf:
-                        pdf_path = str(Path(self.output_dir) / f"{oid}_{obt}.pdf")
-                        save_pdf(pdf, pdf_path)
-                        self.after(0, lambda o=oid, n=obt: self._log(f"✓ {o}  OBT:{n}"))
+                try:
+                    api_order = _csv_row_to_api_order(order, sender)
+                    resp = client.print_obt([api_order])
+                    if resp.get("IsOK") == "Y":
+                        data = resp.get("Data") or {}
+                        if isinstance(data, list) and data: data = data[0]
+                        obt = data.get("OBTNumber", "")
+                        pdf = data.get("PDF", "")
+                        if pdf:
+                            pdf_path = str(Path(self.output_dir) / f"{oid}_{obt}.pdf")
+                            save_pdf(pdf, pdf_path)
+                            self.after(0, lambda o=oid, n=obt: self._log(f"✓ {o}  OBT:{n}"))
+                            _append_build_log(f"✓ OBT:{obt} 訂單:{oid}")
+                        else:
+                            self.after(0, lambda o=oid: self._log(f"✓ {o}  (無PDF)"))
+                            _append_build_log(f"✓ 無PDF 訂單:{oid}")
                     else:
-                        self.after(0, lambda o=oid: self._log(f"✓ {o}  (無PDF)"))
-                else:
-                    msg = resp.get("Message", "")[:60]
-                    self.after(0, lambda o=oid, m=msg: self._log(f"✗ {o}: {m}"))
+                        msg = resp.get("Message", "")[:60]
+                        self.after(0, lambda o=oid, m=msg: self._log(f"✗ {o}: {m}"))
+                        _append_build_log(f"✗ 訂單:{oid} {msg}")
+                except Exception as ex:
+                    self.after(0, lambda o=oid, e=str(ex): self._log(f"✗ {o}: {e}"))
+                    _append_build_log(f"✗ 訂單:{oid} 例外:{str(ex)[:80]}")
+                self.after(0, lambda _i=i, _t=total: self.progress_lbl.config(
+                    text=f"建單中 {_i} / {_t} 筆…", fg=MUTED))
 
             import subprocess
             self.after(0, lambda: self._log("── 完成 ──"))
+            self.after(0, lambda _t=total: self.progress_lbl.config(
+                text=f"✓ 完成 {_t} 筆", fg=OK))
             self.after(0, lambda d=self.output_dir: subprocess.run(["open", d]))
 
         threading.Thread(target=run, daemon=True).start()
@@ -1615,6 +1684,16 @@ class ContactsView(tk.Frame):
                       bg=CARD, fg=INK, relief="flat", insertbackground=INK,
                       highlightthickness=0, bd=0)
         se.pack(side="left", fill="x", expand=True, pady=10)
+        # × 清除搜尋按鈕（只在搜尋非空時顯示）
+        self._search_clear_lbl = tk.Label(sbar, text="×", font=F_NORM, bg=CARD, fg=MUTED,
+                                          cursor="hand2")
+        self._search_clear_lbl.bind("<Button-1>", lambda _: self.search_var.set(""))
+        def _update_clear_btn(*_):
+            if self.search_var.get():
+                self._search_clear_lbl.pack(side="right", padx=(0, 4))
+            else:
+                self._search_clear_lbl.pack_forget()
+        self.search_var.trace_add("write", _update_clear_btn)
         self.count_lbl = tk.Label(sbar, text="", font=F_TINY, bg=CARD, fg=MUTED)
         self.count_lbl.pack(side="right", padx=14)
         Hairline(lcard.inner).pack(fill="x")
