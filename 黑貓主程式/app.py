@@ -3641,6 +3641,7 @@ class FreightView(tk.Frame):
         super().__init__(master, bg=PAPER)
         self.app = app
         self._results: list[dict] = []
+        self._row_data: dict = {}
         self._mode = "send"
         self._build()
 
@@ -3726,6 +3727,7 @@ class FreightView(tk.Frame):
         self._tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
         _bind_mousewheel_on_hover(self._tree, self._tree)
+        self._tree.bind("<<TreeviewSelect>>", self._on_row_select)
 
     @staticmethod
     def _make_stat_card(parent, title: str, value: str, unit: str, col: int = 0):
@@ -3905,10 +3907,11 @@ class FreightView(tk.Frame):
     def _render_rows(self):
         for item in self._tree.get_children():
             self._tree.delete(item)
+        self._row_data = {}  # iid → full record dict
         for r in self._results:
             try: fee_s = f"{int(r.get('freight','0') or 0):,}"
             except Exception: fee_s = r.get("freight","—") or "—"
-            self._tree.insert("", "end", values=(
+            iid = self._tree.insert("", "end", values=(
                 r.get("pickup_date","—") or "—",
                 r.get("pickup_place","—") or "—",
                 r.get("delivery_date","—") or "—",
@@ -3917,6 +3920,70 @@ class FreightView(tk.Frame):
                 r.get("obt","—") or "—",
                 fee_s,
             ))
+            self._row_data[iid] = r
+
+    def _on_row_select(self, _event=None):
+        sel = self._tree.selection()
+        if not sel:
+            return
+        r = self._row_data.get(sel[0])
+        if r:
+            self._show_row_detail(r)
+
+    def _show_row_detail(self, r: dict):
+        obt = r.get("obt", "").strip()
+        # Look up recipient from local tracking records
+        tracking = load_tracking()
+        trk = next((t for t in tracking if t.get("obt_number","") == obt), None)
+        recipient_name    = (trk or {}).get("recipient_name", "")
+        recipient_address = (trk or {}).get("recipient_address", "")
+
+        dlg = tk.Toplevel(self)
+        dlg.title("運費明細")
+        dlg.configure(bg=PAPER)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        f = tk.Frame(dlg, bg=PAPER, padx=28, pady=22)
+        f.pack()
+
+        tk.Label(f, text="運費明細", font=F_TITLE, bg=PAPER, fg=INK).pack(anchor="w", pady=(0, 16))
+
+        def _row(label, value, mono=False):
+            row = tk.Frame(f, bg=PAPER); row.pack(fill="x", pady=4)
+            tk.Label(row, text=label, font=F_KICKER, bg=PAPER, fg=MUTED,
+                     width=10, anchor="e").pack(side="left")
+            tk.Label(row, text=value or "—",
+                     font=(MONO_FAMILY, _sz(12)) if mono else F_NORM,
+                     bg=PAPER, fg=INK, anchor="w").pack(side="left", padx=(10, 0))
+
+        def _divider():
+            tk.Frame(f, bg=HAIR, height=1).pack(fill="x", pady=6)
+
+        _row("託運單號", obt, mono=True)
+        _row("訂單編號", r.get("order_id","") or "—", mono=True)
+        _divider()
+        _row("集貨日期", r.get("pickup_date",""))
+        _row("集貨所",   r.get("pickup_place",""))
+        _row("配完日期", r.get("delivery_date",""))
+        _row("配完所",   r.get("delivery_place",""))
+        _divider()
+        try:
+            fee = f"{int(r.get('freight','0') or 0):,} 元"
+        except Exception:
+            fee = r.get("freight","—")
+        _row("運費",     fee)
+        _divider()
+        _row("收件人",   recipient_name    or "（未記錄）")
+        _row("地址",     recipient_address or "（未記錄）")
+
+        if not recipient_name:
+            tk.Label(f, text="⚠ 收件人資料來自本機建單紀錄，此單未在本機建立故無法顯示。",
+                     font=F_TINY, bg=PAPER, fg=MUTED, wraplength=340).pack(anchor="w", pady=(4, 0))
+
+        tk.Button(f, text="關閉", command=dlg.destroy,
+                  font=F_NORM, bg=HAIR3, fg=INK,
+                  relief="flat", padx=20, pady=6, cursor="hand2").pack(pady=(14, 0))
 
 
 # ─── dialogs ─────────────────────────────────────────────────────────────────
