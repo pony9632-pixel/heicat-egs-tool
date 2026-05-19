@@ -25,7 +25,7 @@
 開「**終端機**」（Spotlight 搜尋 `Terminal`），貼上以下指令後按 Enter，等它跑完即可：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pony9632-pixel/heicat-egs-tool/main/install.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/pony9632-pixel/heicat-egs-tool/faea6e4/install.sh" | bash
 ```
 
 腳本會自動完成所有事情：確認 Python 3、下載程式、安裝套件，完成後自動開啟程式資料夾。
