@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.6.7"
+VERSION     = "1.6.8"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -2177,16 +2177,20 @@ def _fetch_obt_status(obt: str) -> str:
     if not text:
         return "查無紀錄"
 
-    # 尋找最新狀態關鍵字
-    STATUS_KW = ["已送達", "配送中", "取件中", "已取件", "投遞中",
-                 "派送中", "到站", "轉運中", "處理中", "待取件",
-                 "收件完成", "送達門市", "配達完了"]
-    for kw in STATUS_KW:
-        if kw in text:
-            return kw
+    # 精確比對：找 "{OBT} 目前狀態 {value}" 格式
+    m_obt = re.search(
+        re.escape(obt.strip()) + r"\s+目前狀態\s+([^\s]+(?:\s+[^\s]+){0,2}?)(?:\s+資料登入|$)",
+        text
+    )
+    if m_obt:
+        return m_obt.group(1).strip()
 
-    # 回傳前 30 字作為 fallback
-    return text[:30].strip() or "無法解析"
+    # 若找不到，直接抓第一個「目前狀態 {value}」
+    m_st = re.search(r"目前狀態\s+([一-鿿\w]+)", text)
+    if m_st:
+        return m_st.group(1).strip()
+
+    return "無法解析"
 
 
 # ─── tracking view ───────────────────────────────────────────────────────────
@@ -2296,7 +2300,7 @@ class TrackingView(tk.Frame):
         queried = r.get("queried_at", "")
 
         # colour by status
-        if "送達" in status or "完成" in status or "完了" in status:
+        if any(k in status for k in ("送達", "完成", "完了", "集貨")):
             s_fg = OK
         elif status in ("查詢中…",):
             s_fg = MUTED
@@ -2364,7 +2368,7 @@ class TrackingView(tk.Frame):
         import datetime
         lbl = self._status_labels.get(obt)
         if lbl and lbl.winfo_exists():
-            if "送達" in status or "完成" in status or "完了" in status:
+            if any(k in status for k in ("送達", "完成", "完了", "集貨")):
                 fg = OK
             elif status in ("查無紀錄", "無效單號", "無法解析") or "失敗" in status or "錯誤" in status:
                 fg = ERR
