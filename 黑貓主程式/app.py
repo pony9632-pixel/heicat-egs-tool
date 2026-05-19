@@ -18,7 +18,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import yaml
 
-from api_client import SudaClient, save_pdf, default_shipment_date, default_delivery_date
+from api_client import SudaClient, save_pdf, default_shipment_date, default_delivery_date, _skip_sunday
 from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS, _csv_row_to_api_order
 
 CONFIG_PATH   = "config.yaml"
@@ -26,7 +26,17 @@ CONTACTS_PATH         = "contacts.json"
 DEFAULT_CONTACTS_PATH = "default_contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
 
-VERSION     = "1.5.7"
+
+def _append_build_log(msg: str):
+    """將建單結果 append 到 黑貓單號/build_log.txt"""
+    import datetime
+    log_path = Path(OUTPUT_DIR) / "build_log.txt"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as _f:
+        _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
+
+
+VERSION     = "1.6.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -230,13 +240,22 @@ def field_label(master, text, required=False, hint=None):
 
 
 def _bind_mousewheel_on_hover(hover_widget, canvas):
-    """游標進入 hover_widget 時才把 wheel 綁到 canvas，離開時解綁。
-    避免多個 view 用 bind_all 互相搶 wheel 事件。"""
+    """游標在 hover_widget 範圍內時把 wheel 綁到 canvas，離開時解綁。
+    用 bounding-box 判斷，避免移入子元件觸發 Leave 而中斷捲動。"""
     def _on_wheel(e):
         canvas.yview_scroll(int(-1 * (e.delta / 3)), "units")
     def _on_enter(_):
         canvas.bind_all("<MouseWheel>", _on_wheel)
-    def _on_leave(_):
+    def _on_leave(e):
+        try:
+            wx = hover_widget.winfo_rootx()
+            wy = hover_widget.winfo_rooty()
+            ww = hover_widget.winfo_width()
+            wh = hover_widget.winfo_height()
+            if wx <= e.x_root < wx + ww and wy <= e.y_root < wy + wh:
+                return  # 還在元件範圍內（只是移進子元件），不解綁
+        except Exception:
+            pass
         canvas.unbind_all("<MouseWheel>")
     hover_widget.bind("<Enter>", _on_enter)
     hover_widget.bind("<Leave>", _on_leave)
@@ -268,6 +287,8 @@ class App(tk.Tk):
         win_w, win_h = min(1180, sw - 40), min(sh - 80, 880)
         self.geometry(f"{win_w}x{win_h}")
         self.minsize(1000, 720)
+        if load_cfg().get("start_maximized", False):
+            self.after(200, lambda: self.state("zoomed"))
 
         # splash
         self._splash = tk.Frame(self, bg=PAPER)
@@ -296,6 +317,8 @@ class App(tk.Tk):
     # ── startup version check ────────────────────────────────────────────────
 
     def _startup_check(self):
+        import sys
+        just_updated = "--just-updated" in sys.argv
         try:
             import urllib.request as _req, ssl
             _ctx = ssl.create_default_context()
@@ -310,6 +333,10 @@ class App(tk.Tk):
                 current = tuple(int(x) for x in VERSION.split("."))
                 latest  = tuple(int(x) for x in tag.split("."))
                 if latest > current:
+                    if just_updated:
+                        # 剛更新過卻仍偵測到更新 → Release 版本與 VERSION 不符，防止死循環
+                        self.after(0, self._init_ui)
+                        return
                     zipball = data.get("zipball_url", "")
                     html    = data.get("html_url", "")
                     self.after(0, lambda t=tag, z=zipball, h=html:
@@ -370,7 +397,8 @@ class App(tk.Tk):
 
     def _restart_app(self):
         import os, sys
-        os.execv(sys.executable, [sys.executable, str(Path(__file__))])
+        args = [sys.executable, str(Path(__file__)), "--just-updated"]
+        os.execv(sys.executable, args)
 
     # ── build full UI ────────────────────────────────────────────────────────
 
@@ -408,8 +436,11 @@ class App(tk.Tk):
             foreground=[("selected", INK)])
 
         style.configure("Tw.Vertical.TScrollbar",
-            background=PAPER, troughcolor=PAPER, bordercolor=PAPER,
-            arrowcolor=MUTED, lightcolor=PAPER, darkcolor=PAPER)
+            background="#2C2C2C", troughcolor="#E8E3D8", bordercolor=PAPER,
+            arrowcolor="#2C2C2C", lightcolor="#2C2C2C", darkcolor="#1A1A1A",
+            gripcount=0, relief="flat")
+        style.map("Tw.Vertical.TScrollbar",
+            background=[("active", "#111111"), ("pressed", "#000000")])
 
         # mac copy/paste
         self._install_mac_clipboard()
@@ -456,6 +487,14 @@ class App(tk.Tk):
         v.lift()
         if hasattr(v, "on_show"): v.on_show()
         self.sidebar.set_active(name)
+        # 切換頁面時立刻把 MouseWheel 綁到該頁的主 canvas，
+        # 讓使用者在視窗任何地方都能捲動
+        if hasattr(v, "_scroll_canvas"):
+            c = v._scroll_canvas
+            self.bind_all("<MouseWheel>",
+                          lambda e, _c=c: _c.yview_scroll(int(-1 * (e.delta / 3)), "units"))
+        else:
+            self.unbind_all("<MouseWheel>")
 
     # ── macOS clipboard fix (preserved from original) ─────────────────────────
 
@@ -723,6 +762,8 @@ class SingleOrderView(tk.Frame):
         super().__init__(master, bg=PAPER)
         self.app = app
         self.fields = {}
+        self._field_widgets = {}
+        self._ac_popup = None
         self._staging = []   # list of {order_id, name, obt, pdf_path, var}
         self._print_btn = None
         self._staging_card = None
@@ -751,6 +792,7 @@ class SingleOrderView(tk.Frame):
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
 
         # mouse wheel — 只在游標進入時綁定，避免和其他分頁的 canvas 互相搶
+        self._scroll_canvas = canvas
         _bind_mousewheel_on_hover(self, canvas)
 
         wrap = tk.Frame(body, bg=PAPER)
@@ -773,6 +815,7 @@ class SingleOrderView(tk.Frame):
         grid1.columnconfigure(0, weight=1); grid1.columnconfigure(1, weight=2)
         self._field(grid1, 0, 0, "姓名", "recipient_name", required=True)
         self._field(grid1, 0, 1, "地址", "recipient_address", required=True)
+        self.after(100, lambda: self._attach_autocomplete("recipient_name"))
         grid2 = tk.Frame(rc.body, bg=CARD); grid2.pack(fill="x", pady=(12, 0))
         grid2.columnconfigure(0, weight=1); grid2.columnconfigure(1, weight=1)
         self._field(grid2, 0, 0, "電話", "recipient_phone", required=True, hint="市話")
@@ -828,6 +871,32 @@ class SingleOrderView(tk.Frame):
                     default=default_delivery_date(), mono=True)
         self._combo_field(gp3, 0, 2, "配送時段", "delivery_time",
                           list(DTIME_OPTIONS.keys()), default="01 不指定")
+
+        # 快速日期按鈕（出貨日）
+        def _quick_ship(offset):
+            from datetime import date, timedelta
+            d = _skip_sunday(date.today() + timedelta(days=offset))
+            self.fields["shipment_date"].set(d.strftime("%Y%m%d"))
+        sbtn_row = tk.Frame(gp3, bg=CARD)
+        sbtn_row.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(2, 0))
+        for _lbl, _off in [("今天", 0), ("明天", 1), ("後天", 2)]:
+            tk.Label(sbtn_row, text=_lbl, font=F_TINY, bg=CARD, fg=ACCENT,
+                     cursor="hand2").pack(side="left", padx=(0, 6))
+        for w, off in zip(sbtn_row.winfo_children(), [0, 1, 2]):
+            w.bind("<Button-1>", lambda _, o=off: _quick_ship(o))
+
+        # 快速日期按鈕（配送日）
+        def _quick_deliv(offset):
+            from datetime import date, timedelta
+            d = _skip_sunday(date.today() + timedelta(days=offset))
+            self.fields["delivery_date"].set(d.strftime("%Y%m%d"))
+        dbtn_row = tk.Frame(gp3, bg=CARD)
+        dbtn_row.grid(row=1, column=1, sticky="w", padx=(0, 8), pady=(2, 0))
+        for _lbl, _off in [("今天", 0), ("明天", 1), ("後天", 2)]:
+            tk.Label(dbtn_row, text=_lbl, font=F_TINY, bg=CARD, fg=ACCENT,
+                     cursor="hand2").pack(side="left", padx=(0, 6))
+        for w, off in zip(dbtn_row.winfo_children(), [0, 1, 2]):
+            w.bind("<Button-1>", lambda _, o=off: _quick_deliv(o))
 
         # payment card
         pmc = Card(wrap, padding=22); pmc.pack(fill="x", pady=(0, 14))
@@ -894,6 +963,7 @@ class SingleOrderView(tk.Frame):
         e = ttk.Entry(cell, textvariable=v, style="Tw.TEntry",
                       font=F_MONO if mono else F_NORM)
         e.pack(fill="x")
+        self._field_widgets[key] = e
 
     def _combo_field(self, parent, r, c, label, key, options, default=""):
         cell = tk.Frame(parent, bg=_frame_bg(parent))
@@ -1270,6 +1340,97 @@ class SingleOrderView(tk.Frame):
                 return candidate
         return ""
 
+    def _attach_autocomplete(self, key):
+        """姓名欄即時搜尋通訊錄，下拉選取後自動填入電話和地址。"""
+        var = self.fields.get(key)
+        entry = self._field_widgets.get(key)
+        if not var or not entry:
+            return
+
+        def _close():
+            if self._ac_popup and self._ac_popup.winfo_exists():
+                self._ac_popup.destroy()
+            self._ac_popup = None
+
+        def _fill(contact):
+            var.set(contact.get("name", ""))
+            self.fields["recipient_phone"].set(contact.get("phone", "") or "")
+            self.fields["recipient_mobile"].set(contact.get("mobile", "") or "")
+            self.fields["recipient_address"].set(contact.get("address", "") or "")
+            _close()
+
+        def _open(matches):
+            _close()
+            popup = tk.Toplevel(self)
+            popup.overrideredirect(True)
+            popup.configure(bg=HAIR)
+            self._ac_popup = popup
+
+            entry.update_idletasks()
+            x = entry.winfo_rootx()
+            y = entry.winfo_rooty() + entry.winfo_height() + 2
+            w = max(entry.winfo_width(), 320)
+
+            outer = tk.Frame(popup, bg=CARD,
+                             highlightbackground=HAIR, highlightthickness=1)
+            outer.pack(fill="both", expand=True)
+
+            for c in matches:
+                name = c.get("name", "")
+                addr = (c.get("address") or "")
+                phone = (c.get("phone") or c.get("mobile") or "")
+
+                row = tk.Frame(outer, bg=CARD, cursor="hand2")
+                row.pack(fill="x")
+                inner = tk.Frame(row, bg=CARD)
+                inner.pack(fill="x", padx=14, pady=(8, 4))
+                nl = tk.Label(inner, text=name, font=F_BOLD, bg=CARD, fg=INK, anchor="w")
+                nl.pack(fill="x")
+                sub_parts = [p for p in [phone, addr[:40] if addr else ""] if p]
+                sub = tk.Label(inner, text="  ".join(sub_parts),
+                               font=F_TINY, bg=CARD, fg=MUTED, anchor="w")
+                sub.pack(fill="x", pady=(0, 4))
+                Hairline(outer).pack(fill="x")
+
+                all_w = [row, inner, nl, sub]
+
+                def _enter(_e, _ws=all_w):
+                    for _w in _ws: _w.configure(bg=ACCENT2)
+                def _leave(_e, _ws=all_w, _row=row):
+                    try:
+                        rx = _row.winfo_rootx(); ry = _row.winfo_rooty()
+                        if rx <= _e.x_root < rx + _row.winfo_width() and \
+                           ry <= _e.y_root < ry + _row.winfo_height():
+                            return
+                    except Exception:
+                        pass
+                    for _w in _ws: _w.configure(bg=CARD)
+
+                for _w in all_w:
+                    _w.bind("<Button-1>", lambda _e, _c=c: _fill(_c))
+                    _w.bind("<Enter>", _enter)
+                    _w.bind("<Leave>", _leave)
+
+            row_h = 68
+            popup.geometry(f"{w}x{len(matches) * row_h}+{x}+{y}")
+            popup.lift()
+
+        def _on_change(*_):
+            text = var.get().strip()
+            if len(text) < 1:
+                _close()
+                return
+            matches = [c for c in load_contacts()
+                       if text.lower() in (c.get("name") or "").lower()][:3]
+            if matches:
+                _open(matches)
+            else:
+                _close()
+
+        var.trace_add("write", _on_change)
+        entry.bind("<FocusOut>", lambda _: self.after(200, _close))
+        entry.bind("<Escape>", lambda _: _close())
+
     def _save_to_contacts(self):
         name = self.fields["recipient_name"].get().strip()
         phone = self.fields["recipient_phone"].get().strip()
@@ -1311,6 +1472,12 @@ class SingleOrderView(tk.Frame):
             if not values.get(k):
                 messagebox.showwarning("缺少必填欄位", f"請填寫「{label}」"); return
 
+        # S2：電話格式寬鬆檢查（不擋送出，只警告）
+        phone = values.get("recipient_phone", "")
+        if phone and len(re.sub(r"\D", "", phone)) < 8:
+            messagebox.showwarning("電話格式可能有誤",
+                f"收件人電話「{phone}」數字不足 8 碼，請確認後再送出。\n（仍可繼續送出）")
+
         for key, label in [("shipment_date", "出貨日"), ("delivery_date", "配送日")]:
             val = values.get(key, "")
             if val:
@@ -1325,6 +1492,14 @@ class SingleOrderView(tk.Frame):
                 except ValueError:
                     messagebox.showwarning("日期格式錯誤",
                         f"「{label}」日期無效，請輸入正確的 YYYYMMDD。"); return
+
+        # D1：出貨日不能晚於配送日
+        s_val = values.get("shipment_date", "")
+        d_val = values.get("delivery_date", "")
+        if s_val and d_val and len(s_val) == 8 and len(d_val) == 8 and s_val.isdigit() and d_val.isdigit():
+            if s_val > d_val:
+                messagebox.showwarning("日期錯誤",
+                    f"出貨日（{s_val}）不能晚於配送日（{d_val}），請重新確認。"); return
 
         cfg = load_cfg()
         sender = cfg.get("sender") or {}
@@ -1342,6 +1517,7 @@ class SingleOrderView(tk.Frame):
                 r = results[0]
                 if r["success"]:
                     msg = f"✓ 建單成功！OBT：{r['obt_number']}"
+                    _append_build_log(f"✓ OBT:{r['obt_number']} 收件人:{values.get('recipient_name','')} 訂單:{values.get('order_id','')}")
                     if r["pdf_path"]:
                         self._normalize_pdf_rotation(r["pdf_path"])
                         self.after(0, lambda obt=r["obt_number"], nm=values["recipient_name"],
@@ -1355,6 +1531,7 @@ class SingleOrderView(tk.Frame):
                     if "E009" in raw:
                         raw += "\n→ 品名類別已固定為 0006 3C，請確認版本為 v1.5.1 以上並在「設定」頁儲存設定後重試。"
                     msg = f"✗ 建單失敗：{raw}"
+                    _append_build_log(f"✗ 訂單:{values.get('order_id','')} {raw[:80]}")
                     self.after(0, lambda: self.result_lbl.configure(fg=ERR))
                 self.after(0, lambda: self.result_var.set(msg))
             except Exception as ex:
@@ -1430,14 +1607,18 @@ class BatchOrderView(tk.Frame):
                  command=self._submit_all, width=14).pack(side="left", padx=4)
 
         # log card
+        self.progress_lbl = tk.Label(wrap, text="", font=F_SMALL, bg=PAPER, fg=MUTED, anchor="w")
+        self.progress_lbl.pack(fill="x", pady=(14, 2))
         self.log = scrolledtext.ScrolledText(wrap, height=6, font=F_MONO,
             bg=CARD, fg=INK2, relief="flat", state="disabled",
             highlightbackground=HAIR, highlightthickness=1)
-        self.log.pack(fill="x", pady=(14, 0))
+        self.log.pack(fill="x")
 
     def _render_stats(self):
         for w in self.stats_row.winfo_children(): w.destroy()
-        ok_n   = sum(1 for o in self.orders if (o.get("recipient_address") or "").strip())
+        ok_n   = sum(1 for o in self.orders
+                    if all((o.get(k) or "").strip()
+                           for k in ("recipient_name", "recipient_phone", "recipient_address")))
         warn_n = len(self.orders) - ok_n
         stats = [
             ("已載入", str(len(self.orders)), "筆", INK),
@@ -1518,31 +1699,44 @@ class BatchOrderView(tk.Frame):
             messagebox.showwarning("寄件人資料未設定", "請先到「設定」頁填寫寄件人資料。"); return
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
-        self._log(f"開始建單，共 {len(self.orders)} 筆…")
+        total = len(self.orders)
+        self._log(f"開始建單，共 {total} 筆…")
+        self.after(0, lambda: self.progress_lbl.config(text=f"建單中 0 / {total} 筆…", fg=MUTED))
 
         def run():
             client = make_client(cfg)
             for i, order in enumerate(self.orders, 1):
-                api_order = _csv_row_to_api_order(order, sender)
-                resp = client.print_obt([api_order])
                 oid = order.get("order_id", f"#{i}")
-                if resp.get("IsOK") == "Y":
-                    data = resp.get("Data") or {}
-                    if isinstance(data, list) and data: data = data[0]
-                    obt = data.get("OBTNumber", "")
-                    pdf = data.get("PDF", "")
-                    if pdf:
-                        pdf_path = str(Path(self.output_dir) / f"{oid}_{obt}.pdf")
-                        save_pdf(pdf, pdf_path)
-                        self.after(0, lambda o=oid, n=obt: self._log(f"✓ {o}  OBT:{n}"))
+                try:
+                    api_order = _csv_row_to_api_order(order, sender)
+                    resp = client.print_obt([api_order])
+                    if resp.get("IsOK") == "Y":
+                        data = resp.get("Data") or {}
+                        if isinstance(data, list) and data: data = data[0]
+                        obt = data.get("OBTNumber", "")
+                        pdf = data.get("PDF", "")
+                        if pdf:
+                            pdf_path = str(Path(self.output_dir) / f"{oid}_{obt}.pdf")
+                            save_pdf(pdf, pdf_path)
+                            self.after(0, lambda o=oid, n=obt: self._log(f"✓ {o}  OBT:{n}"))
+                            _append_build_log(f"✓ OBT:{obt} 訂單:{oid}")
+                        else:
+                            self.after(0, lambda o=oid: self._log(f"✓ {o}  (無PDF)"))
+                            _append_build_log(f"✓ 無PDF 訂單:{oid}")
                     else:
-                        self.after(0, lambda o=oid: self._log(f"✓ {o}  (無PDF)"))
-                else:
-                    msg = resp.get("Message", "")[:60]
-                    self.after(0, lambda o=oid, m=msg: self._log(f"✗ {o}: {m}"))
+                        msg = resp.get("Message", "")[:60]
+                        self.after(0, lambda o=oid, m=msg: self._log(f"✗ {o}: {m}"))
+                        _append_build_log(f"✗ 訂單:{oid} {msg}")
+                except Exception as ex:
+                    self.after(0, lambda o=oid, e=str(ex): self._log(f"✗ {o}: {e}"))
+                    _append_build_log(f"✗ 訂單:{oid} 例外:{str(ex)[:80]}")
+                self.after(0, lambda _i=i, _t=total: self.progress_lbl.config(
+                    text=f"建單中 {_i} / {_t} 筆…", fg=MUTED))
 
             import subprocess
             self.after(0, lambda: self._log("── 完成 ──"))
+            self.after(0, lambda _t=total: self.progress_lbl.config(
+                text=f"✓ 完成 {_t} 筆", fg=OK))
             self.after(0, lambda d=self.output_dir: subprocess.run(["open", d]))
 
         threading.Thread(target=run, daemon=True).start()
@@ -1557,6 +1751,8 @@ class ContactsView(tk.Frame):
         self._all = []
         self._filtered = []
         self._selected = None
+        self._active_tab = "門市"
+        self._checked_names = set()
         self._build()
         self.refresh()
 
@@ -1571,8 +1767,12 @@ class ContactsView(tk.Frame):
                  command=self._export_csv).pack(side="left", padx=4)
         TwButton(ba, "匯入 CSV", variant="ghost",
                  command=self._import_csv).pack(side="left", padx=4)
-        TwButton(ba, "＋ 新增聯絡人", variant="primary",
-                 command=self._add).pack(side="left", padx=4)
+        self._del_sel_btn = TwButton(ba, "刪除選取 (0)", variant="danger",
+                                      command=self._delete_checked)
+        # _del_sel_btn is shown/hidden dynamically via _update_del_btn()
+        self._add_btn = TwButton(ba, "＋ 新增聯絡人", variant="primary",
+                                  command=self._add)
+        self._add_btn.pack(side="left", padx=4)
 
         # split: list (left) + detail (right)
         split = tk.Frame(wrap, bg=PAPER); split.pack(fill="x", expand=False)
@@ -1581,6 +1781,19 @@ class ContactsView(tk.Frame):
         # left list
         lcard = Card(split, padding=0)
         lcard.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+
+        # tab bar
+        tab_bar = tk.Frame(lcard.inner, bg=CARD)
+        tab_bar.pack(fill="x")
+        self._tab_btns = {}
+        for _cat in ("門市", "廠商"):
+            _btn = tk.Label(tab_bar, text=f"{_cat}通訊錄", font=F_SMALL,
+                            bg=CARD, fg=ACCENT if _cat == "門市" else MUTED,
+                            cursor="hand2", padx=16, pady=10)
+            _btn.pack(side="left")
+            _btn.bind("<Button-1>", lambda _, c=_cat: self._switch_tab(c))
+            self._tab_btns[_cat] = _btn
+        Hairline(lcard.inner).pack(fill="x")
 
         # search bar
         sbar = tk.Frame(lcard.inner, bg=CARD, height=44)
@@ -1592,6 +1805,23 @@ class ContactsView(tk.Frame):
                       bg=CARD, fg=INK, relief="flat", insertbackground=INK,
                       highlightthickness=0, bd=0)
         se.pack(side="left", fill="x", expand=True, pady=10)
+        # × 清除搜尋按鈕（只在搜尋非空時顯示）
+        self._search_clear_lbl = tk.Label(sbar, text="×", font=F_NORM, bg=CARD, fg=MUTED,
+                                          cursor="hand2")
+        self._search_clear_lbl.bind("<Button-1>", lambda _: self.search_var.set(""))
+        def _update_clear_btn(*_):
+            if self.search_var.get():
+                self._search_clear_lbl.pack(side="right", padx=(0, 4))
+            else:
+                self._search_clear_lbl.pack_forget()
+        self.search_var.trace_add("write", _update_clear_btn)
+        # 全選 checkbox
+        self._all_check_var = tk.BooleanVar(value=False)
+        self._all_check = tk.Checkbutton(sbar, variable=self._all_check_var,
+                                          command=self._toggle_all,
+                                          bg=CARD, activebackground=CARD,
+                                          relief="flat", bd=0, highlightthickness=0)
+        self._all_check.pack(side="left", padx=(8, 0))
         self.count_lbl = tk.Label(sbar, text="", font=F_TINY, bg=CARD, fg=MUTED)
         self.count_lbl.pack(side="right", padx=14)
         Hairline(lcard.inner).pack(fill="x")
@@ -1612,6 +1842,7 @@ class ContactsView(tk.Frame):
             self.list_canvas.configure(scrollregion=self.list_canvas.bbox("all")))
         self.list_canvas.bind("<Configure>", lambda e:
             self.list_canvas.itemconfig(self.list_win, width=e.width))
+        self._scroll_canvas = self.list_canvas
         _bind_mousewheel_on_hover(list_holder,      self.list_canvas)
         _bind_mousewheel_on_hover(self.list_canvas, self.list_canvas)
         _bind_mousewheel_on_hover(self.list_body,   self.list_canvas)
@@ -1628,11 +1859,13 @@ class ContactsView(tk.Frame):
 
     def _refilter(self):
         kw = self.search_var.get().lower() if hasattr(self, "search_var") else ""
+        pool = [c for c in self._all
+                if (c.get("category") or "門市") == self._active_tab]
         if kw:
-            self._filtered = [c for c in self._all
+            self._filtered = [c for c in pool
                               if any(kw in str(v).lower() for v in c.values())]
         else:
-            self._filtered = list(self._all)
+            self._filtered = list(pool)
         self.count_lbl.config(text=f"{len(self._filtered)} 位")
         self._render_list()
         if self._filtered:
@@ -1647,30 +1880,42 @@ class ContactsView(tk.Frame):
         for c in self._filtered:
             sel = self._selected and c.get("name") == self._selected.get("name")
             self._make_row(c, sel)
+        # Update 全選 state
+        checked_in_view = self._checked_names & {c.get("name") for c in self._filtered}
+        if self._filtered and checked_in_view == {c.get("name") for c in self._filtered}:
+            self._all_check_var.set(True)
+        else:
+            self._all_check_var.set(False)
 
     def _make_row(self, c, sel):
+        name = c.get("name", "")
+        checked = name in self._checked_names
         bg = ACCENT2 if sel else CARD
         row = tk.Frame(self.list_body, bg=bg, cursor="hand2")
         row.pack(fill="x")
         body = tk.Frame(row, bg=bg); body.pack(fill="x", padx=14, pady=10)
+        # checkbox
+        chk_var = tk.BooleanVar(value=checked)
+        chk = tk.Checkbutton(body, variable=chk_var, bg=bg, activebackground=bg,
+                              relief="flat", bd=0, highlightthickness=0,
+                              command=lambda _n=name, _v=chk_var: self._on_row_check(_n, _v.get()))
+        chk.pack(side="left", padx=(0, 8))
         # avatar
-        av_size = 32
         av_color = ACCENT if sel else RAIL
         av_fg = "#FFFFFF" if sel else INK2
-        av = tk.Label(body, text=(c.get("name") or "?")[:1],
+        av = tk.Label(body, text=(name or "?")[:1],
                       bg=av_color, fg=av_fg, font=F_BOLD, width=2, height=1)
         av.pack(side="left", padx=(0, 12))
         info = tk.Frame(body, bg=bg); info.pack(side="left", fill="x", expand=True)
-        tk.Label(info, text=c.get("name", ""), font=F_BOLD,
+        tk.Label(info, text=name, font=F_BOLD,
                  bg=bg, fg=INK, anchor="w").pack(fill="x")
         tk.Label(info, text=(c.get("address") or "—"),
                  font=F_TINY, bg=bg, fg=INK2, anchor="w",
-                 wraplength=380, justify="left").pack(fill="x")
+                 wraplength=360, justify="left").pack(fill="x")
         if c.get("notes"):
             tag = tk.Label(body, text=c["notes"][:8], font=F_TINY,
                            bg="#FFE9D8", fg=ACCENT, padx=6, pady=2)
             tag.pack(side="right")
-        # divider line
         Hairline(self.list_body).pack(fill="x")
 
         def select(_e=None):
@@ -1680,6 +1925,59 @@ class ContactsView(tk.Frame):
             w.bind("<Button-1>", select)
         for child in info.winfo_children():
             child.bind("<Button-1>", select)
+
+    def _on_row_check(self, name, checked):
+        if checked:
+            self._checked_names.add(name)
+        else:
+            self._checked_names.discard(name)
+        self._update_del_btn()
+        # update 全選 state
+        if self._filtered and self._checked_names >= {c.get("name") for c in self._filtered}:
+            self._all_check_var.set(True)
+        else:
+            self._all_check_var.set(False)
+
+    def _toggle_all(self):
+        if self._all_check_var.get():
+            for c in self._filtered:
+                self._checked_names.add(c.get("name", ""))
+        else:
+            for c in self._filtered:
+                self._checked_names.discard(c.get("name", ""))
+        self._update_del_btn()
+        self._render_list()
+
+    def _update_del_btn(self):
+        n = len(self._checked_names)
+        if n > 0:
+            self._del_sel_btn.set_text(f"刪除選取 ({n})")
+            if not self._del_sel_btn.winfo_ismapped():
+                self._del_sel_btn.pack(side="left", padx=4, before=self._add_btn)
+        else:
+            self._del_sel_btn.pack_forget()
+
+    def _delete_checked(self):
+        names = set(self._checked_names)
+        if not names: return
+        if not messagebox.askyesno("確認刪除",
+                f"確定刪除選取的 {len(names)} 筆聯絡人？\n此動作無法復原。"): return
+        contacts = [c for c in load_contacts() if c.get("name") not in names]
+        save_contacts(contacts)
+        self._checked_names.clear()
+        self._selected = None
+        self._update_del_btn()
+        self.refresh()
+
+    def _switch_tab(self, cat):
+        self._active_tab = cat
+        self._checked_names.clear()
+        self._update_del_btn()
+        for c, btn in self._tab_btns.items():
+            btn.config(fg=ACCENT if c == cat else MUTED,
+                       font=(F_SMALL[0], F_SMALL[1], "bold") if c == cat else F_SMALL)
+        self._all_check_var.set(False)
+        self._refilter()
 
     def _render_detail(self):
         for w in self.detail_card.body.winfo_children(): w.destroy()
@@ -1734,7 +2032,7 @@ class ContactsView(tk.Frame):
         self.app.show_view("single")
 
     def _add(self):
-        ContactDialog(self, None, self._on_save)
+        ContactDialog(self, {"category": self._active_tab}, self._on_save)
 
     def _edit(self):
         if not self._selected: return
@@ -1750,6 +2048,8 @@ class ContactsView(tk.Frame):
         self.refresh()
 
     def _on_save(self, contact, original_name=None):
+        if not contact.get("category"):
+            contact["category"] = self._active_tab
         contacts = load_contacts()
         if original_name:
             contacts = [c for c in contacts if c.get("name") != original_name]
@@ -1841,6 +2141,7 @@ class ConfigView(tk.Frame):
         body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
 
+        self._scroll_canvas = canvas
         _bind_mousewheel_on_hover(self, canvas)
 
         wrap = tk.Frame(body, bg=PAPER)
@@ -1923,6 +2224,18 @@ class ConfigView(tk.Frame):
         TwButton(ba3, "套用並重新啟動", variant="primary",
                  command=self._apply_font_scale).pack(side="left")
 
+        Hairline(apc.body).pack(fill="x", pady=(16, 0))
+        mz_cell = tk.Frame(apc.body, bg=CARD); mz_cell.pack(fill="x", pady=(12, 0))
+        self.maximized_var = tk.BooleanVar()
+        tk.Checkbutton(
+            mz_cell, text="預設全視窗開啟（下次啟動生效）",
+            variable=self.maximized_var,
+            font=F_NORM, bg=CARD, fg=INK,
+            activebackground=CARD, activeforeground=INK,
+            selectcolor=CARD, relief="flat",
+            command=self._save_maximized,
+        ).pack(anchor="w")
+
         # status text
         self.status = tk.Label(wrap, text="", bg=PAPER, font=F_SMALL, anchor="w")
         self.status.pack(fill="x", pady=(8, 0))
@@ -1947,6 +2260,12 @@ class ConfigView(tk.Frame):
         cur_label = next((k for k, v in FONT_SCALE_OPTIONS.items()
                           if abs(v - cur_scale) < 1e-3), "標準")
         self.fs_var.set(cur_label)
+        self.maximized_var.set(bool(cfg.get("start_maximized", False)))
+
+    def _save_maximized(self):
+        cfg = load_cfg()
+        cfg["start_maximized"] = bool(self.maximized_var.get())
+        save_cfg(cfg)
 
     def _apply_font_scale(self):
         label = self.fs_var.get()
@@ -2004,12 +2323,12 @@ CONTACT_FIELDS = [("name", "姓名 *"), ("phone", "電話"),
 class ContactDialog(tk.Toplevel):
     def __init__(self, parent, contact, on_save):
         super().__init__(parent)
-        self.title("新增聯絡人" if contact is None else "編輯聯絡人")
+        self.title("新增聯絡人" if (contact is None or not contact.get("name")) else "編輯聯絡人")
         self.configure(bg=PAPER)
         self.resizable(False, False)
         self.grab_set()
         self.on_save = on_save
-        self.original_name = contact["name"] if contact else None
+        self.original_name = contact.get("name") if contact else None
         self.vars = {}
         self._build(contact or {})
 
@@ -2030,6 +2349,16 @@ class ContactDialog(tk.Toplevel):
             ttk.Entry(grid, textvariable=v, style="Tw.TEntry",
                       font=F_MONO if key in ("phone","mobile") else F_NORM,
                       width=36).grid(row=i*2+1, column=0, sticky="ew")
+
+        # Category
+        tk.Label(wrap, text="分類", font=F_LABEL, bg=PAPER, fg=MUTED).pack(anchor="w", pady=(12, 4))
+        cat_frame = tk.Frame(wrap, bg=PAPER)
+        cat_frame.pack(anchor="w")
+        self.vars["category"] = tk.StringVar(value=contact.get("category", "門市"))
+        for cat in ("門市", "廠商"):
+            tk.Radiobutton(cat_frame, text=cat, variable=self.vars["category"],
+                           value=cat, bg=PAPER, activebackground=PAPER,
+                           font=F_NORM, fg=INK).pack(side="left", padx=(0, 16))
 
         ba = tk.Frame(wrap, bg=PAPER); ba.pack(fill="x", pady=(20, 0))
         TwButton(ba, "儲存", variant="primary", command=self._save).pack(side="left", padx=(0, 8))
