@@ -36,7 +36,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.6.0"
+VERSION     = "1.6.1"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -317,6 +317,8 @@ class App(tk.Tk):
     # ── startup version check ────────────────────────────────────────────────
 
     def _startup_check(self):
+        import sys
+        just_updated = "--just-updated" in sys.argv
         try:
             import urllib.request as _req, ssl
             _ctx = ssl.create_default_context()
@@ -331,6 +333,10 @@ class App(tk.Tk):
                 current = tuple(int(x) for x in VERSION.split("."))
                 latest  = tuple(int(x) for x in tag.split("."))
                 if latest > current:
+                    if just_updated:
+                        # 剛更新過卻仍偵測到更新 → Release 版本與 VERSION 不符，防止死循環
+                        self.after(0, self._init_ui)
+                        return
                     zipball = data.get("zipball_url", "")
                     html    = data.get("html_url", "")
                     self.after(0, lambda t=tag, z=zipball, h=html:
@@ -391,7 +397,8 @@ class App(tk.Tk):
 
     def _restart_app(self):
         import os, sys
-        os.execv(sys.executable, [sys.executable, str(Path(__file__))])
+        args = [sys.executable, str(Path(__file__)), "--just-updated"]
+        os.execv(sys.executable, args)
 
     # ── build full UI ────────────────────────────────────────────────────────
 
