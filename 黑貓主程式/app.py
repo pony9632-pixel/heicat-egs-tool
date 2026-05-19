@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.8.7"
+VERSION     = "1.8.8"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3578,26 +3578,25 @@ class FreightView(tk.Frame):
 
         # ── results table (Treeview) ──────────────────────────────────────────
         rcard = Card(wrap, padding=0); rcard.pack(fill="both", expand=True)
-        cols = ("pickup_date","pickup_place","delivery_date","delivery_place",
-                "order_id","obt","freight","add_fee","shipment_type")
-        labels = {"pickup_date":"集貨日期","pickup_place":"集貨所",
-                  "delivery_date":"配完日期","delivery_place":"配完所",
-                  "order_id":"訂單編號","obt":"託運單號",
-                  "freight":"運費(元)","add_fee":"附加服務金","shipment_type":"類型"}
-        col_w  = {"pickup_date":100,"pickup_place":110,"delivery_date":100,
-                  "delivery_place":110,"order_id":100,"obt":140,
-                  "freight":80,"add_fee":90,"shipment_type":80}
-        col_anchor = {"freight":"e","add_fee":"e"}
+        _COLS = [
+            ("pickup_date",   "集貨日期", 110, "center"),
+            ("pickup_place",  "集貨所",   130, "w"),
+            ("delivery_date", "配完日期", 110, "center"),
+            ("delivery_place","配完所",   130, "w"),
+            ("order_id",      "訂單編號", 100, "w"),
+            ("obt",           "託運單號", 150, "w"),
+            ("freight",       "運費(元)", 80,  "e"),
+        ]
+        cols = tuple(c for c,*_ in _COLS)
         tf = tk.Frame(rcard.body, bg=CARD); tf.pack(fill="both", expand=True)
         self._tree = ttk.Treeview(tf, columns=cols, show="headings",
                                   style="Tw.Treeview", selectmode="browse")
         vsb = ttk.Scrollbar(tf, orient="vertical", command=self._tree.yview,
                              style="Tw.Vertical.TScrollbar")
         self._tree.configure(yscrollcommand=vsb.set)
-        for c in cols:
-            self._tree.heading(c, text=labels[c])
-            self._tree.column(c, width=col_w[c], minwidth=col_w[c],
-                              anchor=col_anchor.get(c, "w"), stretch=True)
+        for cid, label, w, anchor in _COLS:
+            self._tree.heading(cid, text=label, anchor=anchor)
+            self._tree.column(cid, width=w, minwidth=w, anchor=anchor, stretch=True)
         self._tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
         _bind_mousewheel_on_hover(self._tree, self._tree)
@@ -3780,17 +3779,9 @@ class FreightView(tk.Frame):
     def _render_rows(self):
         for item in self._tree.get_children():
             self._tree.delete(item)
-        rows = self._results
-        for r in rows:
+        for r in self._results:
             try: fee_s = f"{int(r.get('freight','0') or 0):,}"
             except Exception: fee_s = r.get("freight","—") or "—"
-            try: add_s = f"{int(r.get('add_fee','0') or 0):,}"
-            except Exception: add_s = r.get("add_fee","—") or "—"
-            tags = []
-            if r.get("is_cash") == "Y": tags.append("收現")
-            if r.get("is_return") == "Y": tags.append("退貨")
-            if r.get("is_same_day") == "Y": tags.append("當配")
-            type_s = r.get("shipment_type","") or ("、".join(tags) if tags else "—")
             self._tree.insert("", "end", values=(
                 r.get("pickup_date","—") or "—",
                 r.get("pickup_place","—") or "—",
@@ -3798,7 +3789,7 @@ class FreightView(tk.Frame):
                 r.get("delivery_place","—") or "—",
                 r.get("order_id","—") or "—",
                 r.get("obt","—") or "—",
-                fee_s, add_s, type_s,
+                fee_s,
             ))
 
 
