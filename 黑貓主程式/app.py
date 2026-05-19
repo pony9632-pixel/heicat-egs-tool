@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.9.1"
+VERSION     = "1.9.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3777,7 +3777,7 @@ class FreightView(tk.Frame):
 
         btn_row = tk.Frame(f, bg=PAPER); btn_row.pack(pady=(8, 0))
         tk.Button(btn_row, text="確認登入", command=_submit,
-                  font=(FONT_FAMILY, _sz(12)), bg=ACCENT, fg="#FFFFFF",
+                  font=(FONT_FAMILY, _sz(12), "bold"), bg=HAIR3, fg=INK,
                   relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left", padx=(0,8))
         tk.Button(btn_row, text="取消", command=dlg.destroy,
                   font=(FONT_FAMILY, _sz(12)), bg=HAIR3, fg=INK2,
