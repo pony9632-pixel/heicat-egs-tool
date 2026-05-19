@@ -36,7 +36,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.6.1"
+VERSION     = "1.6.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Tidewater palette ───────────────────────────────────────────────────────
@@ -1411,8 +1411,8 @@ class SingleOrderView(tk.Frame):
                     _w.bind("<Enter>", _enter)
                     _w.bind("<Leave>", _leave)
 
-            row_h = 52
-            popup.geometry(f"{w}x{min(len(matches) * row_h, 300)}+{x}+{y}")
+            row_h = 68
+            popup.geometry(f"{w}x{len(matches) * row_h}+{x}+{y}")
             popup.lift()
 
         def _on_change(*_):
@@ -1421,7 +1421,7 @@ class SingleOrderView(tk.Frame):
                 _close()
                 return
             matches = [c for c in load_contacts()
-                       if text.lower() in (c.get("name") or "").lower()][:8]
+                       if text.lower() in (c.get("name") or "").lower()][:3]
             if matches:
                 _open(matches)
             else:
