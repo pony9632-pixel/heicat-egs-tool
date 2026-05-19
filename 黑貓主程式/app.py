@@ -38,7 +38,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.9.5"
+VERSION     = "1.9.6"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -3931,15 +3931,14 @@ class FreightView(tk.Frame):
             self._show_row_detail(r)
 
     def _show_row_detail(self, r: dict):
-        obt = r.get("obt", "").strip()
-        # Look up recipient from local tracking records
-        tracking = load_tracking()
-        trk = next((t for t in tracking if t.get("obt_number","") == obt), None)
-        recipient_name    = (trk or {}).get("recipient_name", "")
-        recipient_address = (trk or {}).get("recipient_address", "")
+        obt       = r.get("obt", "").strip()
+        start     = self._start_var.get().strip()
+        end       = self._end_var.get().strip()
+        cfg       = load_cfg()
+        account   = cfg.get("web_account","").strip() or cfg.get("web_username","").strip()
 
         dlg = tk.Toplevel(self)
-        dlg.title("運費明細")
+        dlg.title("電子訂單明細")
         dlg.configure(bg=PAPER)
         dlg.resizable(False, False)
         dlg.grab_set()
@@ -3947,7 +3946,7 @@ class FreightView(tk.Frame):
         f = tk.Frame(dlg, bg=PAPER, padx=28, pady=22)
         f.pack()
 
-        tk.Label(f, text="運費明細", font=F_TITLE, bg=PAPER, fg=INK).pack(anchor="w", pady=(0, 16))
+        tk.Label(f, text="電子訂單明細", font=F_TITLE, bg=PAPER, fg=INK).pack(anchor="w", pady=(0, 16))
 
         def _row(label, value, mono=False):
             row = tk.Frame(f, bg=PAPER); row.pack(fill="x", pady=4)
@@ -3972,14 +3971,67 @@ class FreightView(tk.Frame):
             fee = f"{int(r.get('freight','0') or 0):,} 元"
         except Exception:
             fee = r.get("freight","—")
-        _row("運費",     fee)
+        _row("運費", fee)
         _divider()
-        _row("收件人",   recipient_name    or "（未記錄）")
-        _row("地址",     recipient_address or "（未記錄）")
 
-        if not recipient_name:
-            tk.Label(f, text="⚠ 收件人資料來自本機建單紀錄，此單未在本機建立故無法顯示。",
-                     font=F_TINY, bg=PAPER, fg=MUTED, wraplength=340).pack(anchor="w", pady=(4, 0))
+        # Recipient section — loaded from web asynchronously
+        rec_frame = tk.Frame(f, bg=PAPER); rec_frame.pack(fill="x")
+        loading_lbl = tk.Label(rec_frame, text="收件人資料讀取中…",
+                               font=F_SMALL, bg=PAPER, fg=MUTED)
+        loading_lbl.pack(anchor="w", pady=4)
+
+        # Dynamic labels updated after fetch
+        rec_name_lbl = tk.Label(rec_frame, text="", font=F_NORM, bg=PAPER, fg=INK)
+        rec_addr_lbl = tk.Label(rec_frame, text="",
+                                font=(MONO_FAMILY, _sz(11)), bg=PAPER, fg=MUTED)
+        web_detail = {}  # filled by background thread
+
+        def _fill_recipient(detail: dict):
+            loading_lbl.destroy()
+            rec_name = detail.get("recipient_name","")
+            rec_addr = detail.get("recipient_address","")
+            sender   = detail.get("sender_name","")
+            notes    = detail.get("notes","")
+
+            # If web detail failed, fall back to tracking.json
+            if not rec_name:
+                tracking = load_tracking()
+                trk = next((t for t in tracking if t.get("obt_number","") == obt), None)
+                rec_name = (trk or {}).get("recipient_name","")
+                rec_addr = (trk or {}).get("recipient_address","")
+
+            def _r(label, value, mono=False):
+                row = tk.Frame(rec_frame, bg=PAPER); row.pack(fill="x", pady=3)
+                tk.Label(row, text=label, font=F_KICKER, bg=PAPER, fg=MUTED,
+                         width=10, anchor="e").pack(side="left")
+                tk.Label(row, text=value or "—",
+                         font=(MONO_FAMILY, _sz(12)) if mono else F_NORM,
+                         bg=PAPER, fg=INK, anchor="w", wraplength=320).pack(
+                         side="left", padx=(10,0))
+
+            _r("收件人", rec_name or "（無法取得）")
+            _r("地址",   rec_addr)
+            if sender:
+                _r("寄件人", sender)
+            if notes:
+                _r("備註",   notes)
+            if not rec_name:
+                tk.Label(rec_frame,
+                         text="⚠ 網站未回傳收件人資料（可能需要重新查詢日期範圍）",
+                         font=F_TINY, bg=PAPER, fg=MUTED, wraplength=340).pack(
+                         anchor="w", pady=(2,0))
+            web_detail.update(detail)
+
+        def _fetch():
+            detail = {}
+            if self.app._web is not None:
+                try:
+                    detail = self.app._web.get_obt_detail(obt, start, end, account)
+                except Exception:
+                    pass
+            dlg.after(0, lambda d=detail: _fill_recipient(d))
+
+        import threading; threading.Thread(target=_fetch, daemon=True).start()
 
         status_lbl = tk.Label(f, text="", font=F_SMALL, bg=PAPER, fg=MUTED)
         status_lbl.pack(anchor="w", pady=(6, 0))
