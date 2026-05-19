@@ -37,7 +37,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "1.7.3"
+VERSION     = "1.7.4"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -2072,12 +2072,12 @@ class BatchOrderView(tk.Frame):
                   "spec": "尺寸", "thermo": "溫層"}
         widths = {"order_id": 180, "recipient_name": 100, "recipient_phone": 130,
                   "recipient_address": 280, "spec": 70, "thermo": 70}
-        self.tree = ttk.Treeview(tcard.inner, columns=cols, show="headings",
+        self.tree = ttk.Treeview(tcard.body, columns=cols, show="headings",
                                  style="Tw.Treeview", height=14)
         for c in cols:
             self.tree.heading(c, text=labels[c])
             self.tree.column(c, width=widths[c], anchor="w")
-        vsb = ttk.Scrollbar(tcard.inner, orient="vertical", command=self.tree.yview)
+        vsb = ttk.Scrollbar(tcard.body, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
@@ -2414,7 +2414,7 @@ class TrackingView(tk.Frame):
         tcard.pack(fill="both", expand=True)
 
         # filter tab bar
-        tab_bar = tk.Frame(tcard.inner, bg=CARD)
+        tab_bar = tk.Frame(tcard.body, bg=CARD)
         tab_bar.pack(fill="x", pady=(0, 0))
         tab_inner = tk.Frame(tab_bar, bg=CARD); tab_inner.pack(side="left", padx=10, pady=10)
         for fid, flabel in [("all","全部"),("progress","配送中"),("ok","順利送達"),("err","異常")]:
@@ -2427,20 +2427,20 @@ class TrackingView(tk.Frame):
             self._filter_btns[fid] = btn
         self._result_count = tk.Label(tab_bar, text="", font=F_TINY, bg=CARD, fg=MUTED)
         self._result_count.pack(side="right", padx=14)
-        Hairline(tcard.inner).pack(fill="x")
+        Hairline(tcard.body).pack(fill="x")
 
         # column header
-        hdr = tk.Frame(tcard.inner, bg=PAPER2)
+        hdr = tk.Frame(tcard.body, bg=PAPER2)
         hdr.pack(fill="x")
         cols = [("建單時間", 17), ("收件人", 16), ("貨運單號", 16),
                 ("訂單編號", 14), ("配送狀態", 14), ("", 0)]
         for txt, w in cols:
             tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
                      width=w if w else 1, anchor="w", padx=10, pady=8).pack(side="left")
-        Hairline(tcard.inner).pack(fill="x")
+        Hairline(tcard.body).pack(fill="x")
 
         # scrollable list
-        lf = tk.Frame(tcard.inner, bg=CARD)
+        lf = tk.Frame(tcard.body, bg=CARD)
         lf.pack(fill="both", expand=True)
         canvas = tk.Canvas(lf, bg=CARD, highlightthickness=0)
         vsb = ttk.Scrollbar(lf, orient="vertical", command=canvas.yview,
@@ -2891,7 +2891,7 @@ class ContactsView(tk.Frame):
         split.rowconfigure(0, weight=1)
 
         # tab bar
-        tab_bar = tk.Frame(lcard.inner, bg=CARD)
+        tab_bar = tk.Frame(lcard.body, bg=CARD)
         tab_bar.pack(fill="x")
         self._tab_btns = {}
         for _cat in ("門市", "廠商"):
@@ -2901,10 +2901,10 @@ class ContactsView(tk.Frame):
             _btn.pack(side="left")
             _btn.bind("<Button-1>", lambda _, c=_cat: self._switch_tab(c))
             self._tab_btns[_cat] = _btn
-        Hairline(lcard.inner).pack(fill="x")
+        Hairline(lcard.body).pack(fill="x")
 
         # search bar
-        sbar = tk.Frame(lcard.inner, bg=CARD, height=44)
+        sbar = tk.Frame(lcard.body, bg=CARD, height=44)
         sbar.pack(fill="x")
         tk.Label(sbar, text="🔍", font=F_NORM, bg=CARD, fg=MUTED).pack(side="left", padx=(14, 4), pady=10)
         self.search_var = tk.StringVar()
@@ -2932,10 +2932,10 @@ class ContactsView(tk.Frame):
         self._all_check.pack(side="left", padx=(8, 0))
         self.count_lbl = tk.Label(sbar, text="", font=F_TINY, bg=CARD, fg=MUTED)
         self.count_lbl.pack(side="right", padx=14)
-        Hairline(lcard.inner).pack(fill="x")
+        Hairline(lcard.body).pack(fill="x")
 
         # list
-        list_holder = tk.Frame(lcard.inner, bg=CARD)
+        list_holder = tk.Frame(lcard.body, bg=CARD)
         list_holder.pack(fill="both", expand=True)
         self.list_canvas = tk.Canvas(list_holder, bg=CARD, highlightthickness=0)
         self.list_canvas.pack(side="left", fill="both", expand=True)
