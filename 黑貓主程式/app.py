@@ -4566,15 +4566,19 @@ class EpbTransferView(tk.Frame):
         for item in self.tree.get_children():
             self.tree.delete(item)
 
+        # 只有「OBT 單號非空」才算真正建單成功；空 OBT 代表上次 API 失敗的殘留紀錄
+        def _is_built(d_id):
+            entry = log.get(d_id)
+            return bool(entry and entry.get("obt_number"))
+
         no_contact = 0
         for t in transfers:
             doc_id = t["doc_id"]
             to_name = t.get("to_store_name") or t.get("to_store_id", "")
             contact = self._resolve_recipient(t)
-            already_built = doc_id in log
 
-            if already_built:
-                obt = log[doc_id].get("obt_number", "?")
+            if _is_built(doc_id):
+                obt = log[doc_id]["obt_number"]
                 status_str = f"✅ 已建單 {obt}"
                 tag = "built"
                 sel_icon = "—"
@@ -4593,8 +4597,8 @@ class EpbTransferView(tk.Frame):
                 to_name, t.get("item_count", ""), status_str,
             ])
 
-        pending = sum(1 for t in transfers if t["doc_id"] not in log)
-        built = len(transfers) - pending
+        built = sum(1 for t in transfers if _is_built(t["doc_id"]))
+        pending = len(transfers) - built
         if hasattr(self, "info_lbl"):
             self.info_lbl.config(
                 text=f"共 {len(transfers)} 筆  ·  已建單 {built}  ·  待建單 {pending}"
@@ -4611,8 +4615,9 @@ class EpbTransferView(tk.Frame):
         if not row_id:
             return
         log = self._load_epb_log()
-        if row_id in log:
-            return  # already built, not toggleable
+        log_entry = log.get(row_id)
+        if log_entry and log_entry.get("obt_number"):
+            return  # 真正已建單（有 OBT），不可重勾
 
         t_dict = next((t for t in self._transfers if t["doc_id"] == row_id), None)
         if t_dict is None:
@@ -4672,35 +4677,37 @@ class EpbTransferView(tk.Frame):
                     "notes":             "門市調撥",
                     "product_name":      "一般物品",
                 }
+
+                # 用 order.create_orders（正確處理 Data.Orders[0].OBTNumber + FileNo + download_obt）
                 try:
-                    api_order = _csv_row_to_api_order(order, sender)
-                    resp = client.print_obt([api_order])
-                    if resp.get("IsOK") == "Y":
-                        data = resp.get("Data") or {}
-                        if isinstance(data, list) and data:
-                            data = data[0]
-                        obt = data.get("OBTNumber", "")
-                        pdf_b64 = data.get("PDF", "")
-                        pdf_path = ""
-                        if pdf_b64:
-                            pdf_path = str(Path(OUTPUT_DIR) / f"{doc_id}_{obt}.pdf")
-                            save_pdf(pdf_b64, pdf_path)
-                        from datetime import datetime as _dt
-                        log[doc_id] = {
-                            "obt_number": obt,
-                            "order_id":   doc_id,
-                            "recipient":  to_name,
-                            "created_at": _dt.now().isoformat(timespec="seconds"),
-                            "pdf_path":   pdf_path,
-                        }
-                        self._save_epb_log(log)
-                        append_tracking(obt, contact.get("name", to_name), doc_id)
-                        self.after(0, lambda d=doc_id, n=obt: self._log(f"✓ {d}  OBT:{n}"))
-                    else:
-                        msg = resp.get("Message", "")[:60]
-                        self.after(0, lambda d=doc_id, m=msg: self._log(f"✗ {d}：{m}"))
+                    results = create_orders(client, [order], sender, output_dir=OUTPUT_DIR)
+                    r = results[0] if results else {"success": False, "message": "API 無回應"}
                 except Exception as ex:
-                    self.after(0, lambda d=doc_id, e=str(ex): self._log(f"✗ {d}：{e}"))
+                    r = {"success": False, "message": str(ex)}
+
+                if r.get("success") and r.get("obt_number"):
+                    obt = r["obt_number"]
+                    pdf_path = r.get("pdf_path", "")
+                    from datetime import datetime as _dt
+                    log[doc_id] = {
+                        "obt_number": obt,
+                        "order_id":   doc_id,
+                        "recipient":  to_name,
+                        "created_at": _dt.now().isoformat(timespec="seconds"),
+                        "pdf_path":   pdf_path,
+                    }
+                    self._save_epb_log(log)
+                    append_tracking(obt, contact.get("name", to_name), doc_id)
+                    _append_build_log(f"✓ EPB OBT:{obt} 調撥:{doc_id}")
+                    self.after(0, lambda d=doc_id, n=obt, p=pdf_path:
+                               self._log(f"✓ {d}  OBT:{n}" + (f"  → {Path(p).name}" if p else "")))
+                else:
+                    if r.get("success") and not r.get("obt_number"):
+                        msg = "API 回成功但未取得 OBT 單號（檢查收件人電話/地址）"
+                    else:
+                        msg = (r.get("message") or "未知錯誤")[:80]
+                    _append_build_log(f"✗ EPB 調撥:{doc_id} {msg}")
+                    self.after(0, lambda d=doc_id, m=msg: self._log(f"✗ {d}：{m}"))
 
                 self.after(0, lambda _i=i, _t=total: (
                     hasattr(self, "progress_lbl") and
