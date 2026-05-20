@@ -4992,7 +4992,8 @@ class ContactSkipPickerDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("選擇不使用黑貓的入庫門市")
         self.configure(bg=PAPER)
-        self.geometry("640x500")
+        self.geometry("640x640")
+        self.minsize(560, 480)
         self.grab_set()
         self.contacts = contacts
         self.existing = set(existing or [])
@@ -5004,6 +5005,19 @@ class ContactSkipPickerDialog(tk.Toplevel):
     def _build(self):
         wrap = tk.Frame(self, bg=PAPER, padx=20, pady=20)
         wrap.pack(fill="both", expand=True)
+
+        # 按鈕區先 pack 到底部（保證視窗縮小時不被裁切）
+        ba = tk.Frame(wrap, bg=PAPER)
+        ba.pack(side="bottom", fill="x", pady=(12, 0))
+        TwButton(ba, "加入清單", variant="primary",
+                 command=self._confirm).pack(side="left", padx=(0, 8))
+        TwButton(ba, "取消", variant="ghost",
+                 command=self.destroy).pack(side="left")
+        self.status_lbl = tk.Label(wrap, text="", font=F_TINY,
+                                    bg=PAPER, fg=MUTED, anchor="w")
+        self.status_lbl.pack(side="bottom", fill="x", pady=(8, 0))
+
+        # 標題與說明
         tk.Label(wrap, text="從通訊錄選擇門市（多選）", font=F_TITLE,
                  bg=PAPER, fg=INK).pack(anchor="w", pady=(0, 6))
         tk.Label(wrap,
@@ -5021,7 +5035,7 @@ class ContactSkipPickerDialog(tk.Toplevel):
                  bg=CARD, fg=INK, relief="flat",
                  highlightthickness=0, bd=0).pack(side="left", fill="x", expand=True, pady=8)
 
-        # Treeview — 所有欄位置中
+        # Treeview — 所有欄位置中（最後 pack，撐滿剩餘空間）
         cols = ["sel", "store_id", "name"]
         labels = {"sel": "選取", "store_id": "門市代碼", "name": "聯絡人名稱"}
         widths = {"sel": 60, "store_id": 140, "name": 380}
@@ -5040,16 +5054,6 @@ class ContactSkipPickerDialog(tk.Toplevel):
         self.tree.tag_configure("checked",  foreground=OK)
         self.tree.tag_configure("normal",   foreground=INK)
         self.tree.bind("<Button-1>", self._on_row_click)
-
-        self.status_lbl = tk.Label(wrap, text="", font=F_TINY,
-                                    bg=PAPER, fg=MUTED, anchor="w")
-        self.status_lbl.pack(fill="x", pady=(8, 0))
-
-        ba = tk.Frame(wrap, bg=PAPER); ba.pack(fill="x", pady=(10, 0))
-        TwButton(ba, "加入清單", variant="primary",
-                 command=self._confirm).pack(side="left", padx=(0, 8))
-        TwButton(ba, "取消", variant="ghost",
-                 command=self.destroy).pack(side="left")
 
     def _refresh(self):
         keyword = self.search_var.get().lower().strip()
