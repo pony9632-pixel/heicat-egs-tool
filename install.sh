@@ -173,7 +173,13 @@ chmod +x "$INSTALL_DIR/黑貓主程式/啟動黑貓工具.command"
 
 # ── 6. 安裝 Python 套件 ───────────────────────────────────────────────────────
 echo "📦 安裝 Python 套件..."
-"$PYTHON_BIN" -m pip install --quiet --upgrade pyyaml "pypdf>=4.0" "requests>=2.31"
+REQ_FILE="$INSTALL_DIR/黑貓主程式/requirements.txt"
+if [[ -f "$REQ_FILE" ]]; then
+    "$PYTHON_BIN" -m pip install --quiet --upgrade -r "$REQ_FILE"
+else
+    # fallback：requirements.txt 不在時硬編碼套件名
+    "$PYTHON_BIN" -m pip install --quiet --upgrade pyyaml "pypdf>=4.0" "requests>=2.31"
+fi
 echo "✅ 套件安裝完成"
 echo ""
 
