@@ -75,6 +75,30 @@ PYTHON_BIN="$(command -v python3)"
 echo "✅ $("$PYTHON_BIN" --version) 已就緒"
 echo ""
 
+# ── 2b. 確認 tkinter 可用（Homebrew Python 預設不含，需另裝 python-tk）──────
+echo "🔍 檢查 tkinter（GUI 模組）..."
+if ! "$PYTHON_BIN" -c "import tkinter" &>/dev/null; then
+    echo "⚠️  Python 缺少 tkinter，自動安裝..."
+    PY_VER=$("$PYTHON_BIN" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    ensure_homebrew
+    if brew install "python-tk@$PY_VER" 2>/dev/null; then
+        echo "✅ python-tk@$PY_VER 已安裝"
+    elif brew install python-tk 2>/dev/null; then
+        echo "✅ python-tk 已安裝"
+    else
+        echo "❌ python-tk 自動安裝失敗，請手動執行："
+        echo "      brew install python-tk@$PY_VER"
+        exit 1
+    fi
+    # 再確認
+    if ! "$PYTHON_BIN" -c "import tkinter" &>/dev/null; then
+        echo "❌ tkinter 安裝後仍無法載入，請重開終端機後再試。"
+        exit 1
+    fi
+fi
+echo "✅ tkinter 可用"
+echo ""
+
 # ── 3. 取得最新版本資訊 ───────────────────────────────────────────────────────
 echo "📡 查詢最新版本..."
 API_RESPONSE=$(curl -fsSL "$GITHUB_API" 2>/dev/null || true)
