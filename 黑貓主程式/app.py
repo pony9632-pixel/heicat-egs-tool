@@ -3621,6 +3621,21 @@ class ConfigView(tk.Frame):
         TwButton(wc.body, "驗證碼確認（登入契客專區）", variant="ghost",
                  command=self._do_web_login).pack(anchor="w", pady=(8, 0))
 
+        # EPB 調撥（選填）─ 本門市 EPB 代碼
+        ec = Card(wrap, padding=22); ec.pack(fill="x", pady=(0, 14))
+        Kicker(ec.body, "EPB 調撥（限內網調撥作業電腦）").pack(anchor="w", pady=(0, 8))
+        tk.Label(ec.body,
+                 text="填入本門市在 EPB 的門市代碼（例 004、009…）；留空則 EPB 調撥分頁顯示停用提示。",
+                 font=F_TINY, bg=CARD, fg=MUTED,
+                 wraplength=600, justify="left").pack(anchor="w", pady=(0, 10))
+        store_cell = tk.Frame(ec.body, bg=CARD); store_cell.pack(fill="x")
+        field_label(store_cell, "本門市代碼 (store_id)").pack(fill="x", pady=(0, 6))
+        self.vars["store_id"] = tk.StringVar()
+        ttk.Entry(store_cell, textvariable=self.vars["store_id"],
+                  style="Tw.TEntry", font=F_MONO).pack(fill="x")
+        ba_epb = tk.Frame(ec.body, bg=CARD); ba_epb.pack(fill="x", pady=(14, 0))
+        TwButton(ba_epb, "儲存", variant="primary", command=self._save).pack(side="left")
+
         # Preferences card (toggles)
         prefc = Card(wrap, padding=0); prefc.pack(fill="x", pady=(0, 14))
         tk.Frame(prefc.inner, bg=CARD, height=1).pack(fill="x")
