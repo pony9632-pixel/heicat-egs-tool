@@ -174,11 +174,20 @@ chmod +x "$INSTALL_DIR/黑貓主程式/啟動黑貓工具.command"
 # ── 6. 安裝 Python 套件 ───────────────────────────────────────────────────────
 echo "📦 安裝 Python 套件..."
 REQ_FILE="$INSTALL_DIR/黑貓主程式/requirements.txt"
-if [[ -f "$REQ_FILE" ]]; then
-    "$PYTHON_BIN" -m pip install --quiet --upgrade -r "$REQ_FILE"
-else
-    # fallback：requirements.txt 不在時硬編碼套件名
-    "$PYTHON_BIN" -m pip install --quiet --upgrade pyyaml "pypdf>=4.0" "requests>=2.31"
+
+# Python 3.12+/Homebrew 啟用 PEP 668 會擋系統層 pip，先試一般模式，
+# 失敗再退到 --user --break-system-packages（安裝到使用者目錄，不影響 Homebrew）
+pip_install() {
+    if [[ -f "$REQ_FILE" ]]; then
+        "$PYTHON_BIN" -m pip install --quiet --upgrade "$@" -r "$REQ_FILE"
+    else
+        "$PYTHON_BIN" -m pip install --quiet --upgrade "$@" pyyaml "pypdf>=4.0" "requests>=2.31"
+    fi
+}
+
+if ! pip_install 2>/dev/null; then
+    echo "   （系統限制標準 pip，改用 user 模式安裝）"
+    pip_install --user --break-system-packages
 fi
 echo "✅ 套件安裝完成"
 echo ""
