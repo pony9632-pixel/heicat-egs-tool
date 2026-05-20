@@ -1,10 +1,15 @@
-# 敏感設定（含 API 金鑰，不進版控）
+# 敏感設定與個人資料（含 API 金鑰，不進版控）
 黑貓主程式/config.yaml
 黑貓主程式/auth_state.json
 黑貓主程式/contacts.json
 黑貓主程式/tracking.json
+黑貓主程式/deleted_obts.json
 # EPB 調撥建單本機記錄（含 OBT 單號，勿進版控）
 黑貓主程式/epb_transfer_log.json
+# 資料庫路徑設定（本機專屬，每台電腦不同）
+黑貓主程式/.datapath
+# 黑貓資料庫（使用者資料，可放雲端，不進版控）
+黑貓主程式/黑貓資料庫/
 # EPB Java 編譯產物
 黑貓主程式/EPBReportQuery.class
 # PDF 輸出（客戶資料）
