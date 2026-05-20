@@ -3674,7 +3674,8 @@ class ConfigView(tk.Frame):
                  font=F_BOLD, bg=CARD, fg=INK).pack(anchor="w")
         tk.Label(ec.body,
                  text="這些門市的調撥單仍會列在 EPB 分頁，但狀態顯示「🚫 不使用黑貓」、不可勾選；"
-                      "例外時可在列表中點該列強制本次使用。",
+                      "例外時可在列表中點該列強制本次使用。\n"
+                      "從通訊錄中已填「門市代碼」的條目挑選；用門市代碼比對 EPB 調撥單。",
                  font=F_TINY, bg=CARD, fg=MUTED,
                  wraplength=600, justify="left").pack(anchor="w", pady=(2, 10))
 
@@ -3925,14 +3926,12 @@ class ConfigView(tk.Frame):
             tk.Label(self._skip_chip_host, text="（無）",
                      font=F_TINY, bg=CARD, fg=MUTED).pack(anchor="w")
             return
-        # 解析 id → name（用 EPB cache，若還沒抓過就只顯示 id）
+        # 從通訊錄解析 store_id → name
         name_map = {}
-        try:
-            import epb_client as _epb
-            if _epb._STORES_CACHE is not None:
-                name_map = {s["store_id"]: s["name"] for s in _epb._STORES_CACHE}
-        except Exception:
-            pass
+        for c in load_contacts():
+            sid = (c.get("store_id") or "").strip()
+            if sid:
+                name_map[sid] = c.get("name", "")
         # 流式排版（自動換行）
         row = tk.Frame(self._skip_chip_host, bg=CARD); row.pack(fill="x", anchor="w")
         for sid in skip_ids:
@@ -3959,17 +3958,18 @@ class ConfigView(tk.Frame):
             self._render_skip_chips()
 
     def _add_skip_stores(self):
-        try:
-            import epb_client as _epb
-            if not _epb.epb_available():
-                messagebox.showwarning("無法連線 EPB",
-                    "需在可連線 EPB 的內網電腦使用此功能。")
-                return
-        except Exception as ex:
-            messagebox.showerror("EPB 載入失敗", str(ex))
+        # 從通訊錄（有填門市代碼的）挑選
+        eligible = [c for c in load_contacts()
+                    if (c.get("store_id") or "").strip()]
+        if not eligible:
+            messagebox.showinfo(
+                "通訊錄沒有門市代碼",
+                "請先到「通訊錄」分頁，為要設為不使用黑貓的門市填入「門市代碼」。\n"
+                "填完後再回來新增。")
             return
         existing = set(load_cfg().get("epb_skip_stores") or [])
-        StoreSkipPickerDialog(self, existing=existing, on_select=self._on_skip_picked)
+        ContactSkipPickerDialog(self, contacts=eligible, existing=existing,
+                                on_select=self._on_skip_picked)
 
     def _on_skip_picked(self, selected_ids: list):
         cfg = load_cfg()
@@ -4403,8 +4403,9 @@ class FreightView(tk.Frame):
 
 # ─── dialogs ─────────────────────────────────────────────────────────────────
 
-CONTACT_FIELDS = [("name", "姓名 *"), ("phone", "電話"),
-                   ("mobile", "手機"), ("address", "地址"), ("notes", "備註")]
+CONTACT_FIELDS = [("name", "姓名 *"), ("store_id", "門市代碼"),
+                   ("phone", "電話"), ("mobile", "手機"),
+                   ("address", "地址"), ("notes", "備註")]
 
 class ContactDialog(tk.Toplevel):
     def __init__(self, parent, contact, on_save):
@@ -4531,18 +4532,19 @@ class EpbTransferView(tk.Frame):
         # table card
         tcard = Card(wrap, padding=0)
         tcard.pack(fill="both", expand=True, pady=(0, 8))
-        cols = ["sel", "doc_id", "doc_date", "to_store", "item_count", "status"]
+        cols = ["sel", "doc_id", "doc_date", "to_store", "item_count", "status", "action"]
         labels = {"sel": "選取", "doc_id": "調撥單號", "doc_date": "日期",
-                  "to_store": "入庫門市", "item_count": "品項", "status": "狀態"}
+                  "to_store": "入庫門市", "item_count": "品項",
+                  "status": "狀態", "action": "操作"}
         widths = {"sel": 52, "doc_id": 170, "doc_date": 90,
-                  "to_store": 200, "item_count": 60, "status": 230}
+                  "to_store": 180, "item_count": 60, "status": 160, "action": 80}
 
         self.tree = ttk.Treeview(tcard.body, columns=cols, show="headings",
                                  style="Tw.Treeview", height=12)
         for c in cols:
-            self.tree.heading(c, text=labels[c])
-            self.tree.column(c, width=widths[c],
-                             anchor="center" if c in ("sel", "item_count") else "w")
+            self.tree.heading(c, text=labels[c], anchor="center")
+            # 所有 cell 內容置中對齊標題
+            self.tree.column(c, width=widths[c], anchor="center")
         vsb = ttk.Scrollbar(tcard.body, orient="vertical", command=self.tree.yview,
                             style="Tw.Vertical.TScrollbar")
         self.tree.configure(yscrollcommand=vsb.set)
@@ -4596,31 +4598,41 @@ class EpbTransferView(tk.Frame):
 
     def _match_contact(self, to_store_name: str, to_store_id: str = ""):
         """
-        在黑貓通訊錄中找名稱子字串對應的 contact（純記憶體查詢，無 IO）。
-        EPB storemas 的地址電話已在 query_pending_transfers 一次 JOIN 取回，
-        透過 transfer dict 的 to_store_address / to_store_phone 帶入。
+        在黑貓通訊錄中找對應 contact（純記憶體，無 IO）。
+        1. 優先用 to_store_id 比對 contact["store_id"] 精準匹配
+        2. 退回名稱子字串比對（向後相容、給沒填門市代碼的通訊錄）
         """
-        cache_key = to_store_name
+        cache_key = f"{to_store_id}|{to_store_name}"
         if cache_key in self._contact_cache:
             return self._contact_cache[cache_key]
-        name_lower = to_store_name.lower()
-        for c in load_contacts():
-            c_name = (c.get("name") or "").lower()
-            if c_name and (name_lower in c_name or c_name in name_lower):
-                self._contact_cache[cache_key] = c
-                return c
+        contacts = load_contacts()
+        # 1. 門市代碼精準匹配
+        if to_store_id:
+            for c in contacts:
+                if (c.get("store_id") or "").strip() == to_store_id:
+                    self._contact_cache[cache_key] = c
+                    return c
+        # 2. 名稱子字串 fallback
+        name_lower = (to_store_name or "").lower()
+        if name_lower:
+            for c in contacts:
+                c_name = (c.get("name") or "").lower()
+                if c_name and (name_lower in c_name or c_name in name_lower):
+                    self._contact_cache[cache_key] = c
+                    return c
         self._contact_cache[cache_key] = None
         return None
 
     def _resolve_recipient(self, t: dict):
         """
         取得單張調撥單的收件人資料：
-        1. 優先用黑貓通訊錄比對結果
-        2. 找不到時用 EPB storemas（已在 query 時 JOIN 取回）的地址電話
+        1. 優先用通訊錄（門市代碼精準匹配，找不到再用名稱）
+        2. 找不到時用 EPB storemas（query 時 JOIN 取回）地址 fallback
         3. 都沒有 → 回 None
         """
         to_name = t.get("to_store_name") or t.get("to_store_id", "")
-        contact = self._match_contact(to_name)
+        to_id = t.get("to_store_id", "")
+        contact = self._match_contact(to_name, to_id)
         if contact:
             return contact
         epb_addr = (t.get("to_store_address") or "").strip()
@@ -4695,11 +4707,13 @@ class EpbTransferView(tk.Frame):
             to_id = t.get("to_store_id", "")
             contact = self._resolve_recipient(t)
 
+            action_str = ""
             if _is_built(doc_id):
                 obt = log[doc_id]["obt_number"]
-                status_str = f"✅ 已建單 {obt}    ✕ 取消"
+                status_str = f"✅ 已建單 {obt}"
                 tag = "built"
                 sel_icon = "—"
+                action_str = "［ ✕ 取消 ］"
             elif to_id in skip_stores and doc_id not in self._force_use_takkyu:
                 status_str = "🚫 不使用黑貓"
                 tag = "skip"
@@ -4722,7 +4736,7 @@ class EpbTransferView(tk.Frame):
 
             self.tree.insert("", "end", iid=doc_id, tags=(tag,), values=[
                 sel_icon, doc_id, t.get("doc_date", ""),
-                to_name, t.get("item_count", ""), status_str,
+                to_name, t.get("item_count", ""), status_str, action_str,
             ])
 
         built = sum(1 for t in transfers if _is_built(t["doc_id"]))
@@ -4742,7 +4756,7 @@ class EpbTransferView(tk.Frame):
         region = self.tree.identify_region(event.x, event.y)
         if region != "cell":
             return
-        column = self.tree.identify_column(event.x)
+        col_id = self.tree.identify_column(event.x)  # 形如 "#7"
         row_id = self.tree.identify_row(event.y)
         if not row_id:
             return
@@ -4751,13 +4765,20 @@ class EpbTransferView(tk.Frame):
         if t_dict is None:
             return
 
+        # 計算欄位索引（cols 是 _build 時定義的 list；用 displaycolumns 取目前順序）
+        try:
+            col_idx = int(col_id.replace("#", "")) - 1
+            col_name = self.tree["columns"][col_idx]
+        except (ValueError, IndexError):
+            col_name = ""
+
         log = self._load_epb_log()
         log_entry = log.get(row_id)
         is_built = bool(log_entry and log_entry.get("obt_number"))
 
-        # 已建單 + 點到「狀態」欄最右側 ~70px → 取消已建單
+        # 已建單 + 點到「操作」欄 → 取消
         if is_built:
-            if column == "#6" and self._click_in_x_area(event, row_id):
+            if col_name == "action":
                 self._cancel_built(row_id)
             return
 
@@ -4774,23 +4795,12 @@ class EpbTransferView(tk.Frame):
 
         # 一般列：toggle 勾選
         if not self._resolve_recipient(t_dict):
-            return  # no contact/address — not selectable
+            return  # 找不到收件人 — 不可勾
         if row_id in self._checked:
             self._checked.discard(row_id)
         else:
             self._checked.add(row_id)
         self._populate(self._transfers)
-
-    def _click_in_x_area(self, event, row_id) -> bool:
-        """判定 click 是否落在「狀態」欄的最右 70px（= ✕ 取消 區）。"""
-        try:
-            bbox = self.tree.bbox(row_id, "status")
-            if not bbox:
-                return False
-            col_x, _, col_w, _ = bbox
-            return (event.x - col_x) > (col_w - 70)
-        except Exception:
-            return False
 
     def _cancel_built(self, doc_id: str):
         log = self._load_epb_log()
@@ -4975,28 +4985,29 @@ class ContactPickerDialog(tk.Toplevel):
         self.destroy()
 
 
-class StoreSkipPickerDialog(tk.Toplevel):
-    """從 EPB storemas 撈門市清單，多選後回呼新增到「不使用黑貓門市」清單。"""
+class ContactSkipPickerDialog(tk.Toplevel):
+    """從通訊錄（已填門市代碼的）挑選，多選後回呼新增到「不使用黑貓門市」清單。"""
 
-    def __init__(self, parent, existing: set, on_select):
+    def __init__(self, parent, contacts: list, existing: set, on_select):
         super().__init__(parent)
         self.title("選擇不使用黑貓的入庫門市")
         self.configure(bg=PAPER)
-        self.geometry("620x520")
+        self.geometry("640x500")
         self.grab_set()
+        self.contacts = contacts
         self.existing = set(existing or [])
         self.on_select = on_select
         self._checked = set()
-        self._stores: list = []
         self._build()
-        self._load_stores()
+        self._refresh()
 
     def _build(self):
         wrap = tk.Frame(self, bg=PAPER, padx=20, pady=20)
         wrap.pack(fill="both", expand=True)
-        tk.Label(wrap, text="選擇門市（多選）", font=F_TITLE,
+        tk.Label(wrap, text="從通訊錄選擇門市（多選）", font=F_TITLE,
                  bg=PAPER, fg=INK).pack(anchor="w", pady=(0, 6))
-        tk.Label(wrap, text="勾選後按「加入清單」。已在清單中的門市以灰底顯示、不可重複勾。",
+        tk.Label(wrap,
+                 text="僅顯示已填「門市代碼」的通訊錄條目；已加入清單者灰底顯示、不可重複勾。",
                  font=F_TINY, bg=PAPER, fg=MUTED).pack(anchor="w", pady=(0, 10))
 
         # 搜尋
@@ -5009,21 +5020,18 @@ class StoreSkipPickerDialog(tk.Toplevel):
         tk.Entry(sbar, textvariable=self.search_var, font=F_NORM,
                  bg=CARD, fg=INK, relief="flat",
                  highlightthickness=0, bd=0).pack(side="left", fill="x", expand=True, pady=8)
-        TwButton(sbar, "↻", variant="ghost",
-                 command=self._reload).pack(side="right", padx=(0, 4))
 
-        # Treeview
+        # Treeview — 所有欄位置中
         cols = ["sel", "store_id", "name"]
-        labels = {"sel": "選取", "store_id": "門市代碼", "name": "名稱"}
-        widths = {"sel": 52, "store_id": 100, "name": 380}
+        labels = {"sel": "選取", "store_id": "門市代碼", "name": "聯絡人名稱"}
+        widths = {"sel": 60, "store_id": 140, "name": 380}
         tcard = tk.Frame(wrap, bg=HAIR); tcard.pack(fill="both", expand=True)
         inner = tk.Frame(tcard, bg=CARD); inner.pack(fill="both", expand=True, padx=1, pady=1)
         self.tree = ttk.Treeview(inner, columns=cols, show="headings",
                                  style="Tw.Treeview", height=14)
         for c in cols:
-            self.tree.heading(c, text=labels[c])
-            self.tree.column(c, width=widths[c],
-                             anchor="center" if c == "sel" else "w")
+            self.tree.heading(c, text=labels[c], anchor="center")
+            self.tree.column(c, width=widths[c], anchor="center")
         vsb = ttk.Scrollbar(inner, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -5043,55 +5051,30 @@ class StoreSkipPickerDialog(tk.Toplevel):
         TwButton(ba, "取消", variant="ghost",
                  command=self.destroy).pack(side="left")
 
-    def _load_stores(self):
-        self.status_lbl.config(text="載入中…", fg=MUTED)
-        def run():
-            try:
-                import epb_client as _epb
-                stores = _epb.list_active_stores()
-            except Exception as ex:
-                err = str(ex)
-                self.after(0, lambda e=err: self.status_lbl.config(
-                    text=f"載入失敗：{e[:80]}", fg=ERR))
-                return
-            self.after(0, lambda s=stores: self._on_loaded(s))
-        threading.Thread(target=run, daemon=True).start()
-
-    def _on_loaded(self, stores: list):
-        self._stores = stores
-        self.status_lbl.config(
-            text=f"共 {len(stores)} 間門市；已在清單 {len(self.existing)} 間",
-            fg=MUTED)
-        self._refresh()
-
-    def _reload(self):
-        try:
-            import epb_client as _epb
-            _epb._STORES_CACHE = None
-        except Exception:
-            pass
-        self._load_stores()
-
     def _refresh(self):
         keyword = self.search_var.get().lower().strip()
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for s in self._stores:
-            sid = s["store_id"]
-            name = s["name"]
+        shown = 0
+        for c in self.contacts:
+            sid = (c.get("store_id") or "").strip()
+            name = c.get("name") or ""
+            if not sid:
+                continue
             if keyword and keyword not in sid.lower() and keyword not in name.lower():
                 continue
             if sid in self.existing:
-                tag = "existing"
-                sel = "—"
+                tag, sel = "existing", "—"
             elif sid in self._checked:
-                tag = "checked"
-                sel = "☑"
+                tag, sel = "checked", "☑"
             else:
-                tag = "normal"
-                sel = "☐"
+                tag, sel = "normal", "☐"
             self.tree.insert("", "end", iid=sid, tags=(tag,),
                              values=[sel, sid, name])
+            shown += 1
+        self.status_lbl.config(
+            text=f"顯示 {shown} 間  ·  已加入清單 {len(self.existing)} 間  ·  待加入 {len(self._checked)} 間",
+            fg=MUTED)
 
     def _on_row_click(self, event):
         if self.tree.identify_region(event.x, event.y) != "cell":
