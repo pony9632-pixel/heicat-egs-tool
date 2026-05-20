@@ -4474,16 +4474,43 @@ class EpbTransferView(tk.Frame):
         self._LOG_PATH.write_text(
             json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _match_contact(self, to_store_name: str):
-        if to_store_name in self._contact_cache:
-            return self._contact_cache[to_store_name]
+    def _match_contact(self, to_store_name: str, to_store_id: str = ""):
+        """
+        先比對黑貓通訊錄（名稱子字串對應），找不到時 fallback 到 EPB storemas
+        （用 to_store_id 直接查）。回傳 contact dict 或 None。
+        """
+        cache_key = f"{to_store_id}|{to_store_name}"
+        if cache_key in self._contact_cache:
+            return self._contact_cache[cache_key]
+
+        # 1. 黑貓通訊錄優先
         name_lower = to_store_name.lower()
         for c in load_contacts():
             c_name = (c.get("name") or "").lower()
             if c_name and (name_lower in c_name or c_name in name_lower):
-                self._contact_cache[to_store_name] = c
+                self._contact_cache[cache_key] = c
                 return c
-        self._contact_cache[to_store_name] = None
+
+        # 2. Fallback：從 EPB storemas 直接取
+        if to_store_id:
+            try:
+                import epb_client as _epb
+                info = _epb.query_store_info(to_store_id)
+                if info and info.get("address"):
+                    contact = {
+                        "name":    info.get("name") or to_store_name or to_store_id,
+                        "phone":   info.get("phone", ""),
+                        "mobile":  "",
+                        "address": info["address"],
+                        "category": "門市",
+                        "source":  "epb",  # 標記來源，方便除錯
+                    }
+                    self._contact_cache[cache_key] = contact
+                    return contact
+            except Exception:
+                pass
+
+        self._contact_cache[cache_key] = None
         return None
 
     # ── actions ────────────────────────────────────────────────────────────────
@@ -4528,7 +4555,7 @@ class EpbTransferView(tk.Frame):
         for t in transfers:
             doc_id = t["doc_id"]
             to_name = t.get("to_store_name") or t.get("to_store_id", "")
-            contact = self._match_contact(to_name)
+            contact = self._match_contact(to_name, t.get("to_store_id", ""))
             already_built = doc_id in log
 
             if already_built:
@@ -4576,7 +4603,7 @@ class EpbTransferView(tk.Frame):
         if t_dict is None:
             return
         to_name = t_dict.get("to_store_name") or t_dict.get("to_store_id", "")
-        if not self._match_contact(to_name):
+        if not self._match_contact(to_name, t_dict.get("to_store_id", "")):
             return  # no contact found, not selectable
 
         if row_id in self._checked:
@@ -4620,7 +4647,7 @@ class EpbTransferView(tk.Frame):
             for i, t in enumerate(to_create, 1):
                 doc_id = t["doc_id"]
                 to_name = t.get("to_store_name") or t.get("to_store_id", "")
-                contact = self._match_contact(to_name)
+                contact = self._match_contact(to_name, t.get("to_store_id", ""))
                 order = {
                     "order_id":          doc_id,
                     "recipient_name":    contact.get("name", to_name),
