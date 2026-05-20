@@ -135,6 +135,35 @@ def save_cfg(cfg: dict):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
 
+
+# ─── EPB feature gate ───────────────────────────────────────────────────────
+# 進階功能（EPB 調撥）門檻：授權門市用隱藏快捷鍵 ⌘+⌥+E 輸入密碼解鎖。
+# 此 hash 為 SHA-256(密碼)；公開 repo 的軟鎖、防隨手翻看而已。
+_EPB_PASSWORD_HASH = "1b0d96aeffd87463093049c2063a65e03154712d8438ac4dde6f5749cd811046"
+
+
+def _is_epb_unlocked() -> bool:
+    return bool(load_cfg().get("epb_unlocked", False))
+
+
+def _try_unlock_epb(password: str) -> bool:
+    import hashlib
+    if not password:
+        return False
+    if hashlib.sha256(password.encode("utf-8")).hexdigest() == _EPB_PASSWORD_HASH:
+        cfg = load_cfg()
+        cfg["epb_unlocked"] = True
+        save_cfg(cfg)
+        return True
+    return False
+
+
+def _lock_epb():
+    cfg = load_cfg()
+    cfg["epb_unlocked"] = False
+    save_cfg(cfg)
+
+
 def load_contacts() -> list[dict]:
     if Path(CONTACTS_PATH).exists():
         with open(CONTACTS_PATH, encoding="utf-8") as f:
@@ -591,8 +620,26 @@ class App(tk.Tk):
         self.bind_all("<Command-6>", lambda e: self.show_view("contacts"))
         self.bind_all("<Command-7>", lambda e: self.show_view("settings"))
         self.bind_all("<Command-8>", lambda e: self.show_view("epb_transfer"))
+        # 隱藏快捷鍵：EPB 進階功能解鎖／鎖定入口（不顯示在任何 UI 上）
+        self.bind_all("<Command-Option-e>", lambda e: self._open_epb_unlock_dialog())
+        self.bind_all("<Command-Option-E>", lambda e: self._open_epb_unlock_dialog())
+
+    def _open_epb_unlock_dialog(self):
+        EpbUnlockDialog(self, on_change=self._on_epb_lock_change)
+
+    def _on_epb_lock_change(self, unlocked: bool):
+        """解鎖／鎖定狀態變更後，同步側邊欄入口；鎖定時若在 EPB 分頁則跳回單筆。"""
+        if unlocked:
+            self.sidebar.show_epb_nav()
+        else:
+            self.sidebar.hide_epb_nav()
+            if getattr(self._topbar, "_current", None) == "epb_transfer":
+                self.show_view("single")
 
     def show_view(self, name):
+        # EPB 進階功能未解鎖時，⌘8 / sidebar 點擊靜默 no-op
+        if name == "epb_transfer" and not _is_epb_unlocked():
+            return
         v = self.views.get(name)
         if not v: return
         v.lift()
@@ -1137,6 +1184,9 @@ class Sidebar(tk.Frame):
         for key, label, kbd, icon in _NAV_ITEMS:
             self._items[key] = NavItem(nav, label, kbd, icon,
                                        lambda k=key: self.app.show_view(k))
+            # EPB 進階功能：未解鎖時建好 widget 但不 pack（解鎖後可即時顯示）
+            if key == "epb_transfer" and not _is_epb_unlocked():
+                continue
             self._items[key].pack(fill="x", pady=1)
 
         # 契客專區登入按鈕（設定下方）
@@ -1208,6 +1258,23 @@ class Sidebar(tk.Frame):
     def set_active(self, key):
         for k, item in self._items.items():
             item.set_active(k == key)
+
+    def show_epb_nav(self):
+        """解鎖後即時把 EPB 入口插回 nav（位於設定上方）。"""
+        item = self._items.get("epb_transfer")
+        settings = self._items.get("settings")
+        if item is None:
+            return
+        if settings is not None:
+            item.pack(fill="x", pady=1, before=settings)
+        else:
+            item.pack(fill="x", pady=1)
+
+    def hide_epb_nav(self):
+        """鎖定時把 EPB 入口從 nav 抽掉。"""
+        item = self._items.get("epb_transfer")
+        if item is not None:
+            item.pack_forget()
 
     def refresh_sender(self):
         self._render_sender()
@@ -3683,39 +3750,42 @@ class ConfigView(tk.Frame):
         TwButton(wc.body, "驗證碼確認（登入契客專區）", variant="ghost",
                  command=self._do_web_login).pack(anchor="w", pady=(8, 0))
 
-        # EPB 調撥（選填）─ 本門市 EPB 代碼
-        ec = Card(wrap, padding=22); ec.pack(fill="x", pady=(0, 14))
-        Kicker(ec.body, "EPB 調撥（限內網調撥作業電腦）").pack(anchor="w", pady=(0, 8))
-        tk.Label(ec.body,
-                 text="填入本門市在 EPB 的門市代碼（例 004、009…）；留空則 EPB 調撥分頁顯示停用提示。",
-                 font=F_TINY, bg=CARD, fg=MUTED,
-                 wraplength=600, justify="left").pack(anchor="w", pady=(0, 10))
-        store_cell = tk.Frame(ec.body, bg=CARD); store_cell.pack(fill="x")
-        field_label(store_cell, "本門市代碼 (store_id)").pack(fill="x", pady=(0, 6))
-        self.vars["store_id"] = tk.StringVar()
-        ttk.Entry(store_cell, textvariable=self.vars["store_id"],
-                  style="Tw.TEntry", font=F_MONO).pack(fill="x")
-        ba_epb = tk.Frame(ec.body, bg=CARD); ba_epb.pack(fill="x", pady=(14, 0))
-        TwButton(ba_epb, "儲存", variant="primary", command=self._save).pack(side="left")
+        # EPB 調撥設定區塊 — 只在解鎖後才建立（避免曝光 EPB 功能存在）
+        if _is_epb_unlocked():
+            ec = Card(wrap, padding=22); ec.pack(fill="x", pady=(0, 14))
+            Kicker(ec.body, "EPB 調撥（限內網調撥作業電腦）").pack(anchor="w", pady=(0, 8))
+            tk.Label(ec.body,
+                     text="填入本門市在 EPB 的門市代碼（例 004、009…）；留空則 EPB 調撥分頁顯示停用提示。",
+                     font=F_TINY, bg=CARD, fg=MUTED,
+                     wraplength=600, justify="left").pack(anchor="w", pady=(0, 10))
+            store_cell = tk.Frame(ec.body, bg=CARD); store_cell.pack(fill="x")
+            field_label(store_cell, "本門市代碼 (store_id)").pack(fill="x", pady=(0, 6))
+            self.vars["store_id"] = tk.StringVar()
+            ttk.Entry(store_cell, textvariable=self.vars["store_id"],
+                      style="Tw.TEntry", font=F_MONO).pack(fill="x")
+            ba_epb = tk.Frame(ec.body, bg=CARD); ba_epb.pack(fill="x", pady=(14, 0))
+            TwButton(ba_epb, "儲存", variant="primary",
+                     command=self._save).pack(side="left")
 
-        # 不使用黑貓的入庫門市清單
-        Hairline(ec.body).pack(fill="x", pady=(18, 14))
-        tk.Label(ec.body, text="不使用黑貓的入庫門市",
-                 font=F_BOLD, bg=CARD, fg=INK).pack(anchor="w")
-        tk.Label(ec.body,
-                 text="這些門市的調撥單仍會列在 EPB 分頁，但狀態顯示「🚫 不使用黑貓」、不可勾選；"
-                      "例外時可在列表中點該列強制本次使用。\n"
-                      "從通訊錄中已填「門市代碼」的條目挑選；用門市代碼比對 EPB 調撥單。",
-                 font=F_TINY, bg=CARD, fg=MUTED,
-                 wraplength=600, justify="left").pack(anchor="w", pady=(2, 10))
+            # 不使用黑貓的入庫門市清單
+            Hairline(ec.body).pack(fill="x", pady=(18, 14))
+            tk.Label(ec.body, text="不使用黑貓的入庫門市",
+                     font=F_BOLD, bg=CARD, fg=INK).pack(anchor="w")
+            tk.Label(ec.body,
+                     text="這些門市的調撥單仍會列在 EPB 分頁，但狀態顯示「🚫 不使用黑貓」、不可勾選；"
+                          "例外時可在列表中點該列強制本次使用。\n"
+                          "從通訊錄中已填「門市代碼」的條目挑選；用門市代碼比對 EPB 調撥單。",
+                     font=F_TINY, bg=CARD, fg=MUTED,
+                     wraplength=600, justify="left").pack(anchor="w", pady=(2, 10))
 
-        self._skip_chip_host = tk.Frame(ec.body, bg=CARD)
-        self._skip_chip_host.pack(fill="x")
-        self._render_skip_chips()
+            self._skip_chip_host = tk.Frame(ec.body, bg=CARD)
+            self._skip_chip_host.pack(fill="x")
+            self._render_skip_chips()
 
-        skip_actions = tk.Frame(ec.body, bg=CARD); skip_actions.pack(fill="x", pady=(10, 0))
-        TwButton(skip_actions, "新增…", variant="default",
-                 command=self._add_skip_stores).pack(side="left")
+            skip_actions = tk.Frame(ec.body, bg=CARD)
+            skip_actions.pack(fill="x", pady=(10, 0))
+            TwButton(skip_actions, "新增…", variant="default",
+                     command=self._add_skip_stores).pack(side="left")
 
         # Preferences card (toggles)
         prefc = Card(wrap, padding=0); prefc.pack(fill="x", pady=(0, 14))
@@ -5165,6 +5235,84 @@ class ContactSkipPickerDialog(tk.Toplevel):
             messagebox.showinfo("未選取", "請先勾選要加入的門市。", parent=self)
             return
         self.on_select(sorted(self._checked))
+        self.destroy()
+
+
+class EpbUnlockDialog(tk.Toplevel):
+    """EPB 進階功能解鎖／鎖定對話框（隱藏快捷鍵 ⌘+⌥+E 開啟）。"""
+
+    def __init__(self, parent, on_change):
+        super().__init__(parent)
+        self.title("進階功能")
+        self.configure(bg=PAPER)
+        self.resizable(False, False)
+        self.grab_set()
+        self.on_change = on_change
+        self._build()
+        # 視窗置中
+        self.update_idletasks()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        self.geometry(f"+{(sw-w)//2}+{(sh-h)//2}")
+
+    def _build(self):
+        wrap = tk.Frame(self, bg=PAPER, padx=28, pady=22)
+        wrap.pack()
+        unlocked = _is_epb_unlocked()
+        if unlocked:
+            tk.Label(wrap, text="✓ EPB 調撥功能 已啟用",
+                     font=F_TITLE, bg=PAPER, fg=OK).pack(anchor="w")
+            tk.Label(wrap, text="如需停用，請按下方「鎖定」。",
+                     font=F_SMALL, bg=PAPER, fg=MUTED).pack(
+                         anchor="w", pady=(6, 16))
+            ba = tk.Frame(wrap, bg=PAPER); ba.pack(fill="x")
+            TwButton(ba, "鎖定", variant="danger",
+                     command=self._do_lock).pack(side="left", padx=(0, 8))
+            TwButton(ba, "關閉", variant="ghost",
+                     command=self.destroy).pack(side="left")
+        else:
+            tk.Label(wrap, text="進階功能解鎖",
+                     font=F_TITLE, bg=PAPER, fg=INK).pack(anchor="w")
+            tk.Label(wrap, text="請輸入授權密碼以啟用 EPB 調撥功能。",
+                     font=F_SMALL, bg=PAPER, fg=MUTED).pack(
+                         anchor="w", pady=(6, 12))
+            self.pw_var = tk.StringVar()
+            entry = ttk.Entry(wrap, textvariable=self.pw_var, show="•",
+                              font=F_NORM, width=28, style="Tw.TEntry")
+            entry.pack(fill="x", pady=(0, 6))
+            entry.focus_set()
+            entry.bind("<Return>", lambda e: self._do_unlock())
+            self.msg_lbl = tk.Label(wrap, text="", font=F_TINY,
+                                     bg=PAPER, fg=ERR)
+            self.msg_lbl.pack(anchor="w", pady=(0, 14))
+            ba = tk.Frame(wrap, bg=PAPER); ba.pack(fill="x")
+            TwButton(ba, "解鎖", variant="primary",
+                     command=self._do_unlock).pack(side="left", padx=(0, 8))
+            TwButton(ba, "取消", variant="ghost",
+                     command=self.destroy).pack(side="left")
+
+    def _do_unlock(self):
+        pw = self.pw_var.get().strip()
+        if _try_unlock_epb(pw):
+            self.on_change(True)
+            messagebox.showinfo(
+                "解鎖成功",
+                "EPB 調撥功能已啟用。\n若已開啟設定頁，請切到別頁再回來，"
+                "EPB 設定卡片才會顯示。",
+                parent=self)
+            self.destroy()
+        else:
+            self.msg_lbl.config(text="密碼錯誤")
+            self.pw_var.set("")
+
+    def _do_lock(self):
+        if not messagebox.askyesno(
+            "確認鎖定",
+            "確定要鎖定 EPB 調撥功能嗎？\n下次需要時要重新輸入密碼解鎖。",
+            parent=self):
+            return
+        _lock_epb()
+        self.on_change(False)
         self.destroy()
 
 
