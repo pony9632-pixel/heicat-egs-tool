@@ -223,6 +223,14 @@ class TwButton(tk.Frame):
 
     def set_text(self, t): self.lbl.configure(text=t)
 
+    def set_enabled(self, enabled: bool):
+        """啟用/停用按鈕（TwButton 不是 ttk，不支援 configure(state=...)）。"""
+        self._enabled = bool(enabled)
+        self.lbl.configure(
+            cursor="hand2" if enabled else "arrow",
+            fg=self._fg if enabled else MUTED,
+        )
+
 
 def _frame_bg(widget):
     try:
@@ -4523,7 +4531,7 @@ class EpbTransferView(tk.Frame):
         if hasattr(self, "info_lbl"):
             self.info_lbl.config(text="查詢中…", fg=MUTED)
         if hasattr(self, "_refresh_btn"):
-            self._refresh_btn.configure(state="disabled")
+            self._refresh_btn.set_enabled(False)
 
         t0 = _time.time()
         print(f"[EPB] _refresh start store_id={self._store_id}", flush=True)
@@ -4555,14 +4563,14 @@ class EpbTransferView(tk.Frame):
 
     def _on_refresh_error(self, err: str):
         if hasattr(self, "_refresh_btn"):
-            self._refresh_btn.configure(state="normal")
+            self._refresh_btn.set_enabled(True)
         if hasattr(self, "info_lbl"):
             self.info_lbl.config(text=f"查詢失敗：{err[:80]}", fg=ERR)
         self._log(f"[錯誤] EPB 查詢失敗：{err}")
 
     def _populate(self, transfers: list):
         if hasattr(self, "_refresh_btn"):
-            self._refresh_btn.configure(state="normal")
+            self._refresh_btn.set_enabled(True)
         self._transfers = transfers
         log = self._load_epb_log()
 
@@ -4653,9 +4661,9 @@ class EpbTransferView(tk.Frame):
         if hasattr(self, "progress_lbl"):
             self.progress_lbl.config(text=f"建單中 0 / {total} 筆…", fg=MUTED)
         if hasattr(self, "_submit_btn"):
-            self._submit_btn.configure(state="disabled")
+            self._submit_btn.set_enabled(False)
         if hasattr(self, "_refresh_btn"):
-            self._refresh_btn.configure(state="disabled")
+            self._refresh_btn.set_enabled(False)
 
         def run():
             client = make_client(cfg)
@@ -4719,9 +4727,9 @@ class EpbTransferView(tk.Frame):
         if hasattr(self, "progress_lbl"):
             self.progress_lbl.config(text="✓ 建單完成", fg=OK)
         if hasattr(self, "_submit_btn"):
-            self._submit_btn.configure(state="normal")
+            self._submit_btn.set_enabled(True)
         if hasattr(self, "_refresh_btn"):
-            self._refresh_btn.configure(state="normal")
+            self._refresh_btn.set_enabled(True)
         self._checked.clear()
         if self._transfers:
             self._populate(self._transfers)
