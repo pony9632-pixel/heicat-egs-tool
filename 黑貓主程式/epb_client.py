@@ -491,6 +491,63 @@ where line.org_id = {_q(ORG_ID)}
     return "\n".join(results)
 
 
+def explore_status_samples() -> str:
+    """
+    第五輪 — 抓 STATUS_FLG = 'A' 和 'B' 的調撥單樣本各 5 筆，
+    方便對照 EPB 介面看哪個對應「已確認、待出貨」。
+
+    用法：
+        python3 -c "import epb_client; print(epb_client.explore_status_samples())"
+    """
+    results = []
+
+    for flg in ("A", "B"):
+        # 表頭樣本
+        try:
+            h, rows = _run_remote(f"""
+select * from (
+  select doc_id, doc_date, status_flg, store_id1, store_id2, total_qty,
+         post_date, invtrn_flg, print_flg, address1, phone, remark,
+         create_date, lastupdate
+  from invtrntmas
+  where org_id = {_q(ORG_ID)} and status_flg = {_q(flg)}
+  order by doc_date desc, doc_id desc
+) where rownum <= 5
+""", timeout=120)
+            results.append(f"=== STATUS_FLG = '{flg}' 表頭樣本（前 5 筆）===")
+            results.append("\t".join(h))
+            for r in rows:
+                results.append("\t".join(r))
+        except Exception as exc:
+            results.append(f"[{flg} 表頭樣本] 失敗：{str(exc)[:160]}")
+        results.append("")
+
+        # 對應明細（用正確的 JOIN：line.mas_rec_key = mas.rec_key）
+        try:
+            h, rows = _run_remote(f"""
+select * from (
+  select m.doc_id, m.status_flg, m.store_id1, m.store_id2,
+         l.line_no, l.stk_id, l.name, l.stk_qty
+  from invtrntmas m
+  join invtrntline l on l.mas_rec_key = m.rec_key
+  where m.org_id = {_q(ORG_ID)} and m.status_flg = {_q(flg)}
+  order by m.doc_date desc, m.doc_id desc, l.line_no
+) where rownum <= 10
+""", timeout=120)
+            results.append(f"--- STATUS_FLG = '{flg}' 對應明細（前 10 行）---")
+            results.append("\t".join(h))
+            for r in rows:
+                results.append("\t".join(r))
+        except Exception as exc:
+            results.append(f"[{flg} 明細樣本] 失敗：{str(exc)[:160]}")
+        results.append("")
+
+    # 額外：你那台機是哪個門市？看最近一週本機 ip 對應的 user 出過什麼單
+    # （略，因為這需要登入資訊）
+
+    return "\n".join(results)
+
+
 def query_pending_transfers(src_store_id: str) -> list[dict]:
     """
     回傳「出庫門市 = src_store_id、尚未建過黑貓單」的調撥單清單。
