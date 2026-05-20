@@ -262,6 +262,101 @@ where rownum <= 5
     return "\n".join(results)
 
 
+def explore_stores_and_tables() -> str:
+    """
+    第三輪探查：
+    1. 列出所有 active 門市（讓使用者確認本店代碼）
+    2. 列出 user_tables 中含 TRAN/INVTR 的表名（找真正的調撥表）
+    3. 不過濾 store_id，找 5 筆 TO_STORE_ID 非空的調撥樣本
+    4. storedtl 最新 5 筆紀錄（不過濾任何條件）
+
+    用法：
+        python3 -c "import epb_client; print(epb_client.explore_stores_and_tables())"
+    """
+    results = []
+
+    # 1. 門市清單
+    s_sql = f"""
+select store_id, name, status_flg, address1, phone
+from storemas
+where org_id = {_q(ORG_ID)}
+  and status_flg = 'A'
+order by store_id
+"""
+    try:
+        h, rows = _run_remote(s_sql, timeout=120)
+        results.append(f"=== Active 門市清單（{len(rows)} 間）===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[門市清單] 失敗：{str(exc)[:160]}")
+
+    # 2. 找含 TRAN/INVTR/TRANSFER 的表名
+    t_sql = """
+select table_name
+from user_tables
+where upper(table_name) like '%TRAN%'
+   or upper(table_name) like '%INVTR%'
+   or upper(table_name) like '%TRANSFER%'
+   or upper(table_name) like '%MOVE%'
+order by table_name
+"""
+    try:
+        h, rows = _run_remote(t_sql, timeout=60)
+        results.append(f"\n=== user_tables 含 TRAN/INVTR/MOVE 的表（{len(rows)} 個）===")
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[表名查詢] 失敗：{str(exc)[:160]}")
+
+    # 3. storedtl 找 TO_STORE_ID 非空的（全店，不過濾 SRC_CODE）
+    x_sql = f"""
+select *
+from (
+  select src_code, src_doc_id, doc_date, status_flg, store_status_flg,
+         move_flg, store_id, to_store_id, stk_id, stk_qty
+  from storedtl
+  where org_id = {_q(ORG_ID)}
+    and to_store_id is not null
+    and trim(to_store_id) <> ''
+    and doc_date >= sysdate - 30
+  order by doc_date desc, src_doc_id desc
+)
+where rownum <= 10
+"""
+    try:
+        h, rows = _run_remote(x_sql, timeout=180)
+        results.append(f"\n=== storedtl TO_STORE_ID 非空樣本（全店、近 30 天、前 10 筆）===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[樣本] 失敗：{str(exc)[:160]}")
+
+    # 4. SRC_CODE 分佈（限有 TO_STORE_ID 的）— 找出真正的調撥 SRC_CODE
+    sc_sql = f"""
+select src_code, move_flg, count(*) as cnt
+from storedtl
+where org_id = {_q(ORG_ID)}
+  and to_store_id is not null
+  and trim(to_store_id) <> ''
+  and doc_date >= sysdate - 90
+group by src_code, move_flg
+order by cnt desc
+"""
+    try:
+        h, rows = _run_remote(sc_sql, timeout=180)
+        results.append(f"\n=== 有 TO_STORE_ID 的 SRC_CODE 分佈（近 90 天）===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[SRC_CODE 分佈] 失敗：{str(exc)[:160]}")
+
+    return "\n".join(results)
+
+
 def query_pending_transfers(src_store_id: str) -> list[dict]:
     """
     回傳「出庫門市 = src_store_id、尚未建過黑貓單」的調撥單清單。
