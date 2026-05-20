@@ -3462,11 +3462,13 @@ class ContactsView(tk.Frame):
         )
         if not path: return
         contacts = load_contacts()
+        # 動態使用 CONTACT_FIELDS（含 store_id / email），順便帶出 category
+        keys = [k for k, _ in CONTACT_FIELDS] + ["category"]
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=["name", "phone", "mobile", "address", "notes"])
+            writer = csv.DictWriter(f, fieldnames=keys)
             writer.writeheader()
             for c in contacts:
-                writer.writerow({k: c.get(k, "") for k in ["name", "phone", "mobile", "address", "notes"]})
+                writer.writerow({k: c.get(k, "") for k in keys})
         messagebox.showinfo("匯出成功", f"已匯出 {len(contacts)} 筆聯絡人。\n\n{path}")
 
     def _import_csv(self):
@@ -4405,6 +4407,7 @@ class FreightView(tk.Frame):
 
 CONTACT_FIELDS = [("name", "姓名 *"), ("store_id", "門市代碼"),
                    ("phone", "電話"), ("mobile", "手機"),
+                   ("email", "電子信箱"),
                    ("address", "地址"), ("notes", "備註")]
 
 class ContactDialog(tk.Toplevel):
