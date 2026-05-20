@@ -402,6 +402,95 @@ order by cnt desc
     return "\n".join(results)
 
 
+def explore_invtrntmas(src_store_id: str = "") -> str:
+    """
+    第四輪探查 — 鎖定 INVTRNTMAS（主要門市間調撥表頭）。
+
+    1. 列出 INVTRNTMAS 全部欄位（找實際的 fr/to store 欄位名稱）
+    2. INVTRNTMAS.status_flg 分佈（找「已確認/待出貨」對應的碼）
+    3. INVTRNTLINE 全部欄位
+    4. 抓 5 筆最新調撥單（可選依出庫店過濾，若給定 src_store_id 會在 SQL 試
+       FR_STORE_ID / OUT_STORE_ID / STORE_ID / SRC_STORE_ID 等常見命名）
+
+    用法：
+        python3 -c "import epb_client; print(epb_client.explore_invtrntmas('SA004'))"
+        # 不過濾傳 '' 即可
+    """
+    results = []
+
+    for tname in ("invtrntmas", "invtrntline"):
+        try:
+            h, rows = _run_remote(
+                f"select column_name, data_type from user_tab_columns "
+                f"where table_name = upper({_q(tname)}) order by column_id", timeout=60)
+            results.append(f"=== {tname} 全部欄位（{len(rows)} 個）===")
+            for r in rows:
+                results.append("\t".join(r))
+        except Exception as exc:
+            results.append(f"[{tname} 欄位] 失敗：{str(exc)[:160]}")
+        results.append("")
+
+    # INVTRNTMAS status_flg 分佈
+    try:
+        h, rows = _run_remote(
+            f"select status_flg, count(*) as cnt from invtrntmas "
+            f"where org_id = {_q(ORG_ID)} group by status_flg order by cnt desc",
+            timeout=180)
+        results.append("=== invtrntmas.status_flg 分佈（全部）===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[status_flg 分佈] 失敗：{str(exc)[:160]}")
+
+    # 抓 5 筆最新調撥單表頭（全欄位）
+    try:
+        h, rows = _run_remote(
+            f"select * from (select * from invtrntmas where org_id = {_q(ORG_ID)} "
+            f"order by doc_date desc, doc_id desc) where rownum <= 5",
+            timeout=180)
+        results.append("\n=== invtrntmas 最新 5 筆樣本 ===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[invtrntmas 樣本] 失敗：{str(exc)[:160]}")
+
+    # 抓對應的 invtrntline（最新 5 筆 doc_id 的明細）
+    try:
+        sub_sql = f"""
+select line.*
+from invtrntline line
+where line.org_id = {_q(ORG_ID)}
+  and (line.invtrnt_rec_key, line.line_no) in (
+    select rec_key, 1 from (
+      select rec_key from invtrntmas where org_id = {_q(ORG_ID)}
+      order by doc_date desc, doc_id desc
+    ) where rownum <= 5
+  )
+"""
+        h, rows = _run_remote(sub_sql, timeout=180)
+        results.append("\n=== invtrntline 對應明細（最新 5 張單，line_no=1）===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        # 退而求其次：直接抓任意 5 筆 line
+        try:
+            h, rows = _run_remote(
+                f"select * from (select * from invtrntline where org_id = {_q(ORG_ID)} "
+                f"order by rec_key desc) where rownum <= 5",
+                timeout=180)
+            results.append("\n=== invtrntline 最新 5 筆樣本（無關聯查詢）===")
+            results.append("\t".join(h))
+            for r in rows:
+                results.append("\t".join(r))
+        except Exception as exc2:
+            results.append(f"[invtrntline 樣本] 失敗：{str(exc2)[:160]}")
+
+    return "\n".join(results)
+
+
 def query_pending_transfers(src_store_id: str) -> list[dict]:
     """
     回傳「出庫門市 = src_store_id、尚未建過黑貓單」的調撥單清單。
