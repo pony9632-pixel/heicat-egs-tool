@@ -4405,10 +4405,18 @@ class FreightView(tk.Frame):
 
 # ─── dialogs ─────────────────────────────────────────────────────────────────
 
-CONTACT_FIELDS = [("name", "姓名 *"), ("store_id", "門市代碼"),
+CONTACT_FIELDS = [("name", "姓名 *"),
+                   ("store_id", "門市代碼"),
+                   ("brand_id", "廠商代碼"),
                    ("phone", "電話"), ("mobile", "手機"),
                    ("email", "電子信箱"),
                    ("address", "地址"), ("notes", "備註")]
+
+# 分類專屬欄位：只在對應分類顯示
+_CATEGORY_FIELDS = {
+    "門市": "store_id",
+    "廠商": "brand_id",
+}
 
 class ContactDialog(tk.Toplevel):
     def __init__(self, parent, contact, on_save):
@@ -4427,32 +4435,56 @@ class ContactDialog(tk.Toplevel):
         wrap.pack()
 
         tk.Label(wrap, text="聯絡人資料", font=F_TITLE,
-                 bg=PAPER, fg=INK).pack(anchor="w", pady=(0, 16))
+                 bg=PAPER, fg=INK).pack(anchor="w", pady=(0, 12))
 
-        grid = tk.Frame(wrap, bg=PAPER)
-        grid.pack(fill="x")
-        for i, (key, label) in enumerate(CONTACT_FIELDS):
-            field_label(grid, label.replace(" *", ""),
-                        required=("*" in label)).grid(row=i*2, column=0, sticky="w", pady=(8 if i else 0, 4))
-            v = tk.StringVar(value=contact.get(key, ""))
-            self.vars[key] = v
-            ttk.Entry(grid, textvariable=v, style="Tw.TEntry",
-                      font=F_MONO if key in ("phone","mobile") else F_NORM,
-                      width=36).grid(row=i*2+1, column=0, sticky="ew")
-
-        # Category
-        tk.Label(wrap, text="分類", font=F_LABEL, bg=PAPER, fg=MUTED).pack(anchor="w", pady=(12, 4))
+        # Category 移到最上面：先選分類，下方代碼欄位才會顯示對應的
+        tk.Label(wrap, text="分類", font=F_LABEL, bg=PAPER, fg=MUTED).pack(anchor="w", pady=(0, 4))
         cat_frame = tk.Frame(wrap, bg=PAPER)
-        cat_frame.pack(anchor="w")
+        cat_frame.pack(anchor="w", pady=(0, 14))
         self.vars["category"] = tk.StringVar(value=contact.get("category", "門市"))
         for cat in ("門市", "廠商"):
             tk.Radiobutton(cat_frame, text=cat, variable=self.vars["category"],
                            value=cat, bg=PAPER, activebackground=PAPER,
-                           font=F_NORM, fg=INK).pack(side="left", padx=(0, 16))
+                           font=F_NORM, fg=INK,
+                           command=self._on_category_change).pack(side="left", padx=(0, 16))
+
+        # 欄位 grid（記錄 widget refs 以便 hide/show）
+        grid = tk.Frame(wrap, bg=PAPER)
+        grid.pack(fill="x")
+        self._field_widgets = {}
+        for i, (key, label) in enumerate(CONTACT_FIELDS):
+            lbl = field_label(grid, label.replace(" *", ""),
+                              required=("*" in label))
+            lbl.grid(row=i*2, column=0, sticky="w", pady=(8 if i else 0, 4))
+            v = tk.StringVar(value=contact.get(key, ""))
+            self.vars[key] = v
+            ent = ttk.Entry(grid, textvariable=v, style="Tw.TEntry",
+                            font=F_MONO if key in ("phone","mobile","store_id","brand_id")
+                                        else F_NORM,
+                            width=36)
+            ent.grid(row=i*2+1, column=0, sticky="ew")
+            self._field_widgets[key] = (lbl, ent)
+
+        # 初始套用分類專屬欄位顯隱
+        self._on_category_change()
 
         ba = tk.Frame(wrap, bg=PAPER); ba.pack(fill="x", pady=(20, 0))
         TwButton(ba, "儲存", variant="primary", command=self._save).pack(side="left", padx=(0, 8))
         TwButton(ba, "取消", variant="ghost", command=self.destroy).pack(side="left")
+
+    def _on_category_change(self):
+        """依分類隱藏不相關的代碼欄位（門市↔廠商）。"""
+        cat = self.vars["category"].get()
+        for cat_name, key in _CATEGORY_FIELDS.items():
+            if key not in self._field_widgets:
+                continue
+            lbl, ent = self._field_widgets[key]
+            if cat == cat_name:
+                lbl.grid()
+                ent.grid()
+            else:
+                lbl.grid_remove()
+                ent.grid_remove()
 
     def _save(self):
         contact = {k: v.get().strip() for k, v in self.vars.items()}
