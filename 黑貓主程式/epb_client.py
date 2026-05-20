@@ -84,6 +84,33 @@ def _q(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+_STORES_CACHE: list | None = None
+
+
+def list_active_stores(force_refresh: bool = False) -> list[dict]:
+    """
+    回傳所有 active 門市清單 [{store_id, name}, ...]，session 內 cache。
+    供「不使用黑貓門市」picker 使用，避免每次開 dialog 都重查 145 筆。
+    """
+    global _STORES_CACHE
+    if _STORES_CACHE is not None and not force_refresh:
+        return _STORES_CACHE
+    sql = f"""
+select store_id, name
+from storemas
+where org_id = {_q(ORG_ID)} and status_flg = 'A'
+order by store_id
+"""
+    headers, rows = _run_remote(sql, timeout=60)
+    _STORES_CACHE = [
+        {"store_id": (r[0] if len(r) > 0 else "").strip(),
+         "name":     (r[1] if len(r) > 1 else "").strip()}
+        for r in rows
+        if r and r[0].strip()
+    ]
+    return _STORES_CACHE
+
+
 def explore_transfer_schema() -> str:
     """
     步驟 1.5 探查用。在內網機執行，印出 storedtl/storemas 欄位與
