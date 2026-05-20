@@ -548,6 +548,68 @@ select * from (
     return "\n".join(results)
 
 
+def find_doc(doc_id: str) -> str:
+    """
+    跨 INVTRN 全家族搜尋指定 DOC_ID（精確 + LIKE 模糊）。
+    用於定位「同事建的調撥單」實際在哪張表。
+    """
+    results = []
+    tables = ["invtrnmas", "invtrntmas", "invtrnimas", "invtrnrmas", "invtrnpmas"]
+
+    # 1. 精確比對
+    for t in tables:
+        try:
+            h, rows = _run_remote(
+                f"select doc_id, doc_date, status_flg, store_id1, store_id2 "
+                f"from {t} where org_id = {_q(ORG_ID)} and doc_id = {_q(doc_id)}",
+                timeout=60)
+            if rows:
+                results.append(f"=== 找到於 {t}（精確） ===")
+                results.append("\t".join(h))
+                for r in rows:
+                    results.append("\t".join(r))
+                results.append("")
+        except Exception as exc:
+            results.append(f"[{t} 精確] 失敗（可能無 store_id1/2 欄位）：{str(exc)[:120]}")
+
+    # 2. LIKE 模糊（前綴）
+    prefix = doc_id[:9] + "%"  # 例如 110260520% → 找該日該店所有單
+    for t in tables:
+        try:
+            h, rows = _run_remote(
+                f"select doc_id, doc_date, status_flg, store_id1, store_id2 "
+                f"from {t} where org_id = {_q(ORG_ID)} and doc_id like {_q(prefix)} "
+                f"order by doc_id",
+                timeout=60)
+            if rows:
+                results.append(f"=== {t} LIKE '{prefix}'（{len(rows)} 筆）===")
+                results.append("\t".join(h))
+                for r in rows:
+                    results.append("\t".join(r))
+                results.append("")
+        except Exception as exc:
+            # 可能該表沒 store_id1/2 — 降級查
+            try:
+                h, rows = _run_remote(
+                    f"select doc_id, doc_date, status_flg "
+                    f"from {t} where org_id = {_q(ORG_ID)} and doc_id like {_q(prefix)} "
+                    f"order by doc_id",
+                    timeout=60)
+                if rows:
+                    results.append(f"=== {t} LIKE '{prefix}'（無 store 欄位，{len(rows)} 筆）===")
+                    results.append("\t".join(h))
+                    for r in rows:
+                        results.append("\t".join(r))
+                    results.append("")
+            except Exception as exc2:
+                results.append(f"[{t} LIKE] 失敗：{str(exc2)[:120]}")
+
+    if len(results) == 0:
+        results.append(f"全部 5 張 INVTRN*MAS 表都查不到 doc_id={doc_id} 或前綴 {prefix}")
+
+    return "\n".join(results)
+
+
 def lookup_doc(doc_id: str) -> str:
     """直接用 DOC_ID 反查一張調撥單的表頭 + 明細，確認 STATUS_FLG 與其他欄位。"""
     results = []
