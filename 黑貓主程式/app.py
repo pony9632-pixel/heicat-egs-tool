@@ -28,7 +28,8 @@ CONFIG_PATH   = "config.yaml"
 CONTACTS_PATH         = "contacts.json"
 DEFAULT_CONTACTS_PATH = "default_contacts.json"
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
-TRACKING_PATH = str(Path(__file__).parent / "tracking.json")
+TRACKING_PATH  = str(Path(__file__).parent / "tracking.json")
+DELETED_PATH   = str(Path(__file__).parent / "deleted_obts.json")
 
 
 def _append_build_log(msg: str):
@@ -40,7 +41,7 @@ def _append_build_log(msg: str):
         _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
-VERSION     = "2.2.0"
+VERSION     = "2.2.1"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -189,6 +190,18 @@ def load_tracking() -> list[dict]:
 def save_tracking(records: list[dict]):
     with open(TRACKING_PATH, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
+
+def load_deleted_obts() -> set:
+    if Path(DELETED_PATH).exists():
+        with open(DELETED_PATH, encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
+
+def add_deleted_obt(obt: str):
+    obts = load_deleted_obts()
+    obts.add(obt)
+    with open(DELETED_PATH, "w", encoding="utf-8") as f:
+        json.dump(sorted(obts), f, ensure_ascii=False, indent=2)
 
 
 def _cleanup_epb_log_for_obt(obt: str) -> int:
@@ -2677,12 +2690,12 @@ class TrackingView(tk.Frame):
 
         # column header
         hdr = tk.Frame(tcard.body, bg=PAPER2)
-        hdr.pack(fill="x")
+        hdr.pack(fill="x", padx=4)
         _apply_trk_grid(hdr)
         for i, (txt, mn, w) in enumerate(_TRK_GCOLS):
             if txt:
                 tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
-                         anchor="w", padx=10, pady=8).grid(row=0, column=i, sticky="ew")
+                         anchor="w").grid(row=0, column=i, sticky="ew", padx=(10, 4), pady=8)
         Hairline(tcard.body).pack(fill="x")
 
         # scrollable list
@@ -2782,18 +2795,18 @@ class TrackingView(tk.Frame):
         pill_bg = {"ok": OK2, "err": ERR2, "progress": WARN2, "neutral": HAIR3}.get(stone, HAIR3)
         pill_fg = {"ok": OK,  "err": ERR,  "progress": WARN,  "neutral": MUTED}.get(stone, MUTED)
         slbl = tk.Label(inner, text=f"● {status}", font=F_TINY, bg=pill_bg, fg=pill_fg,
-                        padx=7, pady=3, anchor="w")
-        slbl.grid(row=0, column=0, sticky="ew", padx=(8, 4), pady=2)
+                        padx=7, pady=3, anchor="w", width=1)
+        slbl.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=2)
         self._status_labels[obt] = slbl
         if queried:
             slbl.bind("<Enter>", lambda e, t=queried: slbl.config(text=f"查詢 {t[11:16]}"))
             slbl.bind("<Leave>", lambda e, s=status: slbl.config(text=f"● {s}"))
 
-        tk.Label(inner, text=snt,   font=F_TINY, bg=CARD, fg=MUTED, anchor="w").grid(row=0, column=1, sticky="ew", padx=(8, 4), pady=2)
-        tk.Label(inner, text=obt,   font=F_MONO, bg=CARD, fg=INK,   anchor="w").grid(row=0, column=2, sticky="ew", padx=(8, 4), pady=2)
-        tk.Label(inner, text=cod,   font=F_TINY, bg=CARD, fg=INK2,  anchor="w").grid(row=0, column=3, sticky="ew", padx=(8, 4), pady=2)
-        tk.Label(inner, text=name,  font=F_NORM, bg=CARD, fg=INK,   anchor="w").grid(row=0, column=4, sticky="ew", padx=(8, 4), pady=2)
-        tk.Label(inner, text=notes, font=F_TINY, bg=CARD, fg=MUTED, anchor="w").grid(row=0, column=5, sticky="ew", padx=(8, 4), pady=2)
+        tk.Label(inner, text=snt,   font=F_TINY, bg=CARD, fg=MUTED, anchor="w", width=1).grid(row=0, column=1, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=obt,   font=F_MONO, bg=CARD, fg=INK,   anchor="w", width=1).grid(row=0, column=2, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=cod,   font=F_TINY, bg=CARD, fg=INK2,  anchor="w", width=1).grid(row=0, column=3, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=name,  font=F_NORM, bg=CARD, fg=INK,   anchor="w", width=1).grid(row=0, column=4, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=notes, font=F_TINY, bg=CARD, fg=MUTED, anchor="w", width=1).grid(row=0, column=5, sticky="ew", padx=(10, 4), pady=2)
 
         btns = tk.Frame(inner, bg=CARD)
         btns.grid(row=0, column=6, sticky="e", padx=(4, 8), pady=2)
@@ -2802,7 +2815,11 @@ class TrackingView(tk.Frame):
         TwButton(btns, "複製", variant="ghost",
                  command=lambda _obt=obt: self._copy(_obt)).pack(side="left", padx=(0, 4))
         TwButton(btns, "刪除", variant="ghost",
-                 command=lambda _obt=obt: self._delete_one(_obt)).pack(side="left")
+                 command=lambda _obt=obt: self._delete_one(_obt)).pack(side="left", padx=(0, 8))
+        _clbl = tk.Label(btns, text="取消配送", font=(FONT_FAMILY, _sz(9)), fg=ERR, bg=CARD,
+                         cursor="hand2")
+        _clbl.pack(side="left", padx=(0, 4))
+        _clbl.bind("<Button-1>", lambda e, _obt=obt, _n=name: self._cancel_obt(_obt, _n))
 
         if divider:
             Hairline(self._list_body).pack(fill="x")
@@ -2870,24 +2887,31 @@ class TrackingView(tk.Frame):
                             msg_lbl.config(text=f"取消失敗：{m[:60]}", fg=ERR),
                             [b.configure(state="normal") for b in btn_row.winfo_children()]))
                 except Exception as ex:
-                    self.after(0, lambda m=str(ex): (
-                        msg_lbl.config(text=f"錯誤：{m[:60]}", fg=ERR),
+                    msg = str(ex)
+                    if "500" in msg:
+                        hint = "此單無法透過 API 取消（可能已集貨、非本帳號建立、或單號不符）"
+                    else:
+                        hint = msg[:80]
+                    self.after(0, lambda h=hint: (
+                        msg_lbl.config(text=h, fg=ERR),
                         [b.configure(state="normal") for b in btn_row.winfo_children()]))
             import threading; threading.Thread(target=run, daemon=True).start()
 
-        tk.Button(btn_row, text="確認取消宅配", font=(FONT_FAMILY, _sz(12)),
-                  bg=ERR, fg="#FFFFFF", relief="flat", padx=16, pady=6,
+        tk.Button(btn_row, text="確認取消宅配", font=(FONT_FAMILY, _sz(12), "bold"),
+                  bg=HAIR3, fg=INK, relief="flat", padx=16, pady=6,
                   cursor="hand2", command=_do_cancel).pack(side="left", padx=(0, 10))
         tk.Button(btn_row, text="返回", font=(FONT_FAMILY, _sz(12)),
                   bg=HAIR3, fg=INK2, relief="flat", padx=16, pady=6,
                   cursor="hand2", command=dlg.destroy).pack(side="left")
 
     def _delete_one(self, obt: str):
-        if not messagebox.askyesno("確認刪除", f"確定要刪除單號 {obt} 的紀錄嗎？", parent=self):
+        if not messagebox.askyesno("確認刪除",
+                f"確定要刪除單號 {obt} 的紀錄嗎？\n\n刪除後此單號不會再被同步回來。", parent=self):
             return
         records = load_tracking()
         records = [r for r in records if r.get("obt_number") != obt]
         save_tracking(records)
+        add_deleted_obt(obt)
         # 同步清 EPB 調撥 log，讓對應調撥單可重建
         _cleanup_epb_log_for_obt(obt)
         self.refresh()
@@ -2958,9 +2982,14 @@ class TrackingView(tk.Frame):
         start_label = start_date.strftime("%-m/%-d")
         end_label   = today.strftime("%-m/%-d")
 
+        def _map_pkg_status(ds: str) -> str:
+            if "配完" in ds:
+                return "順利送達"
+            return "請按查詢確認"
+
         def run():
             try:
-                rows = self.app._web.query_obt_list(start, end)
+                rows = self.app._web.query_package_list(start, end)
             except RuntimeError as ex:
                 if "session_expired" in str(ex):
                     self.app._web = None
@@ -2975,20 +3004,22 @@ class TrackingView(tk.Frame):
 
             existing = load_tracking()
             existing_obts = {r.get("obt_number", "") for r in existing}
+            deleted_obts  = load_deleted_obts()
 
             added = 0
             for row in rows:
                 obt = row.get("obt", "").strip()
-                if not obt or obt in existing_obts:
+                if not obt or obt in existing_obts or obt in deleted_obts:
                     continue
+                ds = row.get("delivery_status", "").strip()
                 new_rec = {
                     "obt_number":     obt,
-                    "recipient_name": row.get("recipient_name", "").strip(),
-                    "cod_amount":     row.get("cod_amount", "").strip(),
+                    "recipient_name": "",
+                    "cod_amount":     row.get("receivable_amount", "").strip(),
                     "created_at":     row.get("shipment_date", "").strip(),
-                    "status":         "請按查詢確認",
+                    "status":         _map_pkg_status(ds),
                     "order_id":       row.get("order_id", "").strip(),
-                    "notes":          row.get("memo", "").strip(),
+                    "notes":          "",
                 }
                 existing.append(new_rec)
                 existing_obts.add(obt)
@@ -3755,7 +3786,7 @@ class ConfigView(tk.Frame):
             ec = Card(wrap, padding=22); ec.pack(fill="x", pady=(0, 14))
             Kicker(ec.body, "EPB 調撥（限內網調撥作業電腦）").pack(anchor="w", pady=(0, 8))
             tk.Label(ec.body,
-                     text="填入本門市在 EPB 的門市代碼（例 004、009…）；留空則 EPB 調撥分頁顯示停用提示。",
+                     text="填入本門市在 EPB 的門市代碼（例 SA004、SA009…SA068）；留空則 EPB 調撥分頁顯示停用提示。",
                      font=F_TINY, bg=CARD, fg=MUTED,
                      wraplength=600, justify="left").pack(anchor="w", pady=(0, 10))
             store_cell = tk.Frame(ec.body, bg=CARD); store_cell.pack(fill="x")
@@ -3993,6 +4024,7 @@ class ConfigView(tk.Frame):
         save_cfg(cfg)
         self.status.config(text="✓ 已儲存", fg=OK)
         self.after(2200, lambda: self.status.config(text=""))
+        messagebox.showinfo("儲存成功", "設定已儲存。")
         if hasattr(self.app, "sidebar"):
             self.app.sidebar.refresh_sender()
 

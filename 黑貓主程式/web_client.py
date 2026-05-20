@@ -394,6 +394,109 @@ class TakkyubinWebClient:
 
         return all_rows
 
+    def query_package_list(self, start_date: str, end_date: str) -> list[dict]:
+        """
+        Query 包裹查詢 (服務 > 包裹查詢, FuncNo=2).
+        start_date / end_date: YYYYMMDD.
+        Returns list of dicts: obt, order_id, shipment_date, delivery_status,
+          delivery_office, receivable_amount, completion_time, etc.
+        Raises RuntimeError("session_expired") if not logged in.
+        """
+        # Step 1 — Follow FuncNo=2 redirect to reach the package query page
+        redirect_html = self._req(f"{BASE}/RedirectFunc.aspx?FuncNo=2")
+        if "Login.aspx" in redirect_html or "txtUserID" in redirect_html:
+            raise RuntimeError("session_expired")
+
+        # Some FuncNo pages do a JS window.location / replaceUrl redirect
+        pkg_url = f"{BASE}/index.aspx"
+        pkg_html = redirect_html
+
+        js_m = re.search(
+            r"(?:window\.location(?:\.href)?\s*=|replaceUrl\s*\()\s*['\"]([^'\"]+)['\"]",
+            redirect_html, re.I)
+        if js_m:
+            target = js_m.group(1).strip()
+            if not target.startswith("http"):
+                target = f"{BASE}/{target.lstrip('./')}"
+            pkg_html = self._req(target)
+            pkg_url  = target
+
+        if "Login.aspx" in pkg_html or "txtUserID" in pkg_html:
+            raise RuntimeError("session_expired")
+
+        tokens = self._tokens(pkg_html)
+
+        # Step 2 — Discover form field names dynamically
+        # Date inputs (usually the first two text inputs on the page)
+        text_inputs = re.findall(
+            r'<input[^>]+type=["\']text["\'][^>]+name=["\']([^"\']+)["\']',
+            pkg_html, re.I)
+        if len(text_inputs) < 2:
+            # Also try name before type
+            text_inputs = re.findall(
+                r'<input[^>]+name=["\']([^"\']+)["\'][^>]+type=["\']text["\']',
+                pkg_html, re.I)
+
+        start_field = text_inputs[0] if len(text_inputs) >= 1 else "txtDateS"
+        end_field   = text_inputs[1] if len(text_inputs) >= 2 else "txtDateE"
+
+        # Customer account dropdown
+        dropdown_name = ""
+        acct_val = ""
+        m = re.search(
+            r'<select[^>]+name=["\']([^"\']+)["\'][^>]*>(.*?)</select>',
+            pkg_html, re.S | re.I)
+        if m:
+            dropdown_name = m.group(1)
+            vals = re.findall(r'<option[^>]+value=["\']([^"\']+)["\']', m.group(2), re.I)
+            if vals:
+                acct_val = vals[0]
+
+        # Search button
+        btn_m = (re.search(r'<input[^>]+name=["\']([^"\']*[Ss]earch[^"\']*)["\'][^>]+value=["\']([^"\']*)["\']', pkg_html, re.I)
+              or re.search(r'<input[^>]+value=["\']([^"\']*)["\'][^>]+name=["\']([^"\']*[Ss]earch[^"\']*)["\']', pkg_html, re.I))
+        if btn_m:
+            btn_name, btn_val = btn_m.group(1), btn_m.group(2)
+        else:
+            # Fallback: find any submit/button input with value like 搜尋
+            btn_m2 = re.search(r'<input[^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*搜[^"\']*)["\']', pkg_html, re.I)
+            btn_name = btn_m2.group(1) if btn_m2 else "btnSearch"
+            btn_val  = btn_m2.group(2) if btn_m2 else "搜尋"
+
+        # Step 3 — Find the actual POST URL from form action
+        action_m = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', pkg_html, re.I)
+        if action_m:
+            action = action_m.group(1).strip()
+            if action.startswith("http"):
+                pkg_url = action
+            elif action.startswith("/"):
+                base_root = re.match(r"https?://[^/]+", pkg_url)
+                pkg_url = (base_root.group(0) if base_root else "") + action
+            else:
+                pkg_url = f"{BASE}/{action.lstrip('./')}"
+
+        # Step 4 — POST the search
+        post_params: dict = {
+            **tokens,
+            "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
+            start_field: start_date,
+            end_field:   end_date,
+            btn_name:    btn_val,
+        }
+        if dropdown_name and acct_val:
+            post_params[dropdown_name] = acct_val
+
+        post_data = urllib.parse.urlencode(post_params, encoding="utf-8").encode("utf-8")
+        try:
+            result_html = self._req(pkg_url, post_data)
+        except Exception:
+            return []
+
+        if "Login.aspx" in result_html or "txtUserID" in result_html:
+            raise RuntimeError("session_expired")
+
+        return _parse_pkg_table(result_html)
+
     def get_account_options(self) -> list[tuple[str,str]]:
         """Return [(value, label), ...] from UC_UserList1$ddlUserList after login."""
         try:
@@ -571,5 +674,40 @@ def _parse_obt_table(html: str) -> list[dict]:
             continue
         rec = {col_keys[i]: cells[i] for i in range(min(len(col_keys), len(cells)))}
         if rec.get("obt") or rec.get("shipment_date"):
+            out.append(rec)
+    return out
+
+
+# Column mapping for 包裹查詢 (服務 > 包裹查詢, FuncNo=2) result table
+_PKG_HEADER_KEYS = {
+    "托運單號":   "obt",
+    "訂單日期":   "order_date",
+    "訂單編號":   "order_id",
+    "應收金額":   "receivable_amount",
+    "寄件日期":   "shipment_date",
+    "實收金額":   "actual_amount",
+    "配送營業所": "delivery_office",
+    "未配完原因": "incomplete_reason",
+    "配送狀態":   "delivery_status",
+    "配完時間":   "completion_time",
+}
+
+
+def _parse_pkg_table(html: str) -> list[dict]:
+    """Parse 包裹查詢 result table — dynamic header detection."""
+    p = _TP(); p.feed(html)
+    out = []; col_keys = []
+    for row in p.rows:
+        if not row: continue
+        cells = [c.replace("\xa0", "").strip() for c in row]
+        if not col_keys:
+            joined = " ".join(cells)
+            if "托運單號" in joined or "配送狀態" in joined:
+                col_keys = [_PKG_HEADER_KEYS.get(c, c) for c in cells]
+            continue
+        if all(c == "" for c in cells) or len(cells) < 3:
+            continue
+        rec = {col_keys[i]: cells[i] for i in range(min(len(col_keys), len(cells)))}
+        if rec.get("obt"):
             out.append(rec)
     return out
