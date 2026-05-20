@@ -402,8 +402,17 @@ class TakkyubinWebClient:
           delivery_office, receivable_amount, completion_time, etc.
         Raises RuntimeError("session_expired") if not logged in.
         """
+        import pathlib, os as _os
+        def _dbg(name: str, content: str):
+            try:
+                pathlib.Path(_os.path.expanduser(f"~/Desktop/heicat_pkg_{name}.html")
+                             ).write_text(content, encoding="utf-8")
+            except Exception:
+                pass
+
         # Step 1 — Follow FuncNo=2 redirect to reach the package query page
         redirect_html = self._req(f"{BASE}/RedirectFunc.aspx?FuncNo=2")
+        _dbg("1_redirect", redirect_html)
         if "Login.aspx" in redirect_html or "txtUserID" in redirect_html:
             raise RuntimeError("session_expired")
 
@@ -420,6 +429,7 @@ class TakkyubinWebClient:
                 target = f"{BASE}/{target.lstrip('./')}"
             pkg_html = self._req(target)
             pkg_url  = target
+            _dbg("2_pkg_form", pkg_html)
 
         if "Login.aspx" in pkg_html or "txtUserID" in pkg_html:
             raise RuntimeError("session_expired")
@@ -427,41 +437,36 @@ class TakkyubinWebClient:
         tokens = self._tokens(pkg_html)
 
         # Step 2 — Discover form field names dynamically
-        # Date inputs (usually the first two text inputs on the page)
-        text_inputs = re.findall(
-            r'<input[^>]+type=["\']text["\'][^>]+name=["\']([^"\']+)["\']',
+        # Date inputs: find by DateTextBoxClass to skip modal dialog inputs
+        date_pairs = re.findall(
+            r'<input[^>]+DateTextBoxClass[^>]+name=["\']([^"\']+)["\']'
+            r'|name=["\']([^"\']+)["\'][^>]+DateTextBoxClass',
             pkg_html, re.I)
-        if len(text_inputs) < 2:
-            # Also try name before type
-            text_inputs = re.findall(
-                r'<input[^>]+name=["\']([^"\']+)["\'][^>]+type=["\']text["\']',
-                pkg_html, re.I)
+        date_names = [next(g for g in pair if g) for pair in date_pairs]
+        start_field = date_names[0] if len(date_names) >= 1 else "txtSDate"
+        end_field   = date_names[1] if len(date_names) >= 2 else "txtEDate"
 
-        start_field = text_inputs[0] if len(text_inputs) >= 1 else "txtDateS"
-        end_field   = text_inputs[1] if len(text_inputs) >= 2 else "txtDateE"
-
-        # Customer account dropdown
+        # Customer dropdown: look for UserList-pattern (getUC_UserList$ddlUserList)
         dropdown_name = ""
         acct_val = ""
-        m = re.search(
-            r'<select[^>]+name=["\']([^"\']+)["\'][^>]*>(.*?)</select>',
+        acct_m = re.search(
+            r'<select[^>]+name=["\']([^"\']*UserList[^"\']*)["\'][^>]*>(.*?)</select>',
             pkg_html, re.S | re.I)
-        if m:
-            dropdown_name = m.group(1)
-            vals = re.findall(r'<option[^>]+value=["\']([^"\']+)["\']', m.group(2), re.I)
+        if acct_m:
+            dropdown_name = acct_m.group(1)
+            vals = re.findall(r'<option[^>]+value=["\']([^"\']+)["\']', acct_m.group(2), re.I)
             if vals:
                 acct_val = vals[0]
 
-        # Search button
-        btn_m = (re.search(r'<input[^>]+name=["\']([^"\']*[Ss]earch[^"\']*)["\'][^>]+value=["\']([^"\']*)["\']', pkg_html, re.I)
-              or re.search(r'<input[^>]+value=["\']([^"\']*)["\'][^>]+name=["\']([^"\']*[Ss]earch[^"\']*)["\']', pkg_html, re.I))
+        # Search button: the first btnSearch (date-range search)
+        btn_name = "btnSearch"
+        btn_val  = " 搜尋"
+        btn_m = re.search(
+            r'name=["\']btnSearch["\'][^>]+value=["\']([^"\']*)["\']'
+            r'|value=["\']([^"\']*)["\'][^>]+name=["\']btnSearch["\']',
+            pkg_html, re.I)
         if btn_m:
-            btn_name, btn_val = btn_m.group(1), btn_m.group(2)
-        else:
-            # Fallback: find any submit/button input with value like 搜尋
-            btn_m2 = re.search(r'<input[^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*搜[^"\']*)["\']', pkg_html, re.I)
-            btn_name = btn_m2.group(1) if btn_m2 else "btnSearch"
-            btn_val  = btn_m2.group(2) if btn_m2 else "搜尋"
+            btn_val = next(g for g in btn_m.groups() if g is not None)
 
         # Step 3 — Find the actual POST URL from form action
         action_m = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', pkg_html, re.I)
@@ -492,10 +497,47 @@ class TakkyubinWebClient:
         except Exception:
             return []
 
+        _dbg("3_result", result_html)
+
         if "Login.aspx" in result_html or "txtUserID" in result_html:
             raise RuntimeError("session_expired")
 
-        return _parse_pkg_table(result_html)
+        # Step 5 — Try all 4 lbtn postbacks; return first one with OBT table data
+        result_tokens = self._tokens(result_html)
+        keep: dict = {start_field: start_date, end_field: end_date}
+        if dropdown_name and acct_val:
+            keep[dropdown_name] = acct_val
+
+        lbtn_candidates = [
+            ("4a_lbtnTotal",        "lbtnTotal"),
+            ("4b_lbtnDelivery",     "lbtnDelivery"),
+            ("4c_lbtnUnDelivery",   "lbtnUnDelivery"),
+            ("4d_lbtnKeepTracking", "lbtnKeepTracking"),
+        ]
+        for dbg_name, event_target in lbtn_candidates:
+            detail_params: dict = {
+                **result_tokens,
+                "__EVENTTARGET": event_target,
+                "__EVENTARGUMENT": "",
+                "__LASTFOCUS": "",
+                **keep,
+            }
+            detail_data = urllib.parse.urlencode(detail_params, encoding="utf-8").encode("utf-8")
+            try:
+                detail_html = self._req(pkg_url, detail_data)
+            except Exception:
+                continue
+
+            _dbg(dbg_name, detail_html)
+
+            if "Login.aspx" in detail_html or "txtUserID" in detail_html:
+                raise RuntimeError("session_expired")
+
+            rows = _parse_pkg_table(detail_html)
+            if rows:
+                return rows
+
+        return []
 
     def get_account_options(self) -> list[tuple[str,str]]:
         """Return [(value, label), ...] from UC_UserList1$ddlUserList after login."""
