@@ -292,7 +292,7 @@ order by store_id
     except Exception as exc:
         results.append(f"[門市清單] 失敗：{str(exc)[:160]}")
 
-    # 2. 找含 TRAN/INVTR/TRANSFER 的表名
+    # 2. 找含 TRAN/INVTR/TRANSFER/OUT/SHIP 的表名
     t_sql = """
 select table_name
 from user_tables
@@ -300,15 +300,60 @@ where upper(table_name) like '%TRAN%'
    or upper(table_name) like '%INVTR%'
    or upper(table_name) like '%TRANSFER%'
    or upper(table_name) like '%MOVE%'
+   or upper(table_name) like '%INVOUT%'
+   or upper(table_name) like '%INVIN%'
+   or upper(table_name) like '%SHIP%'
 order by table_name
 """
+    candidate_tables = []
     try:
         h, rows = _run_remote(t_sql, timeout=60)
-        results.append(f"\n=== user_tables 含 TRAN/INVTR/MOVE 的表（{len(rows)} 個）===")
+        results.append(f"\n=== user_tables 含 TRAN/INVTR/MOVE/SHIP 等的表（{len(rows)} 個）===")
         for r in rows:
             results.append("\t".join(r))
+            candidate_tables.append(r[0].lower())
     except Exception as exc:
         results.append(f"[表名查詢] 失敗：{str(exc)[:160]}")
+
+    # 2b. 對每張候選表跑 STATUS_FLG 分佈（前提：表內有 STATUS_FLG + STORE_ID 欄位）
+    if candidate_tables:
+        col_sql = f"""
+select lower(table_name) as tname,
+       max(case when column_name = 'STATUS_FLG'  then 'Y' end) as has_status,
+       max(case when column_name = 'STORE_ID'    then 'Y' end) as has_store,
+       max(case when column_name = 'TO_STORE_ID' then 'Y' end) as has_to_store,
+       max(case when column_name = 'DOC_ID'      then 'Y' end) as has_doc_id,
+       count(*) as col_count
+from user_tab_columns
+where lower(table_name) in ({','.join(_q(t) for t in candidate_tables)})
+group by lower(table_name)
+order by tname
+"""
+        try:
+            h, rows = _run_remote(col_sql, timeout=60)
+            results.append(f"\n=== 候選表欄位特徵（is_status/is_store/is_to_store/is_doc_id）===")
+            results.append("\t".join(h))
+            for r in rows:
+                results.append("\t".join(r))
+            # 對「同時有 STATUS_FLG + STORE_ID + TO_STORE_ID」的表跑 status 分佈
+            for r in rows:
+                tname = r[0]
+                has_status, has_store, has_to_store = r[1], r[2], r[3]
+                if has_status == 'Y' and has_store == 'Y' and has_to_store == 'Y':
+                    try:
+                        h2, rs2 = _run_remote(
+                            f"select status_flg, count(*) as cnt "
+                            f"from {tname} where org_id = {_q(ORG_ID)} "
+                            f"group by status_flg order by cnt desc",
+                            timeout=120)
+                        results.append(f"\n--- {tname}.status_flg 分佈 ---")
+                        results.append("\t".join(h2))
+                        for rr in rs2:
+                            results.append("\t".join(rr))
+                    except Exception as exc:
+                        results.append(f"[{tname} status] 失敗：{str(exc)[:120]}")
+        except Exception as exc:
+            results.append(f"[欄位特徵查詢] 失敗：{str(exc)[:160]}")
 
     # 3. storedtl 找 TO_STORE_ID 非空的（全店，不過濾 SRC_CODE）
     x_sql = f"""
