@@ -548,6 +548,48 @@ select * from (
     return "\n".join(results)
 
 
+def lookup_doc(doc_id: str) -> str:
+    """直接用 DOC_ID 反查一張調撥單的表頭 + 明細，確認 STATUS_FLG 與其他欄位。"""
+    results = []
+
+    try:
+        h, rows = _run_remote(f"""
+select doc_id, doc_date, status_flg, invtrn_flg, print_flg,
+       store_id1 as 出庫店, store_id2 as 入庫店,
+       total_qty, post_date,
+       address1, address2, phone, postalcode,
+       remark, create_date, lastupdate, create_user_id,
+       rec_key
+from invtrntmas
+where org_id = {_q(ORG_ID)} and doc_id = {_q(doc_id)}
+""", timeout=60)
+        results.append(f"=== invtrntmas 表頭 (doc_id={doc_id}) ===")
+        if rows:
+            for i, col in enumerate(h):
+                results.append(f"  {col:20s}: {rows[0][i] if i < len(rows[0]) else ''}")
+        else:
+            results.append("（查無資料）")
+    except Exception as exc:
+        results.append(f"[表頭] 失敗：{str(exc)[:160]}")
+
+    try:
+        h, rows = _run_remote(f"""
+select l.line_no, l.stk_id, l.name, l.stk_qty, l.uom_id, l.remark
+from invtrntmas m
+join invtrntline l on l.mas_rec_key = m.rec_key
+where m.org_id = {_q(ORG_ID)} and m.doc_id = {_q(doc_id)}
+order by l.line_no
+""", timeout=60)
+        results.append(f"\n=== invtrntline 明細（{len(rows)} 行）===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[明細] 失敗：{str(exc)[:160]}")
+
+    return "\n".join(results)
+
+
 def query_pending_transfers(src_store_id: str) -> list[dict]:
     """
     回傳「出庫門市 = src_store_id、尚未建過黑貓單」的調撥單清單。
