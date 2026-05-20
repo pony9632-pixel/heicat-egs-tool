@@ -757,6 +757,7 @@ def query_pending_transfers(src_store_id: str) -> list[dict]:
       item_count     : 明細品項數
       remark         : 備註
     """
+    # 一次 SQL 把入庫店地址電話 JOIN 進來，避免 UI 端對每張單個別呼 EPB
     sql = f"""
 select
   m.doc_id,
@@ -765,6 +766,9 @@ select
   m.store_id1,
   m.store_id2,
   coalesce(sm.name, m.store_id2)     as to_store_name,
+  coalesce(sm.address1, '') || coalesce(sm.address2, '') || coalesce(sm.address3, '') as to_store_address,
+  coalesce(sm.phone, '')             as to_store_phone,
+  coalesce(sm.postalcode, '')        as to_store_postalcode,
   m.total_qty,
   m.remark,
   (select count(*) from invtrnrline l where l.mas_rec_key = m.rec_key) as item_count
@@ -787,15 +791,18 @@ order by m.doc_date desc, m.doc_id desc
     result = []
     for row in rows:
         result.append({
-            "doc_id":        get(row, "DOC_ID"),
-            "src_store_id":  get(row, "STORE_ID1"),
-            "to_store_id":   get(row, "STORE_ID2"),
-            "to_store_name": get(row, "TO_STORE_NAME"),
-            "doc_date":      get(row, "DOC_DATE"),
-            "dly_date":      get(row, "DLY_DATE"),
-            "total_qty":     get(row, "TOTAL_QTY"),
-            "item_count":    get(row, "ITEM_COUNT"),
-            "remark":        get(row, "REMARK"),
+            "doc_id":           get(row, "DOC_ID"),
+            "src_store_id":     get(row, "STORE_ID1"),
+            "to_store_id":      get(row, "STORE_ID2"),
+            "to_store_name":    get(row, "TO_STORE_NAME"),
+            "to_store_address": get(row, "TO_STORE_ADDRESS"),
+            "to_store_phone":   get(row, "TO_STORE_PHONE"),
+            "to_store_postalcode": get(row, "TO_STORE_POSTALCODE"),
+            "doc_date":         get(row, "DOC_DATE"),
+            "dly_date":         get(row, "DLY_DATE"),
+            "total_qty":        get(row, "TOTAL_QTY"),
+            "item_count":       get(row, "ITEM_COUNT"),
+            "remark":           get(row, "REMARK"),
         })
     return result
 

@@ -4476,41 +4476,42 @@ class EpbTransferView(tk.Frame):
 
     def _match_contact(self, to_store_name: str, to_store_id: str = ""):
         """
-        先比對黑貓通訊錄（名稱子字串對應），找不到時 fallback 到 EPB storemas
-        （用 to_store_id 直接查）。回傳 contact dict 或 None。
+        在黑貓通訊錄中找名稱子字串對應的 contact（純記憶體查詢，無 IO）。
+        EPB storemas 的地址電話已在 query_pending_transfers 一次 JOIN 取回，
+        透過 transfer dict 的 to_store_address / to_store_phone 帶入。
         """
-        cache_key = f"{to_store_id}|{to_store_name}"
+        cache_key = to_store_name
         if cache_key in self._contact_cache:
             return self._contact_cache[cache_key]
-
-        # 1. 黑貓通訊錄優先
         name_lower = to_store_name.lower()
         for c in load_contacts():
             c_name = (c.get("name") or "").lower()
             if c_name and (name_lower in c_name or c_name in name_lower):
                 self._contact_cache[cache_key] = c
                 return c
-
-        # 2. Fallback：從 EPB storemas 直接取
-        if to_store_id:
-            try:
-                import epb_client as _epb
-                info = _epb.query_store_info(to_store_id)
-                if info and info.get("address"):
-                    contact = {
-                        "name":    info.get("name") or to_store_name or to_store_id,
-                        "phone":   info.get("phone", ""),
-                        "mobile":  "",
-                        "address": info["address"],
-                        "category": "門市",
-                        "source":  "epb",  # 標記來源，方便除錯
-                    }
-                    self._contact_cache[cache_key] = contact
-                    return contact
-            except Exception:
-                pass
-
         self._contact_cache[cache_key] = None
+        return None
+
+    def _resolve_recipient(self, t: dict):
+        """
+        取得單張調撥單的收件人資料：
+        1. 優先用黑貓通訊錄比對結果
+        2. 找不到時用 EPB storemas（已在 query 時 JOIN 取回）的地址電話
+        3. 都沒有 → 回 None
+        """
+        to_name = t.get("to_store_name") or t.get("to_store_id", "")
+        contact = self._match_contact(to_name)
+        if contact:
+            return contact
+        epb_addr = (t.get("to_store_address") or "").strip()
+        if epb_addr:
+            return {
+                "name":    to_name,
+                "phone":   t.get("to_store_phone", ""),
+                "mobile":  "",
+                "address": epb_addr,
+                "source":  "epb",
+            }
         return None
 
     # ── actions ────────────────────────────────────────────────────────────────
@@ -4555,7 +4556,7 @@ class EpbTransferView(tk.Frame):
         for t in transfers:
             doc_id = t["doc_id"]
             to_name = t.get("to_store_name") or t.get("to_store_id", "")
-            contact = self._match_contact(to_name, t.get("to_store_id", ""))
+            contact = self._resolve_recipient(t)
             already_built = doc_id in log
 
             if already_built:
@@ -4602,8 +4603,7 @@ class EpbTransferView(tk.Frame):
         t_dict = next((t for t in self._transfers if t["doc_id"] == row_id), None)
         if t_dict is None:
             return
-        to_name = t_dict.get("to_store_name") or t_dict.get("to_store_id", "")
-        if not self._match_contact(to_name, t_dict.get("to_store_id", "")):
+        if not self._resolve_recipient(t_dict):
             return  # no contact found, not selectable
 
         if row_id in self._checked:
@@ -4647,7 +4647,7 @@ class EpbTransferView(tk.Frame):
             for i, t in enumerate(to_create, 1):
                 doc_id = t["doc_id"]
                 to_name = t.get("to_store_name") or t.get("to_store_id", "")
-                contact = self._match_contact(to_name, t.get("to_store_id", ""))
+                contact = self._resolve_recipient(t) or {}
                 order = {
                     "order_id":          doc_id,
                     "recipient_name":    contact.get("name", to_name),
