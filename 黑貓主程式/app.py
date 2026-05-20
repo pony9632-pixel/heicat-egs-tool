@@ -4517,6 +4517,7 @@ class EpbTransferView(tk.Frame):
     # ── actions ────────────────────────────────────────────────────────────────
 
     def _refresh(self):
+        import time as _time
         self._contact_cache.clear()
         self._checked.clear()
         if hasattr(self, "info_lbl"):
@@ -4524,17 +4525,33 @@ class EpbTransferView(tk.Frame):
         if hasattr(self, "_refresh_btn"):
             self._refresh_btn.configure(state="disabled")
 
+        t0 = _time.time()
+        print(f"[EPB] _refresh start store_id={self._store_id}", flush=True)
+
         def run():
             try:
+                t_import = _time.time()
                 import epb_client as _epb
+                print(f"[EPB] import epb_client done +{_time.time()-t_import:.2f}s", flush=True)
+                t_query = _time.time()
                 transfers = _epb.query_pending_transfers(self._store_id)
+                print(f"[EPB] query_pending_transfers done +{_time.time()-t_query:.2f}s, "
+                      f"got {len(transfers)} rows (total +{_time.time()-t0:.2f}s)", flush=True)
             except Exception as ex:
                 err = str(ex)
+                print(f"[EPB] EXCEPTION +{_time.time()-t0:.2f}s: {err}", flush=True)
                 self.after(0, lambda e=err: self._on_refresh_error(e))
                 return
-            self.after(0, lambda t=transfers: self._populate(t))
+            self.after(0, lambda t=transfers: self._populate_timed(t, t0))
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _populate_timed(self, transfers, t_start):
+        import time as _time
+        t_pop = _time.time()
+        self._populate(transfers)
+        print(f"[EPB] _populate done +{_time.time()-t_pop:.2f}s "
+              f"(total since refresh: +{_time.time()-t_start:.2f}s)", flush=True)
 
     def _on_refresh_error(self, err: str):
         if hasattr(self, "_refresh_btn"):
