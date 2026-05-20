@@ -513,13 +513,14 @@ class App(tk.Tk):
         self._web: TakkyubinWebClient | None = None  # shared web session
 
         self.views = {
-            "single":      SingleOrderView(self.content_host, self),
-            "print_queue": PrintQueueView(self.content_host, self),
-            "batch":       BatchOrderView(self.content_host, self),
-            "tracking":    TrackingView(self.content_host, self),
-            "freight":     FreightView(self.content_host, self),
-            "contacts":    ContactsView(self.content_host, self),
-            "settings":    ConfigView(self.content_host, self),
+            "single":       SingleOrderView(self.content_host, self),
+            "print_queue":  PrintQueueView(self.content_host, self),
+            "batch":        BatchOrderView(self.content_host, self),
+            "tracking":     TrackingView(self.content_host, self),
+            "freight":      FreightView(self.content_host, self),
+            "contacts":     ContactsView(self.content_host, self),
+            "epb_transfer": EpbTransferView(self.content_host, self),
+            "settings":     ConfigView(self.content_host, self),
         }
         for v in self.views.values():
             v.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -532,6 +533,7 @@ class App(tk.Tk):
         self.bind_all("<Command-5>", lambda e: self.show_view("freight"))
         self.bind_all("<Command-6>", lambda e: self.show_view("contacts"))
         self.bind_all("<Command-7>", lambda e: self.show_view("settings"))
+        self.bind_all("<Command-8>", lambda e: self.show_view("epb_transfer"))
 
     def show_view(self, name):
         v = self.views.get(name)
@@ -1013,13 +1015,14 @@ def _load_logo(px: int = 36):
 # ─── sidebar ─────────────────────────────────────────────────────────────────
 
 _NAV_ITEMS = [
-    ("single",      "建立寄件單",   "1", "📤"),
-    ("print_queue", "待列印貨運單", "2", "🖨"),
-    ("batch",       "批次建單",     "3", "☰"),
-    ("tracking",    "貨運查詢",     "4", "⊙"),
-    ("freight",     "費用查詢",     "5", "💳"),
-    ("contacts",    "通訊錄",       "6", "⊞"),
-    ("settings",    "設定",         "7", "⚙"),
+    ("single",        "建立寄件單",   "1", "📤"),
+    ("print_queue",   "待列印貨運單", "2", "🖨"),
+    ("batch",         "批次建單",     "3", "☰"),
+    ("tracking",      "貨運查詢",     "4", "⊙"),
+    ("freight",       "費用查詢",     "5", "💳"),
+    ("contacts",      "通訊錄",       "6", "⊞"),
+    ("epb_transfer",  "EPB 調撥",     "8", "📦"),
+    ("settings",      "設定",         "7", "⚙"),
 ]
 
 class Sidebar(tk.Frame):
@@ -1304,13 +1307,14 @@ class NavItem(tk.Frame):
 # ─── top bar ─────────────────────────────────────────────────────────────────
 
 _VIEW_NAMES = {
-    "single":      "建立寄件單",
-    "print_queue": "待列印貨運單",
-    "batch":       "批次建單",
-    "tracking":    "貨運查詢",
-    "freight":     "費用查詢",
-    "contacts":    "通訊錄",
-    "settings":    "設定",
+    "single":       "建立寄件單",
+    "print_queue":  "待列印貨運單",
+    "batch":        "批次建單",
+    "tracking":     "貨運查詢",
+    "freight":      "費用查詢",
+    "contacts":     "通訊錄",
+    "epb_transfer": "EPB 調撥",
+    "settings":     "設定",
 }
 
 class TopBar(tk.Frame):
@@ -4318,6 +4322,350 @@ class ContactDialog(tk.Toplevel):
             messagebox.showwarning("必填", "姓名為必填欄位。", parent=self); return
         self.on_save(contact, self.original_name)
         self.destroy()
+
+
+class EpbTransferView(tk.Frame):
+    """EPB 調撥建單 — 讀取 EPB 待出貨調撥單，批次建立黑貓託運單。"""
+
+    _LOG_PATH = Path(__file__).resolve().parent / "epb_transfer_log.json"
+
+    def __init__(self, master, app):
+        super().__init__(master, bg=PAPER)
+        self.app = app
+        self._transfers: list[dict] = []
+        self._checked: set = set()
+        self._contact_cache: dict = {}
+        self._store_id = ""
+        self._build()
+
+    def _build(self):
+        # File-system check only — no network call on startup
+        try:
+            import epb_client as _epb
+            _has_env = (
+                Path(_epb.JAVA).exists() and
+                Path("/Library/EPBrowser/EPB/Shell/shell.jar").exists()
+            )
+        except Exception:
+            _has_env = False
+
+        wrap = tk.Frame(self, bg=PAPER)
+        wrap.pack(fill="both", expand=True, padx=28, pady=24)
+
+        head = tk.Frame(wrap, bg=PAPER)
+        head.pack(fill="x", pady=(0, 16))
+        SectionHeader(head, "EPB 調撥", "匯入調撥單建立黑貓託運單").pack(side="left")
+
+        if not _has_env:
+            notice = Card(wrap, padding=24)
+            notice.pack(fill="x", pady=(0, 12))
+            tk.Label(notice.body, text="⚠  需在可連線 EPB 的內網電腦使用",
+                     font=(FONT_FAMILY, _sz(13), "bold"), bg=CARD, fg=WARN).pack(anchor="w")
+            tk.Label(notice.body,
+                     text="未偵測到 JDK 1.8 + EPBrowser 安裝。\n"
+                          "此分頁在一般辦公室電腦上不可用，不影響其他建單功能。",
+                     font=F_SMALL, bg=CARD, fg=MUTED, justify="left").pack(anchor="w", pady=(6, 0))
+            return
+
+        cfg = load_cfg()
+        store_id = str(cfg.get("store_id") or "").strip()
+        if not store_id:
+            notice = Card(wrap, padding=24)
+            notice.pack(fill="x", pady=(0, 12))
+            tk.Label(notice.body, text="請先設定門市代碼",
+                     font=(FONT_FAMILY, _sz(13), "bold"), bg=CARD, fg=WARN).pack(anchor="w")
+            tk.Label(notice.body,
+                     text="請至「設定」頁填入本門市 EPB 門市代碼（如 004）後儲存，再回此分頁查詢。",
+                     font=F_SMALL, bg=CARD, fg=MUTED).pack(anchor="w", pady=(6, 0))
+            TwButton(notice.body, "前往設定", variant="default",
+                     command=lambda: self.app.show_view("settings")).pack(anchor="w", pady=(10, 0))
+            return
+
+        self._store_id = store_id
+
+        # refresh button (only in active mode)
+        self._refresh_btn = TwButton(head, "重新查詢", variant="primary", command=self._refresh)
+        self._refresh_btn.pack(side="right")
+
+        # store pill
+        pill_row = tk.Frame(wrap, bg=PAPER)
+        pill_row.pack(fill="x", pady=(0, 8))
+        tk.Label(pill_row, text=f"門市代碼：{store_id}",
+                 font=F_TINY, bg=PAPER, fg=MUTED).pack(side="left")
+
+        # table card
+        tcard = Card(wrap, padding=0)
+        tcard.pack(fill="both", expand=True, pady=(0, 8))
+        cols = ["sel", "doc_id", "doc_date", "to_store", "item_count", "status"]
+        labels = {"sel": "選取", "doc_id": "調撥單號", "doc_date": "日期",
+                  "to_store": "入庫門市", "item_count": "品項", "status": "狀態"}
+        widths = {"sel": 52, "doc_id": 170, "doc_date": 90,
+                  "to_store": 200, "item_count": 60, "status": 190}
+
+        self.tree = ttk.Treeview(tcard.body, columns=cols, show="headings",
+                                 style="Tw.Treeview", height=12)
+        for c in cols:
+            self.tree.heading(c, text=labels[c])
+            self.tree.column(c, width=widths[c],
+                             anchor="center" if c in ("sel", "item_count") else "w")
+        vsb = ttk.Scrollbar(tcard.body, orient="vertical", command=self.tree.yview,
+                            style="Tw.Vertical.TScrollbar")
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.tree.bind("<Button-1>", self._on_row_click)
+        self.tree.tag_configure("built",   foreground=MUTED)
+        self.tree.tag_configure("error",   foreground=ERR)
+        self.tree.tag_configure("normal",  foreground=INK)
+        self.tree.tag_configure("checked", foreground=OK)
+
+        # footer
+        ft = tk.Frame(wrap, bg=PAPER)
+        ft.pack(fill="x", pady=(0, 6))
+        self.info_lbl = tk.Label(ft, text="點擊「重新查詢」載入本門市待出貨調撥單",
+                                 font=F_TINY, bg=PAPER, fg=MUTED, anchor="w")
+        self.info_lbl.pack(side="left")
+        self._submit_btn = TwButton(ft, "建立選取託運單  →", variant="primary",
+                                    command=self._submit, width=16)
+        self._submit_btn.pack(side="right")
+
+        # log area
+        self.progress_lbl = tk.Label(wrap, text="", font=F_SMALL, bg=PAPER, fg=MUTED, anchor="w")
+        self.progress_lbl.pack(fill="x", pady=(4, 2))
+        self.log_box = scrolledtext.ScrolledText(wrap, height=5, font=F_MONO,
+            bg=CARD, fg=INK2, relief="flat", state="disabled",
+            highlightbackground=HAIR, highlightthickness=1)
+        self.log_box.pack(fill="x")
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _log(self, msg: str):
+        if not hasattr(self, "log_box"):
+            return
+        self.log_box.configure(state="normal")
+        self.log_box.insert("end", msg + "\n")
+        self.log_box.see("end")
+        self.log_box.configure(state="disabled")
+
+    def _load_epb_log(self) -> dict:
+        try:
+            return json.loads(self._LOG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save_epb_log(self, log: dict):
+        self._LOG_PATH.write_text(
+            json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _match_contact(self, to_store_name: str):
+        if to_store_name in self._contact_cache:
+            return self._contact_cache[to_store_name]
+        name_lower = to_store_name.lower()
+        for c in load_contacts():
+            c_name = (c.get("name") or "").lower()
+            if c_name and (name_lower in c_name or c_name in name_lower):
+                self._contact_cache[to_store_name] = c
+                return c
+        self._contact_cache[to_store_name] = None
+        return None
+
+    # ── actions ────────────────────────────────────────────────────────────────
+
+    def _refresh(self):
+        self._contact_cache.clear()
+        self._checked.clear()
+        if hasattr(self, "info_lbl"):
+            self.info_lbl.config(text="查詢中…", fg=MUTED)
+        if hasattr(self, "_refresh_btn"):
+            self._refresh_btn.configure(state="disabled")
+
+        def run():
+            try:
+                import epb_client as _epb
+                transfers = _epb.query_pending_transfers(self._store_id)
+            except Exception as ex:
+                err = str(ex)
+                self.after(0, lambda e=err: self._on_refresh_error(e))
+                return
+            self.after(0, lambda t=transfers: self._populate(t))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_refresh_error(self, err: str):
+        if hasattr(self, "_refresh_btn"):
+            self._refresh_btn.configure(state="normal")
+        if hasattr(self, "info_lbl"):
+            self.info_lbl.config(text=f"查詢失敗：{err[:80]}", fg=ERR)
+        self._log(f"[錯誤] EPB 查詢失敗：{err}")
+
+    def _populate(self, transfers: list):
+        if hasattr(self, "_refresh_btn"):
+            self._refresh_btn.configure(state="normal")
+        self._transfers = transfers
+        log = self._load_epb_log()
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        no_contact = 0
+        for t in transfers:
+            doc_id = t["doc_id"]
+            to_name = t.get("to_store_name") or t.get("to_store_id", "")
+            contact = self._match_contact(to_name)
+            already_built = doc_id in log
+
+            if already_built:
+                obt = log[doc_id].get("obt_number", "?")
+                status_str = f"✅ 已建單 {obt}"
+                tag = "built"
+                sel_icon = "—"
+            elif not contact:
+                status_str = "⚠ 找不到通訊錄"
+                tag = "error"
+                sel_icon = "✗"
+                no_contact += 1
+            else:
+                sel_icon = "☑" if doc_id in self._checked else "☐"
+                tag = "checked" if doc_id in self._checked else "normal"
+                status_str = "待建單"
+
+            self.tree.insert("", "end", iid=doc_id, tags=(tag,), values=[
+                sel_icon, doc_id, t.get("doc_date", ""),
+                to_name, t.get("item_count", ""), status_str,
+            ])
+
+        pending = sum(1 for t in transfers if t["doc_id"] not in log)
+        built = len(transfers) - pending
+        if hasattr(self, "info_lbl"):
+            self.info_lbl.config(
+                text=f"共 {len(transfers)} 筆  ·  已建單 {built}  ·  待建單 {pending}"
+                     + (f"  ·  ⚠ 找不到通訊錄 {no_contact}" if no_contact else ""),
+                fg=INK2)
+
+    def _on_row_click(self, event):
+        if not hasattr(self, "tree"):
+            return
+        region = self.tree.identify_region(event.x, event.y)
+        if region != "cell":
+            return
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return
+        log = self._load_epb_log()
+        if row_id in log:
+            return  # already built, not toggleable
+
+        t_dict = next((t for t in self._transfers if t["doc_id"] == row_id), None)
+        if t_dict is None:
+            return
+        to_name = t_dict.get("to_store_name") or t_dict.get("to_store_id", "")
+        if not self._match_contact(to_name):
+            return  # no contact found, not selectable
+
+        if row_id in self._checked:
+            self._checked.discard(row_id)
+            vals = list(self.tree.item(row_id)["values"])
+            vals[0] = "☐"
+            self.tree.item(row_id, tags=("normal",), values=vals)
+        else:
+            self._checked.add(row_id)
+            vals = list(self.tree.item(row_id)["values"])
+            vals[0] = "☑"
+            self.tree.item(row_id, tags=("checked",), values=vals)
+
+    def _submit(self):
+        if not self._checked:
+            messagebox.showwarning("未選取", "請先勾選要建立託運單的調撥單。")
+            return
+        cfg = load_cfg()
+        sender = cfg.get("sender") or {}
+        if not sender.get("name"):
+            messagebox.showwarning("寄件人未設定", "請先至「設定」頁填寫寄件人資料。")
+            return
+
+        to_create = [t for t in self._transfers if t["doc_id"] in self._checked]
+        if not to_create:
+            return
+
+        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        total = len(to_create)
+        if hasattr(self, "progress_lbl"):
+            self.progress_lbl.config(text=f"建單中 0 / {total} 筆…", fg=MUTED)
+        if hasattr(self, "_submit_btn"):
+            self._submit_btn.configure(state="disabled")
+        if hasattr(self, "_refresh_btn"):
+            self._refresh_btn.configure(state="disabled")
+
+        def run():
+            client = make_client(cfg)
+            log = self._load_epb_log()
+
+            for i, t in enumerate(to_create, 1):
+                doc_id = t["doc_id"]
+                to_name = t.get("to_store_name") or t.get("to_store_id", "")
+                contact = self._match_contact(to_name)
+                order = {
+                    "order_id":          doc_id,
+                    "recipient_name":    contact.get("name", to_name),
+                    "recipient_phone":   contact.get("phone", ""),
+                    "recipient_mobile":  contact.get("mobile", ""),
+                    "recipient_address": contact.get("address", ""),
+                    "is_freight":        "Y",
+                    "notes":             "門市調撥",
+                    "product_name":      "一般物品",
+                }
+                try:
+                    api_order = _csv_row_to_api_order(order, sender)
+                    resp = client.print_obt([api_order])
+                    if resp.get("IsOK") == "Y":
+                        data = resp.get("Data") or {}
+                        if isinstance(data, list) and data:
+                            data = data[0]
+                        obt = data.get("OBTNumber", "")
+                        pdf_b64 = data.get("PDF", "")
+                        pdf_path = ""
+                        if pdf_b64:
+                            pdf_path = str(Path(OUTPUT_DIR) / f"{doc_id}_{obt}.pdf")
+                            save_pdf(pdf_b64, pdf_path)
+                        from datetime import datetime as _dt
+                        log[doc_id] = {
+                            "obt_number": obt,
+                            "order_id":   doc_id,
+                            "recipient":  to_name,
+                            "created_at": _dt.now().isoformat(timespec="seconds"),
+                            "pdf_path":   pdf_path,
+                        }
+                        self._save_epb_log(log)
+                        append_tracking(obt, contact.get("name", to_name), doc_id)
+                        self.after(0, lambda d=doc_id, n=obt: self._log(f"✓ {d}  OBT:{n}"))
+                    else:
+                        msg = resp.get("Message", "")[:60]
+                        self.after(0, lambda d=doc_id, m=msg: self._log(f"✗ {d}：{m}"))
+                except Exception as ex:
+                    self.after(0, lambda d=doc_id, e=str(ex): self._log(f"✗ {d}：{e}"))
+
+                self.after(0, lambda _i=i, _t=total: (
+                    hasattr(self, "progress_lbl") and
+                    self.progress_lbl.config(text=f"建單中 {_i} / {_t} 筆…", fg=MUTED)
+                ))
+
+            self.after(0, self._on_submit_done)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_submit_done(self):
+        self._log("── 完成 ──")
+        if hasattr(self, "progress_lbl"):
+            self.progress_lbl.config(text="✓ 建單完成", fg=OK)
+        if hasattr(self, "_submit_btn"):
+            self._submit_btn.configure(state="normal")
+        if hasattr(self, "_refresh_btn"):
+            self._refresh_btn.configure(state="normal")
+        self._checked.clear()
+        if self._transfers:
+            self._populate(self._transfers)
+        import subprocess
+        subprocess.run(["open", OUTPUT_DIR])
 
 
 class ContactPickerDialog(tk.Toplevel):

@@ -3,6 +3,10 @@
 黑貓主程式/auth_state.json
 黑貓主程式/contacts.json
 黑貓主程式/tracking.json
+# EPB 調撥建單本機記錄（含 OBT 單號，勿進版控）
+黑貓主程式/epb_transfer_log.json
+# EPB Java 編譯產物
+黑貓主程式/EPBReportQuery.class
 # PDF 輸出（客戶資料）
 黑貓單號/
 
