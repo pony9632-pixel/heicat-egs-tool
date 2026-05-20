@@ -24,24 +24,70 @@ from api_client import SudaClient, save_pdf, default_shipment_date, default_deli
 from web_client import TakkyubinWebClient
 from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS, _csv_row_to_api_order
 
-CONFIG_PATH   = "config.yaml"
-CONTACTS_PATH         = "contacts.json"
-DEFAULT_CONTACTS_PATH = "default_contacts.json"
-OUTPUT_DIR    = str(Path(__file__).parent.parent / "黑貓單號")
-TRACKING_PATH  = str(Path(__file__).parent / "tracking.json")
-DELETED_PATH   = str(Path(__file__).parent / "deleted_obts.json")
+# ─── 資料庫路徑系統 ──────────────────────────────────────────────────────────
+# .datapath  放在程式旁（不同步）：只記錄「資料庫資料夾在哪」
+# 黑貓資料庫/ 可以放在雲端硬碟（iCloud / Dropbox 等），跨裝置共用
 
+_DATAPATH_FILE    = Path(__file__).parent / ".datapath"
+_DEFAULT_DATA_DIR = Path.home() / "黑貓資料庫"
+_APP_DIR          = Path(__file__).parent   # 程式目錄（舊檔案位置）
+
+def get_data_dir() -> Path:
+    """Return the current 黑貓資料庫 folder path."""
+    try:
+        p = _DATAPATH_FILE.read_text(encoding="utf-8").strip()
+        if p:
+            return Path(p)
+    except Exception:
+        pass
+    return _DEFAULT_DATA_DIR
+
+def set_data_dir(new_path: str):
+    """Save a new data folder path and create it if needed."""
+    Path(new_path).mkdir(parents=True, exist_ok=True)
+    _DATAPATH_FILE.write_text(new_path, encoding="utf-8")
+
+def _ensure_data_dir():
+    """On first run: create the data folder and migrate old files next to the app."""
+    data_dir = get_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    # migrate files that used to sit next to the app
+    old_files = [
+        "config.yaml", "contacts.json", "default_contacts.json",
+        "tracking.json", "deleted_obts.json", "epb_transfer_log.json",
+    ]
+    for name in old_files:
+        old = _APP_DIR / name
+        new = data_dir / name
+        if old.exists() and not new.exists():
+            old.rename(new)
+
+# paths — all relative to get_data_dir(), evaluated at call time
+def _cfg_path()              -> Path: return get_data_dir() / "config.yaml"
+def _contacts_path()         -> Path: return get_data_dir() / "contacts.json"
+def _default_contacts_path() -> Path: return get_data_dir() / "default_contacts.json"
+def _tracking_path()         -> Path: return get_data_dir() / "tracking.json"
+def _deleted_path()          -> Path: return get_data_dir() / "deleted_obts.json"
+def _epb_log_path()          -> Path: return get_data_dir() / "epb_transfer_log.json"
+
+_DEFAULT_OUTPUT_DIR = str(Path.home() / "黑貓單號")
+
+def get_output_dir() -> str:
+    """Return the PDF output directory, preferring the user-configured path."""
+    try:
+        cfg = load_cfg()
+        p = (cfg.get("output_dir") or "").strip()
+        if p:
+            return p
+    except Exception:
+        pass
+    return _DEFAULT_OUTPUT_DIR
 
 def _append_build_log(msg: str):
-    """將建單結果 append 到 黑貓單號/build_log.txt"""
-    import datetime
-    log_path = Path(OUTPUT_DIR) / "build_log.txt"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "a", encoding="utf-8") as _f:
-        _f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
+    pass
 
 
-VERSION     = "2.2.2"
+VERSION     = "2.3.0"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Pro palette ─────────────────────────────────────────────────────────────
@@ -79,7 +125,10 @@ FONT_SCALE_OPTIONS = {"小": 0.85, "標準": 1.0, "大": 1.15, "特大": 1.30}
 
 def _load_font_scale():
     try:
-        with open(CONFIG_PATH, encoding="utf-8") as _f:
+        p = _cfg_path()
+        if not p.exists():
+            return 1.0
+        with open(p, encoding="utf-8") as _f:
             v = (yaml.safe_load(_f) or {}).get("font_scale", 1.0)
         return max(0.7, min(2.0, float(v or 1.0)))
     except Exception:
@@ -127,13 +176,16 @@ FIXED_PRODUCT_TYPE_ID    = "0006"
 # ─── persistence helpers ─────────────────────────────────────────────────────
 
 def load_cfg() -> dict:
-    if Path(CONFIG_PATH).exists():
-        with open(CONFIG_PATH, encoding="utf-8") as f:
+    p = _cfg_path()
+    if p.exists():
+        with open(p, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
 
 def save_cfg(cfg: dict):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+    p = _cfg_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
         yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
 
 
@@ -166,50 +218,76 @@ def _lock_epb():
 
 
 def load_contacts() -> list[dict]:
-    if Path(CONTACTS_PATH).exists():
-        with open(CONTACTS_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    # 首次安裝：從預設通訊錄初始化
-    if Path(DEFAULT_CONTACTS_PATH).exists():
-        with open(DEFAULT_CONTACTS_PATH, encoding="utf-8") as f:
-            defaults = json.load(f)
-        save_contacts(defaults)
-        return defaults
+    """回傳 default_contacts（門市預設）+ contacts（使用者新增）合併清單。"""
+    result: list[dict] = []
+    dp = _default_contacts_path()
+    if dp.exists():
+        try:
+            with open(dp, encoding="utf-8") as f:
+                result.extend(json.load(f))
+        except Exception:
+            pass
+    p = _contacts_path()
+    if p.exists():
+        try:
+            with open(p, encoding="utf-8") as f:
+                result.extend(json.load(f))
+        except Exception:
+            pass
+    return result
+
+def load_custom_contacts() -> list[dict]:
+    """只回傳使用者自行新增的聯絡人（contacts.json）。"""
+    p = _contacts_path()
+    if p.exists():
+        try:
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
     return []
 
 def save_contacts(contacts: list[dict]):
-    with open(CONTACTS_PATH, "w", encoding="utf-8") as f:
+    """只儲存使用者自行新增的聯絡人（不覆蓋 default_contacts）。"""
+    p = _contacts_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
         json.dump(contacts, f, ensure_ascii=False, indent=2)
 
 def load_tracking() -> list[dict]:
-    if Path(TRACKING_PATH).exists():
-        with open(TRACKING_PATH, encoding="utf-8") as f:
+    p = _tracking_path()
+    if p.exists():
+        with open(p, encoding="utf-8") as f:
             return json.load(f)
     return []
 
 def save_tracking(records: list[dict]):
-    with open(TRACKING_PATH, "w", encoding="utf-8") as f:
+    p = _tracking_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
 
 def load_deleted_obts() -> set:
-    if Path(DELETED_PATH).exists():
-        with open(DELETED_PATH, encoding="utf-8") as f:
+    p = _deleted_path()
+    if p.exists():
+        with open(p, encoding="utf-8") as f:
             return set(json.load(f))
     return set()
 
 def add_deleted_obt(obt: str):
     obts = load_deleted_obts()
     obts.add(obt)
-    with open(DELETED_PATH, "w", encoding="utf-8") as f:
+    p = _deleted_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
         json.dump(sorted(obts), f, ensure_ascii=False, indent=2)
 
 
 def _cleanup_epb_log_for_obt(obt: str) -> int:
-    """從 epb_transfer_log.json 移除指定 OBT 對應的 entry，回傳移除筆數。
-    給 TrackingView 刪除時連動使用，讓 EPB 調撥單可重建。"""
+    """從 epb_transfer_log.json 移除指定 OBT 對應的 entry，回傳移除筆數。"""
     if not obt:
         return 0
-    path = Path(__file__).resolve().parent / "epb_transfer_log.json"
+    path = _epb_log_path()
     if not path.exists():
         return 0
     try:
@@ -2220,8 +2298,8 @@ class SingleOrderView(tk.Frame):
         def run():
             try:
                 client = make_client(cfg)
-                Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-                results = create_orders(client, [values], sender, output_dir=OUTPUT_DIR)
+                Path(get_output_dir()).mkdir(parents=True, exist_ok=True)
+                results = create_orders(client, [values], sender, output_dir=get_output_dir())
                 r = results[0]
                 if r["success"]:
                     msg = f"✓ 建單成功！OBT：{r['obt_number']}"
@@ -2260,7 +2338,7 @@ class BatchOrderView(tk.Frame):
         super().__init__(master, bg=PAPER)
         self.app = app
         self.orders = []
-        self.output_dir = OUTPUT_DIR
+        self.output_dir = get_output_dir()
         self._build()
 
     def _build(self):
@@ -2583,9 +2661,9 @@ _TRK_GCOLS = [
     ("配送狀態",  112, 0),
     ("出貨日",     90, 0),
     ("托運單號",  130, 0),
-    ("代收金額",   76, 0),
-    ("收件人姓名", 130, 2),
-    ("備註",       100, 3),
+    ("收件人姓名", 120, 1),
+    ("寄件人",     100, 1),
+    ("備註",        80, 2),
     ("",           120, 0),  # buttons col
 ]
 
@@ -2614,9 +2692,20 @@ class TrackingView(tk.Frame):
         ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
         TwButton(ba, "全部查詢狀態", variant="default",
                  command=self._query_all).pack(side="left", padx=4)
-        TwButton(ba, "同步 14 天紀錄", variant="ghost",
-                 command=self._sync_from_web).pack(side="left", padx=4)
+        self._sync_btn = TwButton(ba, "同步 14 天紀錄", variant="ghost",
+                 command=self._sync_from_web)
+        self._sync_btn.pack(side="left", padx=4)
         TwButton(ba, "清除兩週前紀錄", variant="ghost", command=self._prune).pack(side="left", padx=4)
+
+        # sync progress bar (hidden until sync starts)
+        self._sync_prog_frame = tk.Frame(wrap, bg=PAPER)
+        self._sync_prog_lbl = tk.Label(self._sync_prog_frame, text="", font=F_TINY,
+                                       bg=PAPER, fg=MUTED, anchor="w")
+        self._sync_prog_lbl.pack(side="left", padx=(0, 10))
+        self._sync_prog_bar = ttk.Progressbar(self._sync_prog_frame, orient="horizontal",
+                                              mode="determinate", length=200)
+        self._sync_prog_bar.pack(side="left")
+        # not packed yet — shown only during sync
 
         # stats row (4 cards)
         self.stats_row = tk.Frame(wrap, bg=PAPER)
@@ -2766,7 +2855,7 @@ class TrackingView(tk.Frame):
         self._result_count.config(text=f"顯示 {len(shown)} 筆")
 
         if not shown:
-            msg = "尚無建單紀錄\n（建立寄件單後會自動顯示在這裡）" if filt == "all" else "此分類沒有資料"
+            msg = "此分類沒有資料"
             tk.Label(self._list_body, text=msg,
                      bg=CARD, fg=MUTED, font=F_SMALL, justify="center").pack(pady=60)
             return
@@ -2778,7 +2867,7 @@ class TrackingView(tk.Frame):
     def _make_row(self, r: dict, divider=True):
         obt     = r.get("obt_number", "—")
         name    = r.get("recipient_name", "—")
-        cod     = r.get("cod_amount", "")
+        sender  = r.get("sender_name", "")
         snt     = r.get("created_at", "")[:10]   # 出貨日 YYYY/MM/DD 或 YYYY-MM-DD
         status  = r.get("status", "—")
         notes   = r.get("notes", "")
@@ -2802,11 +2891,11 @@ class TrackingView(tk.Frame):
             slbl.bind("<Enter>", lambda e, t=queried: slbl.config(text=f"查詢 {t[11:16]}"))
             slbl.bind("<Leave>", lambda e, s=status: slbl.config(text=f"● {s}"))
 
-        tk.Label(inner, text=snt,   font=F_TINY, bg=CARD, fg=MUTED, anchor="w", width=1).grid(row=0, column=1, sticky="ew", padx=(10, 4), pady=2)
-        tk.Label(inner, text=obt,   font=F_MONO, bg=CARD, fg=INK,   anchor="w", width=1).grid(row=0, column=2, sticky="ew", padx=(10, 4), pady=2)
-        tk.Label(inner, text=cod,   font=F_TINY, bg=CARD, fg=INK2,  anchor="w", width=1).grid(row=0, column=3, sticky="ew", padx=(10, 4), pady=2)
-        tk.Label(inner, text=name,  font=F_NORM, bg=CARD, fg=INK,   anchor="w", width=1).grid(row=0, column=4, sticky="ew", padx=(10, 4), pady=2)
-        tk.Label(inner, text=notes, font=F_TINY, bg=CARD, fg=MUTED, anchor="w", width=1).grid(row=0, column=5, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=snt,    font=F_TINY, bg=CARD, fg=MUTED, anchor="w", width=1).grid(row=0, column=1, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=obt,    font=F_MONO, bg=CARD, fg=INK,   anchor="w", width=1).grid(row=0, column=2, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=name,   font=F_NORM, bg=CARD, fg=INK,   anchor="w", width=1).grid(row=0, column=3, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=sender, font=F_TINY, bg=CARD, fg=INK2,  anchor="w", width=1).grid(row=0, column=4, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=notes,  font=F_TINY, bg=CARD, fg=MUTED, anchor="w", width=1).grid(row=0, column=5, sticky="ew", padx=(10, 4), pady=2)
 
         btns = tk.Frame(inner, bg=CARD)
         btns.grid(row=0, column=6, sticky="e", padx=(4, 8), pady=2)
@@ -2987,63 +3076,194 @@ class TrackingView(tk.Frame):
                 return "順利送達"
             return "請按查詢確認"
 
+        def _show_fetching():
+            self._sync_prog_bar.configure(mode="indeterminate", value=0)
+            self._sync_prog_bar.start(12)
+            self._sync_prog_lbl.configure(text="正在從網站抓取資料…")
+            self._sync_prog_frame.pack(fill="x", pady=(0, 10), before=self.stats_row)
+            self._sync_btn.configure(state="disabled")
+
+        def _show_detail_progress(total: int):
+            self._sync_prog_bar.stop()
+            self._sync_prog_bar.configure(mode="determinate", maximum=max(total, 1), value=0)
+            self._sync_prog_lbl.configure(text=f"抓取詳細資料 0 / {total} 筆…")
+
+        def _update_progress(done: int, total: int):
+            self._sync_prog_bar.configure(value=done)
+            self._sync_prog_lbl.configure(text=f"抓取詳細資料 {done} / {total} 筆…")
+
+        def _hide_progress():
+            self._sync_prog_bar.stop()
+            self._sync_prog_frame.pack_forget()
+            self._sync_btn.configure(state="normal")
+
         def run():
+            self.after(0, _show_fetching)
+
+            # ── Phase 1: fetch from both sources ──────────────────────────
+            export_rows: list[dict] = []
+            pkg_rows:    list[dict] = []
+
             try:
-                rows = self.app._web.query_package_list(start, end)
+                export_rows = self.app._web.query_obt_list(start, end)
             except RuntimeError as ex:
                 if "session_expired" in str(ex):
                     self.app._web = None
+                    self.after(0, _hide_progress)
                     self.after(0, lambda: messagebox.showwarning(
                         "工作階段已過期", "請到「費用查詢」頁重新登入後再同步。"))
-                else:
-                    self.after(0, lambda msg=str(ex): messagebox.showerror("同步失敗", msg))
-                return
-            except Exception as ex:
-                self.after(0, lambda msg=str(ex): messagebox.showerror("同步失敗", msg))
-                return
+                    return
+            except Exception:
+                pass  # non-fatal; continue with pkg_rows
 
-            existing = load_tracking()
-            existing_obts = {r.get("obt_number", "") for r in existing}
-            deleted_obts  = load_deleted_obts()
+            try:
+                pkg_rows = self.app._web.query_package_list(start, end)
+            except RuntimeError as ex:
+                if "session_expired" in str(ex):
+                    self.app._web = None
+                    self.after(0, _hide_progress)
+                    self.after(0, lambda: messagebox.showwarning(
+                        "工作階段已過期", "請到「費用查詢」頁重新登入後再同步。"))
+                    return
+            except Exception:
+                pass
 
-            added = 0
-            for row in rows:
-                obt = row.get("obt", "").strip()
-                if not obt or obt in existing_obts or obt in deleted_obts:
+            # ── Phase 2: merge by OBT ──────────────────────────────────────
+            # FuncNo=135 gives: recipient_name, notes, order_id, shipment_date
+            # FuncNo=2   gives: delivery_status, shipment_date
+            merged: dict[str, dict] = {}
+
+            for r in export_rows:
+                obt = r.get("obt", "").strip()
+                if not obt:
                     continue
-                ds = row.get("delivery_status", "").strip()
-                new_rec = {
+                merged[obt] = {
                     "obt_number":     obt,
-                    "recipient_name": "",
-                    "cod_amount":     row.get("receivable_amount", "").strip(),
-                    "created_at":     row.get("shipment_date", "").strip(),
-                    "status":         _map_pkg_status(ds),
-                    "order_id":       row.get("order_id", "").strip(),
-                    "notes":          "",
+                    "order_id":       r.get("order_id", "").strip(),
+                    "recipient_name": r.get("recipient_name", "").strip(),
+                    "sender_name":    "",
+                    "created_at":     r.get("shipment_date", "").strip(),
+                    "notes":          r.get("memo", "").strip(),
+                    "status":         "請按查詢確認",
                 }
-                existing.append(new_rec)
-                existing_obts.add(obt)
-                added += 1
 
-            if added:
-                save_tracking(existing)
-            self.after(0, self.refresh)
-            total_rows = len(rows)
-            if total_rows == 0:
+            for r in pkg_rows:
+                obt = r.get("obt", "").strip()
+                if not obt:
+                    continue
+                ds = r.get("delivery_status", "").strip()
+                if obt in merged:
+                    merged[obt]["status"] = _map_pkg_status(ds)
+                    if not merged[obt]["created_at"]:
+                        merged[obt]["created_at"] = r.get("shipment_date", "").strip()
+                    if not merged[obt]["order_id"]:
+                        merged[obt]["order_id"] = r.get("order_id", "").strip()
+                else:
+                    merged[obt] = {
+                        "obt_number":     obt,
+                        "order_id":       r.get("order_id", "").strip(),
+                        "recipient_name": "",
+                        "sender_name":    "",
+                        "created_at":     r.get("shipment_date", "").strip(),
+                        "notes":          "",
+                        "status":         _map_pkg_status(ds),
+                    }
+
+            if not merged:
+                self.after(0, _hide_progress)
                 self.after(0, lambda: messagebox.showwarning(
                     "同步完成",
                     f"同步範圍：{start_label} ～ {end_label}\n\n"
                     "網站查無資料（可能該期間無建單，或登入已過期）。\n"
                     "請到「費用查詢」頁確認登入狀態後再試一次。"))
-            else:
-                self.after(0, lambda n=added, t=total_rows: messagebox.showinfo(
-                    "同步完成",
-                    f"同步範圍：{start_label} ～ {end_label}\n"
-                    f"共抓到 {t} 筆，新增 {n} 筆紀錄。\n\n即將自動查詢所有配送狀態…"
-                    if n else
-                    f"同步範圍：{start_label} ～ {end_label}\n"
-                    f"共抓到 {t} 筆，皆已是最新紀錄。\n\n即將自動查詢所有配送狀態…"))
-                self.after(200, self._query_all)
+                return
+
+            # ── Phase 3: compare with local tracking.json ─────────────────
+            existing      = load_tracking()
+            existing_obts = {r.get("obt_number", "") for r in existing}
+            deleted_obts  = load_deleted_obts()
+            existing_map  = {r.get("obt_number", ""): r for r in existing}
+
+            new_obts = [obt for obt in merged
+                        if obt not in existing_obts and obt not in deleted_obts]
+            # existing records that are missing sender_name also need a detail fetch
+            need_sender = [obt for obt in merged
+                           if obt not in deleted_obts
+                           and obt in existing_map
+                           and not existing_map[obt].get("sender_name", "").strip()]
+            total_detail = len(new_obts) + len(need_sender)
+            self.after(0, lambda t=total_detail: _show_detail_progress(t))
+
+            added    = 0
+            enriched = 0
+            done     = 0
+
+            # new records — fetch TranBillDetail for sender_name + fallbacks
+            for obt in new_obts:
+                rec = dict(merged[obt])
+                try:
+                    detail = self.app._web.fetch_obt_detail(obt)
+                    rec["sender_name"] = detail.get("sender_name", "")
+                    if not rec["recipient_name"]:
+                        rec["recipient_name"] = detail.get("recipient_name", "")
+                    if not rec["notes"]:
+                        rec["notes"] = detail.get("notes", "")
+                except Exception:
+                    pass
+                done += 1
+                self.after(0, lambda d=done, t=total_detail: _update_progress(d, t))
+                existing.append(rec)
+                existing_obts.add(obt)
+                added += 1
+
+            # existing records — fill from merged data (no web request)
+            for obt, m in merged.items():
+                if obt in deleted_obts or obt not in existing_map:
+                    continue
+                rec = existing_map[obt]
+                changed = False
+                for field, src in [("recipient_name", "recipient_name"),
+                                    ("notes",          "notes"),
+                                    ("order_id",       "order_id")]:
+                    if not rec.get(field, "").strip() and m.get(src, "").strip():
+                        rec[field] = m[src]
+                        changed = True
+                if changed:
+                    enriched += 1
+
+            # existing records missing sender_name — fetch TranBillDetail
+            for obt in need_sender:
+                rec = existing_map[obt]
+                try:
+                    detail = self.app._web.fetch_obt_detail(obt)
+                    sn = detail.get("sender_name", "").strip()
+                    if sn:
+                        rec["sender_name"] = sn
+                        if not rec.get("recipient_name", "").strip():
+                            rec["recipient_name"] = detail.get("recipient_name", "")
+                        if not rec.get("notes", "").strip():
+                            rec["notes"] = detail.get("notes", "")
+                        enriched += 1
+                except Exception:
+                    pass
+                done += 1
+                self.after(0, lambda d=done, t=total_detail: _update_progress(d, t))
+
+            if added or enriched:
+                save_tracking(existing)
+            self.after(0, _hide_progress)
+            self.after(0, self.refresh)
+
+            total_rows = len(merged)
+            def _msg(n=added, e=enriched, t=total_rows):
+                parts = []
+                if n: parts.append(f"新增 {n} 筆")
+                if e: parts.append(f"補填資料 {e} 筆")
+                detail_line = "、".join(parts) if parts else "皆已是最新紀錄"
+                return (f"同步範圍：{start_label} ～ {end_label}\n"
+                        f"共抓到 {t} 筆，{detail_line}。\n\n即將自動查詢所有配送狀態…")
+            self.after(0, lambda: messagebox.showinfo("同步完成", _msg()))
+            self.after(200, self._query_all)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -3254,8 +3474,8 @@ class PrintQueueView(tk.Frame):
                 r2 = PdfReader(paths[i + 1])
                 p2 = r2.pages[0]
                 page.merge_transformed_page(p2, Transformation().translate(0, -(h / 2)))
-        out = Path(OUTPUT_DIR) / f"combined_{int(time.time())}.pdf"
-        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        out = Path(get_output_dir()) / f"combined_{int(time.time())}.pdf"
+        Path(get_output_dir()).mkdir(parents=True, exist_ok=True)
         with open(out, "wb") as f:
             writer.write(f)
         return str(out)
@@ -3482,8 +3702,9 @@ class ContactsView(tk.Frame):
         if not names: return
         if not messagebox.askyesno("確認刪除",
                 f"確定刪除選取的 {len(names)} 筆聯絡人？\n此動作無法復原。"): return
-        contacts = [c for c in load_contacts() if c.get("name") not in names]
-        save_contacts(contacts)
+        custom = load_custom_contacts()
+        custom = [c for c in custom if c.get("name") not in names]
+        save_contacts(custom)
         self._checked_names.clear()
         self._selected = None
         self._update_del_btn()
@@ -3562,20 +3783,21 @@ class ContactsView(tk.Frame):
         if not self._selected: return
         name = self._selected.get("name")
         if not messagebox.askyesno("確認刪除", f"確定刪除「{name}」？"): return
-        contacts = [c for c in load_contacts() if c.get("name") != name]
-        save_contacts(contacts)
+        custom = load_custom_contacts()
+        custom = [c for c in custom if c.get("name") != name]
+        save_contacts(custom)
         self._selected = None
         self.refresh()
 
     def _on_save(self, contact, original_name=None):
         if not contact.get("category"):
             contact["category"] = self._active_tab
-        contacts = load_contacts()
+        custom = load_custom_contacts()
         if original_name:
-            contacts = [c for c in contacts if c.get("name") != original_name]
-        contacts.append(contact)
-        contacts.sort(key=lambda c: c.get("name", ""))
-        save_contacts(contacts)
+            custom = [c for c in custom if c.get("name") != original_name]
+        custom.append(contact)
+        custom.sort(key=lambda c: c.get("name", ""))
+        save_contacts(custom)
         self._selected = contact
         self.refresh()
 
@@ -3611,18 +3833,18 @@ class ContactsView(tk.Frame):
             messagebox.showerror("匯入失敗", str(ex)); return
         if not new_contacts:
             messagebox.showwarning("匯入失敗", "CSV 檔案沒有資料。"); return
-        existing = load_contacts()
+        custom = load_custom_contacts()
         ans = messagebox.askyesnocancel(
             "匯入方式",
             f"CSV 內有 {len(new_contacts)} 筆聯絡人。\n\n"
-            f"選「是」：附加到現有 {len(existing)} 筆\n"
-            f"選「否」：全部取代\n"
+            f"選「是」：附加到自訂聯絡人（目前 {len(custom)} 筆）\n"
+            f"選「否」：取代自訂聯絡人（預設門市資料不受影響）\n"
             f"取消：中止",
         )
         if ans is None: return
         if ans:
-            existing_names = {c.get("name") for c in existing}
-            merged = existing + [c for c in new_contacts if c.get("name") not in existing_names]
+            existing_names = {c.get("name") for c in custom}
+            merged = custom + [c for c in new_contacts if c.get("name") not in existing_names]
             merged.sort(key=lambda c: c.get("name", ""))
             save_contacts(merged)
         else:
@@ -3853,23 +4075,58 @@ class ConfigView(tk.Frame):
         # Paths card
         pc = Card(wrap, padding=22); pc.pack(fill="x", pady=(0, 14))
         Kicker(pc.body, "檔案路徑").pack(anchor="w", pady=(0, 12))
-        paths = [
-            ("PDF 輸出目錄", "~/黑貓單號"),
-            ("設定檔",       "./config.yaml"),
-            ("通訊錄資料",   "./contacts.json"),
-            ("建單紀錄",     "./tracking.json"),
-            ("建單日誌",     "~/黑貓單號/build_log.txt"),
-        ]
-        for i, (k, v) in enumerate(paths):
-            pr = tk.Frame(pc.body, bg=HAIR3)
-            pr.pack(fill="x", pady=(0 if i == 0 else 4, 0))
-            inner = tk.Frame(pr, bg=HAIR3); inner.pack(fill="x", padx=12, pady=8)
-            tk.Label(inner, text=k, font=F_TINY, bg=HAIR3, fg=MUTED, width=12, anchor="w").pack(side="left")
-            tk.Label(inner, text=v, font=F_MONO, bg=HAIR3, fg=INK).pack(side="left", padx=(8, 0))
+
+        # 資料庫路徑 row
+        pr_db = tk.Frame(pc.body, bg=HAIR3); pr_db.pack(fill="x", pady=(0, 4))
+        inn_db = tk.Frame(pr_db, bg=HAIR3); inn_db.pack(fill="x", padx=12, pady=8)
+        tk.Label(inn_db, text="資料庫路徑", font=F_TINY, bg=HAIR3, fg=MUTED,
+                 width=12, anchor="w").pack(side="left")
+        self._db_dir_lbl = tk.Label(inn_db, text=str(get_data_dir()),
+                                    font=F_MONO, bg=HAIR3, fg=INK, anchor="w")
+        self._db_dir_lbl.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        TwButton(inn_db, "Finder", variant="ghost",
+                 command=lambda: subprocess.run(["open", str(get_data_dir())])
+                 ).pack(side="right", padx=(4, 0))
+        TwButton(inn_db, "選擇…", variant="ghost",
+                 command=self._pick_data_dir).pack(side="right")
+
+        # PDF output dir row
+        pr0 = tk.Frame(pc.body, bg=HAIR3); pr0.pack(fill="x", pady=(0, 4))
+        inn0 = tk.Frame(pr0, bg=HAIR3); inn0.pack(fill="x", padx=12, pady=8)
+        tk.Label(inn0, text="PDF 輸出目錄", font=F_TINY, bg=HAIR3, fg=MUTED,
+                 width=12, anchor="w").pack(side="left")
+        self._out_dir_lbl = tk.Label(inn0, text=get_output_dir(),
+                                     font=F_MONO, bg=HAIR3, fg=INK, anchor="w")
+        self._out_dir_lbl.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        TwButton(inn0, "選擇…", variant="ghost",
+                 command=self._pick_output_dir).pack(side="right")
+
 
         # status text
         self.status = tk.Label(wrap, text="", bg=PAPER, font=F_SMALL, anchor="w")
         self.status.pack(fill="x", pady=(8, 0))
+
+    def _pick_data_dir(self):
+        d = filedialog.askdirectory(title="選擇黑貓資料庫資料夾",
+                                    initialdir=str(get_data_dir()))
+        if not d:
+            return
+        set_data_dir(d)
+        self._db_dir_lbl.config(text=d)
+        self.status.config(text=f"✓ 資料庫路徑已更新：{d}　（重新啟動後生效）")
+        self.after(5000, lambda: self.status.config(text=""))
+
+    def _pick_output_dir(self):
+        current = get_output_dir()
+        d = filedialog.askdirectory(title="選擇 PDF 輸出目錄", initialdir=current)
+        if not d:
+            return
+        cfg = load_cfg()
+        cfg["output_dir"] = d
+        save_cfg(cfg)
+        self._out_dir_lbl.config(text=d)
+        self.status.config(text=f"✓ PDF 輸出目錄已更新：{d}")
+        self.after(3000, lambda: self.status.config(text=""))
 
     def _load(self):
         cfg = load_cfg()
@@ -5004,7 +5261,7 @@ class EpbTransferView(tk.Frame):
         if not to_create:
             return
 
-        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        Path(get_output_dir()).mkdir(parents=True, exist_ok=True)
         total = len(to_create)
         if hasattr(self, "progress_lbl"):
             self.progress_lbl.config(text=f"建單中 0 / {total} 筆…", fg=MUTED)
@@ -5034,7 +5291,7 @@ class EpbTransferView(tk.Frame):
 
                 # 用 order.create_orders（正確處理 Data.Orders[0].OBTNumber + FileNo + download_obt）
                 try:
-                    results = create_orders(client, [order], sender, output_dir=OUTPUT_DIR)
+                    results = create_orders(client, [order], sender, output_dir=get_output_dir())
                     r = results[0] if results else {"success": False, "message": "API 無回應"}
                 except Exception as ex:
                     r = {"success": False, "message": str(ex)}
@@ -5084,7 +5341,7 @@ class EpbTransferView(tk.Frame):
         if self._transfers:
             self._populate(self._transfers)
         import subprocess
-        subprocess.run(["open", OUTPUT_DIR])
+        subprocess.run(["open", get_output_dir()])
 
 
 class ContactPickerDialog(tk.Toplevel):
@@ -5351,5 +5608,6 @@ class EpbUnlockDialog(tk.Toplevel):
 # ─── entry ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _ensure_data_dir()
     app = App()
     app.mainloop()

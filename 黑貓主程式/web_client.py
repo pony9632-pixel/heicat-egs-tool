@@ -243,10 +243,12 @@ class TakkyubinWebClient:
             return _html_mod.unescape(s).replace("\xa0", "").strip()
 
         def _span(sid: str) -> str:
-            # Try with display:none (unmasked) first
-            m = re.search(rf'id="{sid}"[^>]*style="[^"]*display\s*:\s*none[^"]*"[^>]*>([^<]+)<',
-                          html, re.I)
+            # 1. Try visible span (no display:none) — this is the real unmasked value
+            m = re.search(
+                rf'id="{sid}"(?:(?!display\s*:\s*none)[^>])*>([^<]+)<',
+                html, re.I | re.S)
             if not m:
+                # 2. Fallback: any span with this id regardless of style
                 m = re.search(rf'id="{sid}"[^>]*>([^<]+)<', html, re.I)
             return _clean(m.group(1)) if m else ""
 
@@ -259,13 +261,14 @@ class TakkyubinWebClient:
         rec_name    = _span("LBLOUTPUT_RECNAME") or _span("LBLOUTPUT_MASKRECNAME")
         sender_name = _span("LBLOUTPUT_SENDERNAME") or _span("LBLOUTPUT_MASKSENDERNAME") \
                       or _after_label("寄件人姓名")
+        notes       = _span("LBLOUTPUT_MEMO") or _after_label("備註")
 
         return {
             "recipient_name":    rec_name,
             "sender_name":       sender_name,
             "product_name":      _after_label("物件名稱"),
             "pickup_date":       _after_label("集貨日期"),
-            "notes":             _after_label("備註"),
+            "notes":             notes,
         }
 
     _OPRINT_API = "https://www.takkyubin.com.tw/OnlinePrint/OPEOrderDetail/OPEOrderDetail_Query"
@@ -365,16 +368,6 @@ class TakkyubinWebClient:
             if not data:
                 break
 
-            # Save raw response for debugging (first page only)
-            if page == 1:
-                try:
-                    import os, pathlib, json as _j2
-                    pathlib.Path(os.path.expanduser("~/Desktop/heicat_obt_api_debug.json")
-                                 ).write_text(_j2.dumps(resp, ensure_ascii=False, indent=2),
-                                              encoding="utf-8")
-                except Exception:
-                    pass
-
             for item in data:
                 all_rows.append({
                     "obt":            str(item.get("bill_id")       or ""),
@@ -402,13 +395,8 @@ class TakkyubinWebClient:
           delivery_office, receivable_amount, completion_time, etc.
         Raises RuntimeError("session_expired") if not logged in.
         """
-        import pathlib, os as _os
         def _dbg(name: str, content: str):
-            try:
-                pathlib.Path(_os.path.expanduser(f"~/Desktop/heicat_pkg_{name}.html")
-                             ).write_text(content, encoding="utf-8")
-            except Exception:
-                pass
+            pass  # debug dumps disabled
 
         # Step 1 — Follow FuncNo=2 redirect to reach the package query page
         redirect_html = self._req(f"{BASE}/RedirectFunc.aspx?FuncNo=2")
@@ -538,6 +526,14 @@ class TakkyubinWebClient:
                 return rows
 
         return []
+
+    def fetch_obt_detail(self, obt: str) -> dict:
+        """GET TranBillDetail for one OBT and return parsed recipient/notes fields."""
+        try:
+            html = self._req(f"{BASE}/TranBillDetail.aspx?BillNo={obt}")
+            return self._parse_obt_detail(html)
+        except Exception:
+            return {}
 
     def get_account_options(self) -> list[tuple[str,str]]:
         """Return [(value, label), ...] from UC_UserList1$ddlUserList after login."""
@@ -722,7 +718,7 @@ def _parse_obt_table(html: str) -> list[dict]:
 
 # Column mapping for 包裹查詢 (服務 > 包裹查詢, FuncNo=2) result table
 _PKG_HEADER_KEYS = {
-    "托運單號":   "obt",
+    "託運單號":   "obt",   # 繁體 託，非簡體 托
     "訂單日期":   "order_date",
     "訂單編號":   "order_id",
     "應收金額":   "receivable_amount",
@@ -744,7 +740,7 @@ def _parse_pkg_table(html: str) -> list[dict]:
         cells = [c.replace("\xa0", "").strip() for c in row]
         if not col_keys:
             joined = " ".join(cells)
-            if "托運單號" in joined or "配送狀態" in joined:
+            if len(cells) >= 5 and ("託運單號" in joined or "配送狀態" in joined):
                 col_keys = [_PKG_HEADER_KEYS.get(c, c) for c in cells]
             continue
         if all(c == "" for c in cells) or len(cells) < 3:
