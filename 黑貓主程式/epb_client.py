@@ -548,6 +548,85 @@ select * from (
     return "\n".join(results)
 
 
+def explore_invtrnrmas(doc_id: str = "") -> str:
+    """
+    第六輪 — 鎖定 INVTRNRMAS（存貨調撥申請單）：
+    1. 列全部欄位
+    2. status_flg 分佈
+    3. 給定 doc_id 時，列出該單完整內容 + 明細 + 出庫/入庫店資訊
+    4. 列出本表 invtrnrline 全欄位
+    """
+    results = []
+
+    # 1. 表頭欄位
+    try:
+        h, rows = _run_remote(
+            "select column_name, data_type from user_tab_columns "
+            "where table_name = 'INVTRNRMAS' order by column_id", timeout=60)
+        results.append(f"=== invtrnrmas 全部欄位（{len(rows)} 個）===")
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[欄位] 失敗：{str(exc)[:160]}")
+
+    # 2. status_flg 分佈
+    try:
+        h, rows = _run_remote(
+            f"select status_flg, count(*) as cnt from invtrnrmas "
+            f"where org_id = {_q(ORG_ID)} group by status_flg order by cnt desc",
+            timeout=180)
+        results.append("\n=== invtrnrmas.status_flg 分佈 ===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[status 分佈] 失敗：{str(exc)[:160]}")
+
+    # 3. 指定 doc_id 的詳細資料
+    if doc_id:
+        try:
+            h, rows = _run_remote(
+                f"select * from invtrnrmas where org_id = {_q(ORG_ID)} "
+                f"and doc_id = {_q(doc_id)}", timeout=60)
+            results.append(f"\n=== invtrnrmas WHERE doc_id={doc_id} 全欄位 ===")
+            if rows:
+                for i, col in enumerate(h):
+                    val = rows[0][i] if i < len(rows[0]) else ""
+                    results.append(f"  {col:24s}: {val}")
+            else:
+                results.append("（查無）")
+        except Exception as exc:
+            results.append(f"[doc 表頭] 失敗：{str(exc)[:160]}")
+
+        try:
+            h, rows = _run_remote(f"""
+select l.line_no, l.stk_id, l.name, l.stk_qty, l.uom_id
+from invtrnrmas m
+join invtrnrline l on l.mas_rec_key = m.rec_key
+where m.org_id = {_q(ORG_ID)} and m.doc_id = {_q(doc_id)}
+order by l.line_no
+""", timeout=60)
+            results.append(f"\n=== {doc_id} 明細（invtrnrline）===")
+            results.append("\t".join(h))
+            for r in rows:
+                results.append("\t".join(r))
+        except Exception as exc:
+            results.append(f"[明細] 失敗：{str(exc)[:160]}")
+
+    # 4. invtrnrline 全欄位
+    try:
+        h, rows = _run_remote(
+            "select column_name, data_type from user_tab_columns "
+            "where table_name = 'INVTRNRLINE' order by column_id", timeout=60)
+        results.append(f"\n=== invtrnrline 全部欄位（{len(rows)} 個）===")
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[invtrnrline 欄位] 失敗：{str(exc)[:160]}")
+
+    return "\n".join(results)
+
+
 def find_doc(doc_id: str) -> str:
     """
     跨 INVTRN 全家族搜尋指定 DOC_ID（精確 + LIKE 模糊）。
