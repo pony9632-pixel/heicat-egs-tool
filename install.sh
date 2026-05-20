@@ -28,40 +28,51 @@ if [[ "$(uname)" != "Darwin" ]]; then
     exit 1
 fi
 
-# ── 2. 確認 Python 3（沒有就自動安裝）────────────────────────────────────────
+# ── 2. 確認 Python 3.10 以上（沒有或太舊就自動安裝）────────────────────────
 echo "🔍 檢查 Python 3..."
-if ! command -v python3 &>/dev/null; then
-    echo "⚠️  找不到 Python 3，嘗試自動安裝..."
-    echo ""
 
+python_ok() {
+    command -v python3 &>/dev/null && python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
+}
+
+ensure_homebrew() {
     if ! command -v brew &>/dev/null; then
         echo "📦 先安裝 Homebrew（macOS 套件管理器）..."
         echo "   （過程中可能會要求輸入你的電腦登入密碼，這是正常的）"
         echo ""
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-        # Apple Silicon (M1/M2/M3) 的 Homebrew 裝在 /opt/homebrew
-        if [[ -f /opt/homebrew/bin/brew ]]; then
-            eval "$(/opt/homebrew/bin/brew shellenv)"
-        fi
-        echo ""
-        echo "✅ Homebrew 安裝完成"
     else
         echo "✅ Homebrew 已存在"
     fi
 
+    # Apple Silicon (M1/M2/M3) 的 Homebrew 裝在 /opt/homebrew；Intel 常見於 /usr/local
+    if [[ -f /opt/homebrew/bin/brew ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -f /usr/local/bin/brew ]]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+}
+
+if ! python_ok; then
+    echo "⚠️  需要 Python 3.10 以上，嘗試自動安裝/更新..."
+    echo ""
+
+    ensure_homebrew
+
     echo ""
     echo "📦 安裝 Python 3..."
     brew install python3
+    brew upgrade python3 || true
     echo ""
 
     # 再確認一次
-    if ! command -v python3 &>/dev/null; then
-        echo "❌ Python 3 安裝後仍無法偵測，請重新開啟終端機後再執行一次安裝指令。"
+    if ! python_ok; then
+        echo "❌ Python 3.10 以上安裝後仍無法偵測，請重新開啟終端機後再執行一次安裝指令。"
         exit 1
     fi
 fi
-echo "✅ $(python3 --version) 已就緒"
+PYTHON_BIN="$(command -v python3)"
+echo "✅ $("$PYTHON_BIN" --version) 已就緒"
 echo ""
 
 # ── 3. 取得最新版本資訊 ───────────────────────────────────────────────────────
@@ -81,7 +92,7 @@ echo ""
 
 # ── 4 + 5. 下載、解壓、安裝（全部用 Python，避開 unzip 中文路徑問題）─────────
 echo "📥 下載並安裝中（請稍候）..."
-python3 -c "
+"$PYTHON_BIN" -c "
 import urllib.request, zipfile, os, shutil, ssl, sys
 
 zipball_url = '$ZIPBALL_URL'
@@ -128,12 +139,17 @@ print('installed')
 echo "✅ 程式已安裝至：$INSTALL_DIR"
 echo ""
 
-# 設定執行權限
+# 設定執行權限，並固定使用本次安裝檢查通過的 Python
+cat > "$INSTALL_DIR/黑貓主程式/啟動黑貓工具.command" <<EOF
+#!/bin/bash
+cd "\$(dirname "\$0")"
+"$PYTHON_BIN" app.py
+EOF
 chmod +x "$INSTALL_DIR/黑貓主程式/啟動黑貓工具.command"
 
 # ── 6. 安裝 Python 套件 ───────────────────────────────────────────────────────
 echo "📦 安裝 Python 套件..."
-python3 -m pip install --quiet --upgrade pyyaml "pypdf>=4.0" "requests>=2.31"
+"$PYTHON_BIN" -m pip install --quiet --upgrade pyyaml "pypdf>=4.0" "requests>=2.31"
 echo "✅ 套件安裝完成"
 echo ""
 
