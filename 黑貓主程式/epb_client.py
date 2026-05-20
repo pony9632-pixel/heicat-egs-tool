@@ -51,13 +51,15 @@ def _compile_java() -> None:
         raise RuntimeError(f"EPBReportQuery 編譯失敗：{proc.stderr.strip() or proc.stdout.strip()}")
 
 
-def _run_remote(sql: str, timeout: int = 60) -> tuple[list, list]:
+def _run_remote(sql: str, timeout: int = 180) -> tuple[list, list]:
     _compile_java()
+    # Java read timeout = Python timeout − 5s buffer (避免 Python 先 kill 沒拿到 Java 訊息)
+    java_read_ms = max(30000, (timeout - 5) * 1000)
     proc = subprocess.run(
         [
             JAVA,
             "-Dsun.net.client.defaultConnectTimeout=5000",
-            "-Dsun.net.client.defaultReadTimeout=30000",
+            f"-Dsun.net.client.defaultReadTimeout={java_read_ms}",
             "-cp", JAVA_CP,
             "EPBReportQuery", sql,
         ],
@@ -87,54 +89,73 @@ def explore_transfer_schema() -> str:
     """
     results = []
 
-    col_sql = """
-select column_name, data_type
-from information_schema.columns
-where table_name in ('storedtl', 'storemas')
-order by table_name, ordinal_position
-"""
-    try:
-        h, rows = _run_remote(col_sql, timeout=30)
-        results.append("=== storedtl / storemas columns ===")
-        for r in rows:
-            results.append("\t".join(r))
-    except Exception as exc:
-        results.append(f"[欄位查詢失敗] {exc}")
+    # 1. 欄位 — 試多種 schema view（PostgreSQL 風 / Oracle 風）
+    schema_attempts = [
+        ("user_tab_columns",
+         "select table_name, column_name, data_type from user_tab_columns "
+         "where lower(table_name) in ('storedtl','storemas') "
+         "order by table_name, column_id"),
+        ("all_tab_columns",
+         "select table_name, column_name, data_type from all_tab_columns "
+         "where lower(table_name) in ('storedtl','storemas') "
+         "order by table_name, column_id"),
+        ("information_schema",
+         "select table_name, column_name, data_type from information_schema.columns "
+         "where lower(table_name) in ('storedtl','storemas') "
+         "order by table_name, ordinal_position"),
+    ]
+    for name, sql in schema_attempts:
+        try:
+            h, rows = _run_remote(sql, timeout=60)
+            if rows:
+                results.append(f"=== columns from {name} ({len(rows)} rows) ===")
+                results.append("\t".join(h))
+                for r in rows:
+                    results.append("\t".join(r))
+                break
+            else:
+                results.append(f"[{name}] 查無資料")
+        except Exception as exc:
+            results.append(f"[{name}] 失敗：{str(exc)[:120]}")
 
+    # 2. MOVE_FLG / SRC_CODE 分佈 — 限近 90 天，避免全表掃描
     flg_sql = f"""
 select move_flg, src_code, count(*) as cnt
 from storedtl
 where org_id = {_q(ORG_ID)}
+  and doc_date >= sysdate - 90
 group by move_flg, src_code
 order by cnt desc
 """
     try:
-        h, rows = _run_remote(flg_sql, timeout=30)
-        results.append("\n=== storedtl move_flg / src_code distribution ===")
+        h, rows = _run_remote(flg_sql, timeout=180)
+        results.append("\n=== move_flg / src_code 分佈（近 90 天）===")
         results.append("\t".join(h))
         for r in rows:
             results.append("\t".join(r))
     except Exception as exc:
-        results.append(f"[FLAG 查詢失敗] {exc}")
+        results.append(f"[FLAG 查詢失敗] {str(exc)[:160]}")
 
+    # 3. 樣本 — 限近 30 天前 5 筆
     sample_sql = f"""
 select *
 from (
   select *
   from storedtl
   where org_id = {_q(ORG_ID)}
+    and doc_date >= sysdate - 30
   order by doc_date desc, src_doc_id desc
 )
 where rownum <= 5
 """
     try:
-        h, rows = _run_remote(sample_sql, timeout=30)
-        results.append("\n=== storedtl sample (5 rows) ===")
+        h, rows = _run_remote(sample_sql, timeout=180)
+        results.append("\n=== storedtl 樣本（近 30 天，前 5 筆）===")
         results.append("\t".join(h))
         for r in rows:
             results.append("\t".join(r))
     except Exception as exc:
-        results.append(f"[樣本查詢失敗] {exc}")
+        results.append(f"[樣本查詢失敗] {str(exc)[:160]}")
 
     return "\n".join(results)
 
