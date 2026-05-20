@@ -307,13 +307,30 @@ def field_label(master, text, required=False, hint=None):
     return f
 
 
+def _wheel_units(event) -> int:
+    """
+    把跨平台 MouseWheel.delta 轉成 yview_scroll 需要的「行數」。
+    - Windows / X11：delta 是 ±120 的倍數 → 除 120
+    - macOS（含 trackpad）：delta 是 ±1~5 的小整數 → 直接用、不除
+    保證符號正確且絕對值至少為 1（避免 int 截斷成 0 害事件被吞）。
+    """
+    d = event.delta
+    if abs(d) >= 120:
+        units = int(-d / 120)
+    else:
+        units = int(-d)
+    if units == 0:
+        units = -1 if d > 0 else 1
+    return units
+
+
 def _bind_mousewheel_on_hover(hover_widget, canvas):
-    """游標在 hover_widget 範圍內時把 wheel 綁到 canvas，離開時解綁。
-    用 bounding-box 判斷，避免移入子元件觸發 Leave 而中斷捲動。"""
+    """游標在 hover_widget 範圍內時把 wheel 綁到 canvas；離開時還原為
+    App._active_view_canvas（若有）以避免殺掉外層綁定。"""
     def _on_wheel(e):
-        canvas.yview_scroll(int(-1 * (e.delta / 3)), "units")
+        canvas.yview_scroll(_wheel_units(e), "units")
     def _on_enter(_):
-        canvas.bind_all("<MouseWheel>", _on_wheel)
+        hover_widget.winfo_toplevel().bind_all("<MouseWheel>", _on_wheel)
     def _on_leave(e):
         try:
             wx = hover_widget.winfo_rootx()
@@ -321,10 +338,18 @@ def _bind_mousewheel_on_hover(hover_widget, canvas):
             ww = hover_widget.winfo_width()
             wh = hover_widget.winfo_height()
             if wx <= e.x_root < wx + ww and wy <= e.y_root < wy + wh:
-                return  # 還在元件範圍內（只是移進子元件），不解綁
+                return  # 還在元件範圍內（只是移進子元件），不切換
         except Exception:
             pass
-        canvas.unbind_all("<MouseWheel>")
+        # 離開內層 → 還原外層 view 的綁定，而不是 unbind_all（不然主畫面也滾不動）
+        top = hover_widget.winfo_toplevel()
+        outer = getattr(top, "_active_view_canvas", None)
+        if outer is not None:
+            top.bind_all(
+                "<MouseWheel>",
+                lambda e, _c=outer: _c.yview_scroll(_wheel_units(e), "units"))
+        else:
+            top.unbind_all("<MouseWheel>")
     hover_widget.bind("<Enter>", _on_enter)
     hover_widget.bind("<Leave>", _on_leave)
 
@@ -575,12 +600,15 @@ class App(tk.Tk):
         self.sidebar.set_active(name)
         if hasattr(self, "_topbar"): self._topbar.set_view(name)
         # 切換頁面時立刻把 MouseWheel 綁到該頁的主 canvas，
-        # 讓使用者在視窗任何地方都能捲動
+        # 讓使用者在視窗任何地方都能捲動。同時記錄到 _active_view_canvas，
+        # 讓子區域 hover Leave 時能還原而不是 unbind 全砍。
         if hasattr(v, "_scroll_canvas"):
             c = v._scroll_canvas
+            self._active_view_canvas = c
             self.bind_all("<MouseWheel>",
-                          lambda e, _c=c: _c.yview_scroll(int(-1 * (e.delta / 3)), "units"))
+                          lambda e, _c=c: _c.yview_scroll(_wheel_units(e), "units"))
         else:
+            self._active_view_canvas = None
             self.unbind_all("<MouseWheel>")
 
     # ── macOS clipboard fix (preserved from original) ─────────────────────────
@@ -4585,6 +4613,7 @@ class EpbTransferView(tk.Frame):
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+        _bind_mousewheel_on_hover(self.tree, self.tree)
         self.tree.bind("<Button-1>", self._on_row_click)
         self.tree.tag_configure("built",   foreground=MUTED)
         self.tree.tag_configure("error",   foreground=ERR)
@@ -4996,6 +5025,7 @@ class ContactPickerDialog(tk.Toplevel):
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+        _bind_mousewheel_on_hover(self.tree, self.tree)
         self.tree.bind("<Double-1>", lambda e: self._pick())
 
         ba = tk.Frame(wrap, bg=PAPER); ba.pack(fill="x", pady=(12, 0))
@@ -5085,6 +5115,7 @@ class ContactSkipPickerDialog(tk.Toplevel):
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+        _bind_mousewheel_on_hover(self.tree, self.tree)
         self.tree.tag_configure("existing", foreground=MUTED2)
         self.tree.tag_configure("checked",  foreground=OK)
         self.tree.tag_configure("normal",   foreground=INK)
