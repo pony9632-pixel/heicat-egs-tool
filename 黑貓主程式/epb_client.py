@@ -160,6 +160,108 @@ where rownum <= 5
     return "\n".join(results)
 
 
+def explore_pending_transfers(src_store_id: str = "") -> str:
+    """
+    第二輪探查：找出「待出貨」對應的表頭表 + 狀態碼。
+
+    1. storedtl.status_flg / store_status_flg 分佈（近 90 天，限 SRC_CODE=INVTRNTN 標準調撥）
+    2. 試找 INVTRN 表頭表：invtrnn / invtrntn / invtrnhd / invtrntnhd
+    3. 抓一筆有 TO_STORE_ID 的真實調撥樣本
+
+    用法：
+        python3 -c "import epb_client; print(epb_client.explore_pending_transfers('004'))"
+        # 傳入本門市代碼，沒傳就不過濾 store_id
+    """
+    results = []
+    store_filter = (f"and store_id = {_q(src_store_id)}" if src_store_id else "")
+
+    # 1. status_flg 分佈（限定標準調撥 INVTRNTN）
+    s_sql = f"""
+select status_flg, store_status_flg, move_flg, count(*) as cnt
+from storedtl
+where org_id = {_q(ORG_ID)}
+  and src_code = 'INVTRNTN'
+  and doc_date >= sysdate - 90
+  {store_filter}
+group by status_flg, store_status_flg, move_flg
+order by cnt desc
+"""
+    try:
+        h, rows = _run_remote(s_sql, timeout=180)
+        results.append(f"=== storedtl status 分佈（SRC_CODE=INVTRNTN，{src_store_id or '全店'}，近 90 天）===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[status 查詢失敗] {str(exc)[:160]}")
+
+    # 2. 找 INVTRN 表頭表 — 試多個候選表名
+    candidates = ["invtrnn", "invtrntn", "invtrnhd", "invtrntnhd", "invtrn_h", "invtrnhead"]
+    found = []
+    for tname in candidates:
+        try:
+            h, rows = _run_remote(
+                f"select count(*) from {tname} where org_id = {_q(ORG_ID)} and rownum <= 1",
+                timeout=30)
+            if rows:
+                found.append(tname)
+        except Exception:
+            pass
+    results.append(f"\n=== INVTRN 表頭表存在偵測 ===\n找到：{found if found else '(無)'}")
+
+    # 對找到的表跑欄位 + status 分佈
+    for tname in found:
+        try:
+            h, rows = _run_remote(
+                f"select column_name, data_type from user_tab_columns "
+                f"where table_name = upper({_q(tname)}) order by column_id", timeout=60)
+            results.append(f"\n--- {tname} 欄位（{len(rows)} 個）---")
+            for r in rows:
+                results.append("\t".join(r))
+        except Exception as exc:
+            results.append(f"[{tname} 欄位] 失敗：{str(exc)[:120]}")
+
+        try:
+            h, rows = _run_remote(
+                f"select status_flg, count(*) as cnt from {tname} "
+                f"where org_id = {_q(ORG_ID)} group by status_flg order by cnt desc",
+                timeout=120)
+            results.append(f"\n--- {tname}.status_flg 分佈 ---")
+            results.append("\t".join(h))
+            for r in rows:
+                results.append("\t".join(r))
+        except Exception as exc:
+            results.append(f"[{tname} status] 失敗：{str(exc)[:120]}")
+
+    # 3. 真實調撥樣本（TO_STORE_ID 不為空）
+    sample_sql = f"""
+select *
+from (
+  select doc_id, doc_date, status_flg, store_status_flg, move_flg,
+         store_id, to_store_id, src_code, src_doc_id, stk_id, stk_name, stk_qty
+  from storedtl
+  where org_id = {_q(ORG_ID)}
+    and src_code in ('INVTRNTN','INVTRNN','INVTRNIN')
+    and to_store_id is not null
+    and to_store_id <> ' '
+    and doc_date >= sysdate - 30
+    {store_filter}
+  order by doc_date desc, src_doc_id desc
+)
+where rownum <= 5
+"""
+    try:
+        h, rows = _run_remote(sample_sql, timeout=180)
+        results.append(f"\n=== 真實調撥樣本（TO_STORE_ID 非空，近 30 天，前 5 筆）===")
+        results.append("\t".join(h))
+        for r in rows:
+            results.append("\t".join(r))
+    except Exception as exc:
+        results.append(f"[樣本查詢失敗] {str(exc)[:160]}")
+
+    return "\n".join(results)
+
+
 def query_pending_transfers(src_store_id: str) -> list[dict]:
     """
     回傳「出庫門市 = src_store_id、尚未建過黑貓單」的調撥單清單。
