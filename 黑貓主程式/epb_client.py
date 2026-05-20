@@ -1,10 +1,15 @@
 """
-EPB 調撥查詢模組 — 連線 EPBrowser ERP，讀取本門市待出貨調撥單。
+EPB 調撥查詢模組 — 連線 EPBrowser ERP，讀取本門市待出貨調撥申請單。
 
 只讀不寫。需在可連到 192.168.1.177:8080 的內網機器上使用。
 
-使用前請先呼叫 epb_available() 確認環境，或執行 explore_transfer_schema()
-確認 STATUS_FLG / MOVE_FLG 實際碼值（locked in shell.jar，無法靜態確認）。
+資料來源（探查後確認）：
+- 表頭：invtrnrmas（存貨調撥申請單，EPB 模組代碼 INVTRNRN）
+- 明細：invtrnrline（用 mas_rec_key 串 invtrnrmas.rec_key）
+- STORE_ID1 = 出庫倉、STORE_ID2 = 入庫倉
+- STATUS_FLG: B=暫存編輯中、E=已確認待出貨、F=已完成過帳、A=異常作廢
+
+使用前請先呼叫 epb_available() 確認環境。
 """
 
 import csv
@@ -733,40 +738,44 @@ order by l.line_no
 
 def query_pending_transfers(src_store_id: str) -> list[dict]:
     """
-    回傳「出庫門市 = src_store_id、尚未建過黑貓單」的調撥單清單。
+    回傳「本門市為出庫倉、狀態=已確認待出貨」的調撥申請單。
 
-    ⚠️  MOVE_FLG = 'A' 是依 storedtl 欄位說明推測的「待出貨」碼值。
-    在正式使用前請先跑 explore_transfer_schema() 確認實際碼值。
+    過濾條件：
+      org_id = '01'
+      store_id1 = src_store_id   (出庫倉)
+      status_flg = 'E'           (已確認、待出貨)
+      complete_doc_id is null    (還沒被完成單關聯)
 
     回傳格式（每筆一個 dict）：
-      doc_id       : 調撥單號 (SRC_DOC_ID)
-      src_store_id : 出庫門市代碼
-      to_store_id  : 入庫門市代碼
-      to_store_name: 入庫門市名稱
-      doc_date     : 單據日期（字串）
-      item_count   : 品項數量
-      total_qty    : 總數量
-      move_flg     : MOVE_FLG 原始值（供除錯）
+      doc_id         : 調撥單號
+      src_store_id   : 出庫倉代碼 (STORE_ID1)
+      to_store_id    : 入庫倉代碼 (STORE_ID2)
+      to_store_name  : 入庫倉名稱 (從 storemas JOIN)
+      doc_date       : 單據日期 yyyy-mm-dd
+      dly_date       : 送貨日 yyyy-mm-dd (可用作黑貓 ShipmentDate)
+      total_qty      : 總數量
+      item_count     : 明細品項數
+      remark         : 備註
     """
     sql = f"""
 select
-  d.src_doc_id,
-  d.store_id,
-  d.to_store_id,
-  coalesce(sm.name, d.to_store_id) as to_store_name,
-  max(cast(d.doc_date as varchar(20))) as doc_date,
-  sum(d.stk_qty) as total_qty,
-  count(*) as item_count,
-  d.move_flg
-from storedtl d
+  m.doc_id,
+  to_char(m.doc_date, 'yyyy-mm-dd')  as doc_date,
+  to_char(m.dly_date, 'yyyy-mm-dd')  as dly_date,
+  m.store_id1,
+  m.store_id2,
+  coalesce(sm.name, m.store_id2)     as to_store_name,
+  m.total_qty,
+  m.remark,
+  (select count(*) from invtrnrline l where l.mas_rec_key = m.rec_key) as item_count
+from invtrnrmas m
 left join storemas sm
-  on sm.store_id = d.to_store_id
-  and sm.org_id = {_q(ORG_ID)}
-where d.org_id = {_q(ORG_ID)}
-  and d.store_id = {_q(src_store_id)}
-  and d.move_flg = 'A'
-group by d.src_doc_id, d.store_id, d.to_store_id, sm.name, d.move_flg
-order by max(d.doc_date) desc, d.src_doc_id desc
+  on sm.store_id = m.store_id2 and sm.org_id = {_q(ORG_ID)}
+where m.org_id = {_q(ORG_ID)}
+  and m.store_id1 = {_q(src_store_id)}
+  and m.status_flg = 'E'
+  and m.complete_doc_id is null
+order by m.doc_date desc, m.doc_id desc
 """
     headers, rows = _run_remote(sql)
     header_map = {h.upper(): i for i, h in enumerate(headers)}
@@ -778,26 +787,27 @@ order by max(d.doc_date) desc, d.src_doc_id desc
     result = []
     for row in rows:
         result.append({
-            "doc_id":        get(row, "SRC_DOC_ID"),
-            "src_store_id":  get(row, "STORE_ID"),
-            "to_store_id":   get(row, "TO_STORE_ID"),
+            "doc_id":        get(row, "DOC_ID"),
+            "src_store_id":  get(row, "STORE_ID1"),
+            "to_store_id":   get(row, "STORE_ID2"),
             "to_store_name": get(row, "TO_STORE_NAME"),
-            "doc_date":      get(row, "DOC_DATE")[:10],
-            "item_count":    get(row, "ITEM_COUNT"),
+            "doc_date":      get(row, "DOC_DATE"),
+            "dly_date":      get(row, "DLY_DATE"),
             "total_qty":     get(row, "TOTAL_QTY"),
-            "move_flg":      get(row, "MOVE_FLG"),
+            "item_count":    get(row, "ITEM_COUNT"),
+            "remark":        get(row, "REMARK"),
         })
     return result
 
 
 def query_transfer_items(doc_id: str) -> list[dict]:
-    """回傳單一調撥單的品項明細（STK_ID, STK_NAME, STK_QTY）。"""
+    """回傳單一調撥申請單的品項明細（從 invtrnrline JOIN invtrnrmas）。"""
     sql = f"""
-select stk_id, stk_name, stk_qty
-from storedtl
-where org_id = {_q(ORG_ID)}
-  and src_doc_id = {_q(doc_id)}
-order by stk_id
+select l.line_no, l.stk_id, l.name, l.stk_qty, l.uom_id
+from invtrnrmas m
+join invtrnrline l on l.mas_rec_key = m.rec_key
+where m.org_id = {_q(ORG_ID)} and m.doc_id = {_q(doc_id)}
+order by l.line_no
 """
     headers, rows = _run_remote(sql)
     header_map = {h.upper(): i for i, h in enumerate(headers)}
@@ -808,9 +818,37 @@ order by stk_id
 
     return [
         {
+            "line_no":  get(row, "LINE_NO"),
             "stk_id":   get(row, "STK_ID"),
-            "stk_name": get(row, "STK_NAME"),
+            "stk_name": get(row, "NAME"),
             "stk_qty":  get(row, "STK_QTY"),
+            "uom_id":   get(row, "UOM_ID"),
         }
         for row in rows
     ]
+
+
+def query_store_info(store_id: str) -> dict:
+    """從 storemas 查單一門市的名稱與地址電話（給黑貓單帶入收件人資訊用）。"""
+    sql = f"""
+select store_id, name,
+       coalesce(address1, '') || coalesce(address2, '') || coalesce(address3, '') as address,
+       phone, postalcode
+from storemas
+where org_id = {_q(ORG_ID)} and store_id = {_q(store_id)}
+"""
+    headers, rows = _run_remote(sql)
+    if not rows:
+        return {}
+    header_map = {h.upper(): i for i, h in enumerate(headers)}
+    row = rows[0]
+    def get(col):
+        i = header_map.get(col.upper())
+        return row[i].strip() if i is not None and i < len(row) else ""
+    return {
+        "store_id":   get("STORE_ID"),
+        "name":       get("NAME"),
+        "address":    get("ADDRESS"),
+        "phone":      get("PHONE"),
+        "postalcode": get("POSTALCODE"),
+    }
