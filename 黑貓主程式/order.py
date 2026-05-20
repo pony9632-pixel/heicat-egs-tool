@@ -21,6 +21,8 @@ CSV 欄位說明：
     notes              備註
 """
 
+from __future__ import annotations
+
 import csv
 import sys
 from pathlib import Path

@@ -17,6 +17,8 @@ API base: https://api.suda.com.tw/api/Egs/{endpoint}
   PrintOBTType  01=標準
 """
 
+from __future__ import annotations
+
 import ssl
 import json
 import urllib.request

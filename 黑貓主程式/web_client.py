@@ -2,6 +2,9 @@
 TakkyubinWebClient — 模擬瀏覽器登入統一速達契客專區
 並查詢 SudaPaymentDetail（交易明細）。純 Python 標準庫。
 """
+
+from __future__ import annotations
+
 import ssl, re, urllib.request, urllib.parse, urllib.error, http.cookiejar
 from html.parser import HTMLParser
 

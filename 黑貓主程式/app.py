@@ -4,6 +4,8 @@
 執行：python3 app.py
 """
 
+from __future__ import annotations
+
 import base64
 import csv
 import io
