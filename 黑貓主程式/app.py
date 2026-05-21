@@ -691,10 +691,10 @@ class App(tk.Tk):
                         return
                     html = data.get("html_url", "")
                     if frozen:
-                        # frozen .app：從 release assets 找 .app.zip（不依賴中文檔名）
+                        # frozen .app：找第一個 .zip asset（GitHub 會去掉中文字）
                         assets = data.get("assets", [])
                         asset = next(
-                            (a for a in assets if a["name"].endswith(".app.zip")),
+                            (a for a in assets if a["name"].endswith(".zip")),
                             None,
                         )
                         if not asset:
