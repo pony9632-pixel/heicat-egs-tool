@@ -99,7 +99,7 @@ def _append_build_log(msg: str):
     pass
 
 
-VERSION     = "2.4.5"
+VERSION     = "2.4.6"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Cool Glass palette (Tahoe-inspired) ────────────────────────────────────
@@ -319,8 +319,29 @@ def _cleanup_epb_log_for_obt(obt: str) -> int:
     return len(keys)
 
 
-def append_tracking(obt_number: str, recipient_name: str, order_id: str):
-    """Add a new tracking record; auto-prune records older than 14 days."""
+def _normalize_created_at(ca: str) -> str:
+    """把 created_at 標準化為 ISO 風格字串，方便排序與比較。
+    支援格式：
+      - ISO  '2026-05-22T00:25:30'  → 原樣
+      - 斜線 '2026/05/22'            → '2026-05-22'
+      - 數字 '20260522'              → '2026-05-22'
+    """
+    if not ca:
+        return ""
+    if len(ca) >= 10 and ca[4] == "/" and ca[7] == "/":
+        return ca[:4] + "-" + ca[5:7] + "-" + ca[8:]
+    if len(ca) >= 8 and ca[:8].isdigit():
+        return f"{ca[:4]}-{ca[4:6]}-{ca[6:8]}" + ca[8:]
+    return ca
+
+
+def append_tracking(obt_number: str, recipient_name: str, order_id: str,
+                    sender_name: str = ""):
+    """Add a new tracking record; auto-prune records older than 14 days.
+
+    sender_name 為本地寄件人名稱（用 cfg["sender"]["name"]），記下後
+    `_sync_from_web` 不會用碼頭回傳的公司戶名覆蓋掉。
+    """
     import datetime
     records = load_tracking()
     records.append({
@@ -328,9 +349,11 @@ def append_tracking(obt_number: str, recipient_name: str, order_id: str):
         "obt_number": obt_number,
         "recipient_name": recipient_name,
         "order_id": order_id,
+        "sender_name": sender_name,
     })
     cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
-    records = [r for r in records if r.get("created_at", "") >= cutoff]
+    records = [r for r in records
+               if _normalize_created_at(r.get("created_at", "")) >= cutoff]
     save_tracking(records)
 
 def make_client(cfg: dict) -> SudaClient:
@@ -2611,16 +2634,24 @@ class SingleOrderView(tk.Frame):
         from datetime import datetime as _dt
         values = self._get_values()
         required = {"order_id": "訂單號碼", "recipient_name": "收件人姓名",
-                    "recipient_address": "收件人地址", "recipient_phone": "收件人電話"}
+                    "recipient_address": "收件人地址"}
         for k, label in required.items():
             if not values.get(k):
                 messagebox.showwarning("缺少必填欄位", f"請填寫「{label}」"); return
 
-        # S2：電話格式寬鬆檢查（不擋送出，只警告）
+        # 手機 / 市話 至少擇一
         phone = values.get("recipient_phone", "")
-        if phone and len(re.sub(r"\D", "", phone)) < 8:
-            messagebox.showwarning("電話格式可能有誤",
-                f"收件人電話「{phone}」數字不足 8 碼，請確認後再送出。\n（仍可繼續送出）")
+        mobile = values.get("recipient_mobile", "")
+        if not phone and not mobile:
+            messagebox.showwarning("缺少聯絡電話",
+                "請至少填寫「手機」或「市話」其中一項。"); return
+
+        # S2：電話格式寬鬆檢查（不擋送出，只警告）
+        for label, val in (("手機", mobile), ("市話", phone)):
+            if val and len(re.sub(r"\D", "", val)) < 8:
+                messagebox.showwarning("電話格式可能有誤",
+                    f"{label}「{val}」數字不足 8 碼，請確認後再送出。\n（仍可繼續送出）")
+                break
 
         for key, label in [("shipment_date", "出貨日"), ("delivery_date", "配送日")]:
             val = values.get(key, "")
@@ -2662,7 +2693,7 @@ class SingleOrderView(tk.Frame):
                 if r["success"]:
                     msg = f"✓ 建單成功！OBT：{r['obt_number']}"
                     _append_build_log(f"✓ OBT:{r['obt_number']} 收件人:{values.get('recipient_name','')} 訂單:{values.get('order_id','')}")
-                    append_tracking(r['obt_number'], values.get('recipient_name',''), values.get('order_id',''))
+                    append_tracking(r['obt_number'], values.get('recipient_name',''), values.get('order_id',''), sender.get('name',''))
                     if r["pdf_path"]:
                         self._normalize_pdf_rotation(r["pdf_path"])
                         self.after(0, lambda obt=r["obt_number"], nm=values["recipient_name"],
@@ -2692,15 +2723,16 @@ class SingleOrderView(tk.Frame):
 # ─── batch view ──────────────────────────────────────────────────────────────
 
 class BatchOrderView(tk.Frame):
+    """多筆建單：從通訊錄複選聯絡人，每筆可獨立設定付款 / 尺寸 / 溫層 / 備註，一次建單。"""
+
     def __init__(self, master, app):
         super().__init__(master, bg=PAPER)
         self.app = app
-        self.orders = []
+        self.rows: list[dict] = []   # each: {"data": dict, "card": Card, "widgets": dict}
         self.output_dir = get_output_dir()
         self._build()
 
     def _build(self):
-        # outer canvas so the whole batch view scrolls
         canvas = tk.Canvas(self, bg=PAPER, highlightthickness=0)
         vsb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview,
                             style="Tw.Vertical.TScrollbar")
@@ -2718,44 +2750,57 @@ class BatchOrderView(tk.Frame):
 
         wrap.pack(fill="both", expand=True, padx=28, pady=24)
 
-        # header
-        head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
-        SectionHeader(head, "CSV 匯入", "多筆建單").pack(side="left")
+        # ─── header
+        head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 14))
+        SectionHeader(head, "多筆建單", "複選聯絡人，一次建單").pack(side="left")
         ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
-        TwButton(ba, "產生 CSV 範本", variant="default",
+        TwButton(ba, "從 CSV 匯入", variant="ghost",
+                 command=self._import_csv).pack(side="left", padx=4)
+        TwButton(ba, "產生範本", variant="ghost",
                  command=self._gen_template).pack(side="left", padx=4)
-        TwButton(ba, "載入 CSV", variant="primary",
-                 command=self._load_csv).pack(side="left", padx=4)
 
-        # stats strip
-        self.stats_row = tk.Frame(wrap, bg=PAPER)
-        self.stats_row.pack(fill="x", pady=(0, 14))
-        self._render_stats()
+        # ─── global defaults card
+        gd = Card(wrap, padding=16); gd.pack(fill="x", pady=(0, 12))
+        tk.Label(gd.body, text="全域預設",
+                 font=(FONT_FAMILY, _sz(13), "bold"),
+                 bg=CARD, fg=INK).pack(anchor="w")
+        tk.Label(gd.body, text="新加入的收件人會套用以下預設值；已加入的不會被覆寫。",
+                 font=F_TINY, bg=CARD, fg=MUTED).pack(anchor="w", pady=(2, 10))
 
-        # file pill
-        self.file_lbl = tk.Label(wrap, text="尚未載入 CSV 檔案",
-            font=F_TINY, bg=PAPER, fg=MUTED, anchor="w")
-        self.file_lbl.pack(fill="x", pady=(0, 8))
+        grid = tk.Frame(gd.body, bg=CARD); grid.pack(fill="x")
+        for i in range(5): grid.columnconfigure(i, weight=1)
 
-        # table card
-        tcard = Card(wrap, padding=0); tcard.pack(fill="both", expand=True)
-        cols = ["order_id", "recipient_name", "recipient_phone", "recipient_address", "spec", "thermo"]
-        labels = {"order_id": "訂單號", "recipient_name": "收件人",
-                  "recipient_phone": "電話", "recipient_address": "地址",
-                  "spec": "尺寸", "thermo": "溫層"}
-        widths = {"order_id": 180, "recipient_name": 100, "recipient_phone": 130,
-                  "recipient_address": 280, "spec": 70, "thermo": 70}
-        self.tree = ttk.Treeview(tcard.body, columns=cols, show="headings",
-                                 style="Tw.Treeview", height=14)
-        for c in cols:
-            self.tree.heading(c, text=labels[c])
-            self.tree.column(c, width=widths[c], anchor="w")
-        vsb = ttk.Scrollbar(tcard.body, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
+        self.default_spec = tk.StringVar(value="0001  60 cm")
+        self.default_thermo = tk.StringVar(value="0001 常溫")
+        self.default_dtime = tk.StringVar(value="01 不指定")
+        self.default_shipment = tk.StringVar(value=default_shipment_date())
+        self.default_delivery = tk.StringVar(value=default_delivery_date())
 
-        # footer
+        self._mini_combo(grid, 0, "尺寸", self.default_spec, list(SPEC_OPTIONS.keys()))
+        self._mini_locked(grid, 1, "溫層", self.default_thermo)
+        self._mini_combo(grid, 2, "配送時段", self.default_dtime, list(DTIME_OPTIONS.keys()))
+        self._mini_entry(grid, 3, "出貨日", self.default_shipment)
+        self._mini_entry(grid, 4, "配送日", self.default_delivery)
+
+        # ─── action row
+        ar = tk.Frame(wrap, bg=PAPER); ar.pack(fill="x", pady=(0, 10))
+        TwButton(ar, "+ 新增收件人", variant="primary",
+                 command=self._open_picker).pack(side="left")
+        TwButton(ar, "清空列表", variant="ghost",
+                 command=self._clear_all).pack(side="left", padx=8)
+        self.count_lbl = tk.Label(ar, text="已選 0 筆", font=F_SMALL,
+                                   bg=PAPER, fg=MUTED, anchor="e")
+        self.count_lbl.pack(side="right")
+
+        # ─── rows container
+        self.rows_container = tk.Frame(wrap, bg=PAPER)
+        self.rows_container.pack(fill="both", expand=True)
+        self.empty_lbl = tk.Label(self.rows_container,
+            text="尚未加入任何收件人 — 點上方「+ 新增收件人」開始",
+            font=F_SMALL, bg=PAPER, fg=MUTED, pady=40)
+        self.empty_lbl.pack(fill="x")
+
+        # ─── footer
         ft = tk.Frame(wrap, bg=PAPER); ft.pack(fill="x", pady=(14, 0))
         self.dir_lbl = tk.Label(ft, text=f"PDF 儲存目錄： {self.output_dir}",
             font=F_TINY, bg=PAPER, fg=MUTED, anchor="w")
@@ -2764,45 +2809,328 @@ class BatchOrderView(tk.Frame):
                  command=self._pick_dir).pack(side="left", padx=8)
 
         fa = tk.Frame(ft, bg=PAPER); fa.pack(side="right")
-        TwButton(fa, "清除列表", variant="ghost", command=self._clear).pack(side="left", padx=4)
         TwButton(fa, "全部建單  →", variant="primary",
-                 command=self._submit_all, width=14).pack(side="left", padx=4)
+                 command=self._submit_all).pack(side="left", padx=4)
 
-        # log card
-        self.progress_lbl = tk.Label(wrap, text="", font=F_SMALL, bg=PAPER, fg=MUTED, anchor="w")
+        # ─── progress + log
+        self.progress_lbl = tk.Label(wrap, text="", font=F_SMALL,
+                                      bg=PAPER, fg=MUTED, anchor="w")
         self.progress_lbl.pack(fill="x", pady=(14, 2))
         self.log = scrolledtext.ScrolledText(wrap, height=6, font=F_MONO,
             bg=CARD, fg=INK2, relief="flat", state="disabled",
             highlightbackground=HAIR, highlightthickness=1)
         self.log.pack(fill="x")
 
-    def _render_stats(self):
-        for w in self.stats_row.winfo_children(): w.destroy()
-        ok_n   = sum(1 for o in self.orders
-                    if all((o.get(k) or "").strip()
-                           for k in ("recipient_name", "recipient_phone", "recipient_address")))
-        warn_n = len(self.orders) - ok_n
-        stats = [
-            ("已載入", str(len(self.orders)), "筆", INK),
-            ("有效",   str(ok_n),             "筆", OK),
-            ("警示",   str(warn_n),           "筆", WARN if warn_n else MUTED),
-            ("輸出目錄", Path(self.output_dir).name or "—", "", INK),
-        ]
-        for i, (l, v, u, c) in enumerate(stats):
-            sc = Card(self.stats_row, padding=14)
-            sc.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 8, 0))
-            self.stats_row.columnconfigure(i, weight=1)
-            Kicker(sc.body, l).pack(anchor="w")
-            tk.Label(sc.body, text=v, font=(MONO_FAMILY, _sz(20), "bold"),
-                     bg=CARD, fg=c).pack(anchor="w", pady=(2, 0))
-            if u:
-                tk.Label(sc.body, text=u, font=F_TINY, bg=CARD, fg=MUTED).pack(anchor="w")
+    # ─── small helpers for the defaults bar ─────────────────────────────────
 
-    def _log(self, msg):
-        self.log.configure(state="normal")
-        self.log.insert("end", msg + "\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
+    def _mini_combo(self, parent, col, label, var, values):
+        cell = tk.Frame(parent, bg=CARD)
+        cell.grid(row=0, column=col, sticky="ew",
+                  padx=(0 if col == 0 else 8, 0))
+        tk.Label(cell, text=label, font=F_TINY,
+                 bg=CARD, fg=MUTED).pack(anchor="w", pady=(0, 4))
+        ttk.Combobox(cell, textvariable=var, values=values,
+                     state="readonly", style="Tw.TCombobox",
+                     font=F_NORM).pack(fill="x")
+
+    def _mini_entry(self, parent, col, label, var):
+        cell = tk.Frame(parent, bg=CARD)
+        cell.grid(row=0, column=col, sticky="ew",
+                  padx=(0 if col == 0 else 8, 0))
+        tk.Label(cell, text=label, font=F_TINY,
+                 bg=CARD, fg=MUTED).pack(anchor="w", pady=(0, 4))
+        FieldEntry(cell, textvariable=var, mono=True).pack(fill="x")
+
+    def _mini_locked(self, parent, col, label, var):
+        """Locked display in disabled-entry style (matches single-order 溫層)."""
+        cell = tk.Frame(parent, bg=CARD)
+        cell.grid(row=0, column=col, sticky="ew",
+                  padx=(0 if col == 0 else 8, 0))
+        tk.Label(cell, text=label, font=F_TINY,
+                 bg=CARD, fg=MUTED).pack(anchor="w", pady=(0, 4))
+        box = tk.Frame(cell, bg=INPUT_BORDER); box.pack(fill="x")
+        inner = tk.Frame(box, bg=INPUT_BG, height=34)
+        inner.pack(fill="x", padx=1, pady=1)
+        inner.pack_propagate(False)
+        tk.Label(inner, textvariable=var, font=F_NORM, bg=INPUT_BG,
+                 fg=MUTED, anchor="w").pack(fill="both", expand=True, padx=11)
+
+    # ─── picker integration ─────────────────────────────────────────────────
+
+    def _open_picker(self):
+        MultiContactPickerDialog(self.winfo_toplevel(),
+                                  on_select=self._add_contacts)
+
+    def _add_contacts(self, picked: list[dict]):
+        for c in picked:
+            self._add_row(c)
+        self._refresh_after_change()
+
+    def _add_row(self, contact: dict):
+        cat = (contact.get("category") or "").strip()
+        is_freight = "Y" if cat in ("門市", "廠商") else "N"
+        spec_code = SPEC_OPTIONS.get(self.default_spec.get(), "0001")
+        thermo_code = THERMO_OPTIONS.get(self.default_thermo.get(), "0001")
+        dtime_code = DTIME_OPTIONS.get(self.default_dtime.get(), "01")
+        shipment = (self.default_shipment.get() or "").strip() or default_shipment_date()
+        delivery = (self.default_delivery.get() or "").strip() or default_delivery_date()
+
+        used_ids = {r["data"]["order_id"] for r in self.rows}
+        order_id = self._make_order_id(contact, shipment, used_ids)
+
+        data = {
+            "order_id": order_id,
+            "recipient_name": contact.get("name", ""),
+            "recipient_phone": contact.get("phone", ""),
+            "recipient_mobile": contact.get("mobile", ""),
+            "recipient_address": contact.get("address", ""),
+            "spec": spec_code,
+            "thermosphere": thermo_code,
+            "delivery_time": dtime_code,
+            "shipment_date": shipment,
+            "delivery_date": delivery,
+            "product_name": "一般物品",
+            "is_freight": is_freight,
+            "is_collection": "N",
+            "collection_amount": "0",
+            "notes": cat,
+            "_contact": contact,
+        }
+        card = Card(self.rows_container, padding=14)
+        card.pack(fill="x", pady=(0, 8))
+        row_record = {"data": data, "card": card, "widgets": {}}
+        self.rows.append(row_record)
+        self._render_row(row_record)
+
+    def _make_order_id(self, contact: dict, shipment_date: str,
+                       used_ids: set) -> str:
+        code = (contact.get("store_id") or contact.get("brand_id") or "").strip()
+        if not code:
+            code = f"C{len(self.rows) + 1}"
+        base = f"{code}-{shipment_date}"
+        oid = base
+        n = 2
+        while oid in used_ids:
+            oid = f"{base}-{n}"
+            n += 1
+        return oid
+
+    # ─── per-row card render ────────────────────────────────────────────────
+
+    def _label_for(self, kind: str, code: str) -> str:
+        table = {"spec": SPEC_OPTIONS, "thermo": THERMO_OPTIONS,
+                 "dtime": DTIME_OPTIONS}[kind]
+        for label, c in table.items():
+            if c == code:
+                return label
+        return next(iter(table))
+
+    def _render_row(self, row_record: dict):
+        card = row_record["card"]
+        data = row_record["data"]
+        body = card.body
+        for w in body.winfo_children():
+            w.destroy()
+        widgets = {}
+        row_record["widgets"] = widgets
+        idx = self.rows.index(row_record) + 1
+        contact = data.get("_contact", {})
+
+        # ── header line: # + name (code) · category   |   delete
+        top = tk.Frame(body, bg=CARD); top.pack(fill="x")
+        code = (contact.get("store_id") or contact.get("brand_id") or "").strip()
+        head_text = f"#{idx}  {data['recipient_name']}"
+        if code:
+            head_text += f"  ({code})"
+        cat_label = (contact.get("category") or "").strip()
+        if cat_label:
+            head_text += f"  · {cat_label}"
+        tk.Label(top, text=head_text,
+                 font=(FONT_FAMILY, _sz(14), "bold"),
+                 bg=CARD, fg=INK, anchor="w").pack(side="left")
+        TwButton(top, "刪除", variant="ghost",
+                 command=lambda r=row_record: self._delete_row(r)).pack(side="right")
+
+        # ── sub line: phone / mobile / address
+        sub_parts = []
+        if data.get("recipient_phone"):
+            sub_parts.append(f"☎ {data['recipient_phone']}")
+        if data.get("recipient_mobile"):
+            sub_parts.append(f"📱 {data['recipient_mobile']}")
+        if data.get("recipient_address"):
+            sub_parts.append(f"📍 {data['recipient_address']}")
+        tk.Label(body, text="  ·  ".join(sub_parts), font=F_TINY,
+                 bg=CARD, fg=MUTED, anchor="w", wraplength=1000,
+                 justify="left").pack(fill="x", pady=(2, 10))
+
+        # ── editable grid: order_id | freight | spec | thermo | dtime
+        grid = tk.Frame(body, bg=CARD); grid.pack(fill="x")
+        for i in range(5):
+            grid.columnconfigure(i, weight=1, uniform="r")
+
+        # order_id
+        oid_var = tk.StringVar(value=data["order_id"])
+        oid_var.trace_add("write",
+            lambda *_a, _v=oid_var, _d=data: _d.__setitem__("order_id", _v.get()))
+        widgets["order_id"] = oid_var
+        self._row_field(grid, 0, "訂單編號", widget="entry",
+                        var=oid_var, mono=True)
+
+        # is_freight
+        freight_var = tk.StringVar(
+            value="到付" if data["is_freight"] == "Y" else "寄件人付")
+        freight_var.trace_add("write",
+            lambda *_a, _v=freight_var, _d=data:
+                _d.__setitem__("is_freight",
+                               "Y" if _v.get() == "到付" else "N"))
+        widgets["is_freight"] = freight_var
+        self._row_field(grid, 1, "付款", widget="combo",
+                        var=freight_var, values=["到付", "寄件人付"])
+
+        # spec
+        spec_var = tk.StringVar(value=self._label_for("spec", data["spec"]))
+        spec_var.trace_add("write",
+            lambda *_a, _v=spec_var, _d=data:
+                _d.__setitem__("spec",
+                               SPEC_OPTIONS.get(_v.get(), _d["spec"])))
+        widgets["spec"] = spec_var
+        self._row_field(grid, 2, "尺寸", widget="combo",
+                        var=spec_var, values=list(SPEC_OPTIONS.keys()))
+
+        # thermo (locked — always 常溫 unless API supports otherwise)
+        thermo_var = tk.StringVar(
+            value=self._label_for("thermo", data["thermosphere"]))
+        widgets["thermo"] = thermo_var
+        self._row_field(grid, 3, "溫層", widget="locked", var=thermo_var)
+
+        # delivery_time
+        dtime_var = tk.StringVar(
+            value=self._label_for("dtime", data["delivery_time"]))
+        dtime_var.trace_add("write",
+            lambda *_a, _v=dtime_var, _d=data:
+                _d.__setitem__("delivery_time",
+                               DTIME_OPTIONS.get(_v.get(), _d["delivery_time"])))
+        widgets["dtime"] = dtime_var
+        self._row_field(grid, 4, "時段", widget="combo",
+                        var=dtime_var, values=list(DTIME_OPTIONS.keys()))
+
+        # ── notes (full width)
+        nrow = tk.Frame(body, bg=CARD); nrow.pack(fill="x", pady=(10, 0))
+        tk.Label(nrow, text="備註", font=F_TINY,
+                 bg=CARD, fg=MUTED).pack(anchor="w", pady=(0, 4))
+        notes_var = tk.StringVar(value=data["notes"])
+        notes_var.trace_add("write",
+            lambda *_a, _v=notes_var, _d=data:
+                _d.__setitem__("notes", _v.get()))
+        widgets["notes"] = notes_var
+        FieldEntry(nrow, textvariable=notes_var, mono=False).pack(fill="x")
+
+    def _row_field(self, parent, col, label, widget, var,
+                   values=None, mono=False):
+        cell = tk.Frame(parent, bg=CARD)
+        cell.grid(row=0, column=col, sticky="ew",
+                  padx=(0 if col == 0 else 6, 0))
+        tk.Label(cell, text=label, font=F_TINY,
+                 bg=CARD, fg=MUTED).pack(anchor="w", pady=(0, 4))
+        if widget == "combo":
+            ttk.Combobox(cell, textvariable=var, values=values,
+                         state="readonly", style="Tw.TCombobox",
+                         font=F_NORM).pack(fill="x")
+        elif widget == "locked":
+            box = tk.Frame(cell, bg=INPUT_BORDER); box.pack(fill="x")
+            inner = tk.Frame(box, bg=INPUT_BG, height=34)
+            inner.pack(fill="x", padx=1, pady=1)
+            inner.pack_propagate(False)
+            tk.Label(inner, textvariable=var, font=F_NORM, bg=INPUT_BG,
+                     fg=MUTED, anchor="w").pack(fill="both", expand=True,
+                                                 padx=11)
+        else:
+            FieldEntry(cell, textvariable=var, mono=mono).pack(fill="x")
+
+    def _delete_row(self, row_record):
+        row_record["card"].destroy()
+        self.rows.remove(row_record)
+        # re-number visible rows
+        for r in self.rows:
+            self._render_row(r)
+        self._refresh_after_change()
+
+    def _clear_all(self):
+        if not self.rows:
+            return
+        if not messagebox.askyesno("確認清空",
+                                    "確定要清空所有已加入的收件人？"):
+            return
+        for r in self.rows:
+            r["card"].destroy()
+        self.rows = []
+        self._refresh_after_change()
+
+    def _refresh_after_change(self):
+        n = len(self.rows)
+        self.count_lbl.config(text=f"已選 {n} 筆",
+                               fg=INK if n else MUTED)
+        if n == 0:
+            if not self.empty_lbl.winfo_ismapped():
+                self.empty_lbl.pack(fill="x")
+        else:
+            if self.empty_lbl.winfo_ismapped():
+                self.empty_lbl.pack_forget()
+
+    # ─── CSV (secondary entry) ──────────────────────────────────────────────
+
+    def _import_csv(self):
+        path = filedialog.askopenfilename(
+            title="選擇訂單 CSV",
+            filetypes=[("CSV", "*.csv"), ("All", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            orders = load_orders(path)
+        except Exception as ex:
+            messagebox.showerror("讀取失敗", str(ex)); return
+        for o in orders:
+            self._add_csv_row(o)
+        self._refresh_after_change()
+        self._log(f"從 CSV 載入 {len(orders)} 筆 ({Path(path).name})")
+
+    def _add_csv_row(self, csv_row: dict):
+        contact = {
+            "name": csv_row.get("recipient_name", ""),
+            "phone": csv_row.get("recipient_phone", ""),
+            "mobile": csv_row.get("recipient_mobile", ""),
+            "address": csv_row.get("recipient_address", ""),
+            "category": "",
+        }
+        is_freight = ("Y" if str(csv_row.get("is_freight", "N")).upper()
+                      .startswith("Y") else "N")
+        data = {
+            "order_id": csv_row.get("order_id", "") or self._make_order_id(
+                contact,
+                (csv_row.get("shipment_date") or default_shipment_date()),
+                {r["data"]["order_id"] for r in self.rows}),
+            "recipient_name": csv_row.get("recipient_name", ""),
+            "recipient_phone": csv_row.get("recipient_phone", ""),
+            "recipient_mobile": csv_row.get("recipient_mobile", ""),
+            "recipient_address": csv_row.get("recipient_address", ""),
+            "spec": csv_row.get("spec") or "0001",
+            "thermosphere": csv_row.get("thermosphere") or "0001",
+            "delivery_time": csv_row.get("delivery_time") or "01",
+            "shipment_date": csv_row.get("shipment_date") or default_shipment_date(),
+            "delivery_date": csv_row.get("delivery_date") or default_delivery_date(),
+            "product_name": csv_row.get("product_name") or "一般物品",
+            "is_freight": is_freight,
+            "is_collection": csv_row.get("is_collection") or "N",
+            "collection_amount": csv_row.get("collection_amount") or "0",
+            "notes": csv_row.get("notes") or "",
+            "_contact": contact,
+        }
+        card = Card(self.rows_container, padding=14)
+        card.pack(fill="x", pady=(0, 8))
+        row_record = {"data": data, "card": card, "widgets": {}}
+        self.rows.append(row_record)
+        self._render_row(row_record)
 
     def _gen_template(self):
         path = filedialog.asksaveasfilename(
@@ -2815,59 +3143,46 @@ class BatchOrderView(tk.Frame):
             generate_template(path)
             messagebox.showinfo("完成", f"範本已儲存至：\n{path}")
 
-    def _load_csv(self):
-        path = filedialog.askopenfilename(
-            title="選擇訂單 CSV",
-            filetypes=[("CSV", "*.csv"), ("All", "*.*")],
-        )
-        if not path: return
-        try:
-            self.orders = load_orders(path)
-        except Exception as ex:
-            messagebox.showerror("讀取失敗", str(ex)); return
-
-        self.file_lbl.config(text=f"已載入  {Path(path).name}  ·  {len(self.orders)} 筆",
-                             fg=INK2)
-        for item in self.tree.get_children(): self.tree.delete(item)
-        for o in self.orders:
-            self.tree.insert("", "end", values=[
-                o.get("order_id", ""), o.get("recipient_name", ""),
-                o.get("recipient_phone", ""), o.get("recipient_address", ""),
-                o.get("spec", "0002"),
-                {"0001":"常溫","0002":"冷藏","0003":"冷凍"}.get(o.get("thermosphere",""), "—"),
-            ])
-        self._render_stats()
-        self._log(f"載入 {len(self.orders)} 筆訂單")
-
-    def _clear(self):
-        self.orders = []
-        for item in self.tree.get_children(): self.tree.delete(item)
-        self.file_lbl.config(text="尚未載入 CSV 檔案", fg=MUTED)
-        self._render_stats()
+    # ─── output dir + log + submit ──────────────────────────────────────────
 
     def _pick_dir(self):
-        d = filedialog.askdirectory(title="選擇 PDF 儲存目錄", initialdir=self.output_dir)
+        d = filedialog.askdirectory(title="選擇 PDF 儲存目錄",
+                                     initialdir=self.output_dir)
         if d:
             self.output_dir = d
             self.dir_lbl.config(text=f"PDF 儲存目錄： {self.output_dir}")
-            self._render_stats()
+
+    def _log(self, msg):
+        self.log.configure(state="normal")
+        self.log.insert("end", msg + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
 
     def _submit_all(self):
-        if not self.orders:
-            messagebox.showwarning("沒有訂單", "請先載入 CSV 檔案。"); return
+        if not self.rows:
+            messagebox.showwarning("尚未加入",
+                                    "請先按「+ 新增收件人」選擇至少一筆。"); return
         cfg = load_cfg()
         sender = cfg.get("sender") or {}
         if not sender.get("name"):
-            messagebox.showwarning("寄件人資料未設定", "請先到「設定」頁填寫寄件人資料。"); return
+            messagebox.showwarning("寄件人資料未設定",
+                                    "請先到「設定」頁填寫寄件人資料。"); return
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
-        total = len(self.orders)
+        rows_snapshot = [dict(r["data"]) for r in self.rows]
+        total = len(rows_snapshot)
         self._log(f"開始建單，共 {total} 筆…")
-        self.after(0, lambda: self.progress_lbl.config(text=f"建單中 0 / {total} 筆…", fg=MUTED))
+        self.after(0, lambda: self.progress_lbl.config(
+            text=f"建單中 0 / {total} 筆…", fg=MUTED))
+
+        # Map snapshot index back to live row for selective removal after build
+        live_refs = list(self.rows)
 
         def run():
+            import datetime
             client = make_client(cfg)
-            for i, order in enumerate(self.orders, 1):
+            success_indices: set[int] = set()
+            for i, order in enumerate(rows_snapshot, 1):
                 oid = order.get("order_id", f"#{i}")
                 try:
                     api_order = _csv_row_to_api_order(order, sender)
@@ -2875,17 +3190,40 @@ class BatchOrderView(tk.Frame):
                     if resp.get("IsOK") == "Y":
                         data = resp.get("Data") or {}
                         if isinstance(data, list) and data: data = data[0]
-                        obt = data.get("OBTNumber", "")
-                        pdf = data.get("PDF", "")
-                        if pdf:
-                            pdf_path = str(Path(self.output_dir) / f"{oid}_{obt}.pdf")
-                            save_pdf(pdf, pdf_path)
+                        orders_list = data.get("Orders") or []
+                        obt = orders_list[0].get("OBTNumber", "") if orders_list else ""
+                        file_no = data.get("FileNo", "")
+                        if obt:
+                            append_tracking(obt,
+                                            order.get("recipient_name", ""),
+                                            oid,
+                                            sender.get("name", ""))
+                        pdf_path = ""
+                        if file_no:
+                            try:
+                                pdf_bytes = client.download_obt(file_no)
+                                pdf_path = str(Path(self.output_dir) / f"{oid}_{obt}.pdf")
+                                with open(pdf_path, "wb") as pf:
+                                    pf.write(pdf_bytes)
+                                SingleOrderView._normalize_pdf_rotation(pdf_path)
+                            except Exception as pex:
+                                pdf_path = ""
+                                self.after(0, lambda o=oid, e=str(pex):
+                                    self._log(f"⚠ {o}  PDF 下載失敗：{e[:60]}"))
+                        if pdf_path:
+                            self.app._staging.append({
+                                "order_id": oid,
+                                "name": order.get("recipient_name", ""),
+                                "obt": obt,
+                                "pdf_path": pdf_path,
+                                "created_at": datetime.datetime.now().strftime("%H:%M"),
+                            })
                             self.after(0, lambda o=oid, n=obt: self._log(f"✓ {o}  OBT:{n}"))
                             _append_build_log(f"✓ OBT:{obt} 訂單:{oid}")
-                            append_tracking(obt, order.get("recipient_name", ""), oid)
                         else:
-                            self.after(0, lambda o=oid: self._log(f"✓ {o}  (無PDF)"))
-                            _append_build_log(f"✓ 無PDF 訂單:{oid}")
+                            self.after(0, lambda o=oid, n=obt: self._log(f"✓ {o}  OBT:{n}  (PDF未存)"))
+                            _append_build_log(f"✓ OBT:{obt} 訂單:{oid} (PDF未存)")
+                        success_indices.add(i - 1)
                     else:
                         msg = resp.get("Message", "")[:60]
                         self.after(0, lambda o=oid, m=msg: self._log(f"✗ {o}: {m}"))
@@ -2896,13 +3234,42 @@ class BatchOrderView(tk.Frame):
                 self.after(0, lambda _i=i, _t=total: self.progress_lbl.config(
                     text=f"建單中 {_i} / {_t} 筆…", fg=MUTED))
 
-            import subprocess
-            self.after(0, lambda: self._log("── 完成 ──"))
-            self.after(0, lambda _t=total: self.progress_lbl.config(
-                text=f"✓ 完成 {_t} 筆", fg=OK))
-            self.after(0, lambda d=self.output_dir: subprocess.run(["open", d]))
+            self.after(0, lambda: self._post_submit(total, success_indices, live_refs))
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _post_submit(self, total: int, success_indices: set, live_refs: list):
+        # refresh 待列印 + 貨運查詢 + sidebar badge
+        if "print_queue" in self.app.views:
+            self.app.views["print_queue"].refresh()
+        if hasattr(self.app, "sidebar"):
+            self.app.sidebar.update_badge("print_queue", len(self.app._staging))
+        if "tracking" in self.app.views:
+            self.app.views["tracking"].refresh()
+
+        # 移除成功的列（用 snapshot 時保存的 live 參考定位）
+        for idx in sorted(success_indices, reverse=True):
+            if idx >= len(live_refs):
+                continue
+            record = live_refs[idx]
+            if record in self.rows:
+                record["card"].destroy()
+                self.rows.remove(record)
+        # 重新編號剩餘列
+        for r in self.rows:
+            self._render_row(r)
+        self._refresh_after_change()
+
+        success = len(success_indices)
+        if success == total:
+            msg = f"✓ 完成 {success} 筆 — 已加入「待列印」與「貨運查詢」"
+            self.progress_lbl.config(text=msg, fg=OK)
+            self._log(f"── {msg} ──")
+        else:
+            fail = total - success
+            msg = f"完成 {success}/{total}；失敗 {fail} 筆已保留可重試"
+            self.progress_lbl.config(text=msg, fg=WARN)
+            self._log(f"── {msg} ──")
 
 
 # ─── t-cat status query ──────────────────────────────────────────────────────
@@ -3193,8 +3560,11 @@ class TrackingView(tk.Frame):
         import datetime
         records = load_tracking()
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
-        records = [r for r in records if r.get("created_at", "") >= cutoff]
-        records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        records = [r for r in records
+                   if _normalize_created_at(r.get("created_at", "")) >= cutoff]
+        records.sort(
+            key=lambda r: _normalize_created_at(r.get("created_at", "")),
+            reverse=True)
         self._records = records
 
         # update stats cards
@@ -3317,15 +3687,20 @@ class TrackingView(tk.Frame):
         btn_row = tk.Frame(f, bg=PAPER); btn_row.pack()
 
         def _do_cancel():
-            msg_lbl.config(text="取消中…", fg=MUTED)
+            msg_lbl.config(
+                text="取消中…黑貓 API 處理可能需 1~2 分鐘，請耐心等待",
+                fg=MUTED)
             for b in btn_row.winfo_children(): b.configure(state="disabled")
             cfg = load_cfg()
-            client = SudaClient(cfg.get("customer_id",""), cfg.get("customer_token",""))
+            client = make_client(cfg)
             def run():
                 try:
-                    resp = client.cancel_obt([obt])
-                    ok = resp.get("IsSuccess") or resp.get("Success") or \
-                         str(resp.get("ReturnCode","")) == "0000"
+                    resp = client.cancel_obt(obt)   # 傳 str（內部已處理）
+                    # 黑貓 API 回應格式：{"IsOK":"Y"|"N","Message":"...","Data":...}
+                    ok = (resp.get("IsOK") == "Y"
+                          or resp.get("IsSuccess")
+                          or resp.get("Success")
+                          or str(resp.get("ReturnCode","")) == "0000")
                     if ok:
                         _append_build_log(f"✗ 取消 OBT:{obt} 收件人:{name}")
                         records = load_tracking()
@@ -3336,16 +3711,20 @@ class TrackingView(tk.Frame):
                         self.after(0, lambda: (dlg.destroy(), self.refresh(),
                             messagebox.showinfo("取消成功", f"宅配單 {obt} 已成功取消。", parent=self)))
                     else:
-                        raw = resp.get("Message") or resp.get("ReturnMessage") or str(resp)
+                        raw = (resp.get("Message")
+                               or resp.get("ReturnMessage")
+                               or str(resp))
                         self.after(0, lambda m=raw: (
-                            msg_lbl.config(text=f"取消失敗：{m[:60]}", fg=ERR),
+                            msg_lbl.config(text=f"取消失敗：{m[:120]}", fg=ERR),
                             [b.configure(state="normal") for b in btn_row.winfo_children()]))
                 except Exception as ex:
                     msg = str(ex)
-                    if "500" in msg:
-                        hint = "此單無法透過 API 取消（可能已集貨、非本帳號建立、或單號不符）"
+                    if "timed out" in msg.lower():
+                        hint = "API 逾時（>180 秒未回應），請稍後再試或到客樂得手動取消"
+                    elif "500" in msg:
+                        hint = f"伺服器錯誤：{msg[:120]}"
                     else:
-                        hint = msg[:80]
+                        hint = msg[:120]
                     self.after(0, lambda h=hint: (
                         msg_lbl.config(text=h, fg=ERR),
                         [b.configure(state="normal") for b in btn_row.winfo_children()]))
@@ -3559,11 +3938,10 @@ class TrackingView(tk.Frame):
 
             new_obts = [obt for obt in merged
                         if obt not in existing_obts and obt not in deleted_obts]
-            # existing records that are missing sender_name also need a detail fetch
+            # 既有紀錄一律重抓一次 sender_name（強制覆寫過去同步錯誤的值）
             need_sender = [obt for obt in merged
                            if obt not in deleted_obts
-                           and obt in existing_map
-                           and not existing_map[obt].get("sender_name", "").strip()]
+                           and obt in existing_map]
             total_detail = len(new_obts) + len(need_sender)
             self.after(0, lambda t=total_detail: _show_detail_progress(t))
 
@@ -3604,19 +3982,22 @@ class TrackingView(tk.Frame):
                 if changed:
                     enriched += 1
 
-            # existing records missing sender_name — fetch TranBillDetail
+            # existing records — 重抓 TranBillDetail 並覆寫 sender_name
             for obt in need_sender:
                 rec = existing_map[obt]
                 try:
                     detail = self.app._web.fetch_obt_detail(obt)
                     sn = detail.get("sender_name", "").strip()
                     if sn:
-                        rec["sender_name"] = sn
-                        if not rec.get("recipient_name", "").strip():
-                            rec["recipient_name"] = detail.get("recipient_name", "")
-                        if not rec.get("notes", "").strip():
-                            rec["notes"] = detail.get("notes", "")
-                        enriched += 1
+                        old_sn = rec.get("sender_name", "")
+                        rec["sender_name"] = sn   # 強制覆寫
+                        if sn != old_sn:
+                            enriched += 1
+                    # 收件人 / 備註只在空白時補
+                    if not rec.get("recipient_name", "").strip():
+                        rec["recipient_name"] = detail.get("recipient_name", "")
+                    if not rec.get("notes", "").strip():
+                        rec["notes"] = detail.get("notes", "")
                 except Exception:
                     pass
                 done += 1
@@ -3652,7 +4033,8 @@ class TrackingView(tk.Frame):
         import datetime
         records = load_tracking()
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
-        kept = [r for r in records if r.get("created_at", "") >= cutoff]
+        kept = [r for r in records
+                if _normalize_created_at(r.get("created_at", "")) >= cutoff]
         removed = len(records) - len(kept)
         save_tracking(kept)
         self.refresh()
@@ -5685,7 +6067,7 @@ class EpbTransferView(tk.Frame):
                         "pdf_path":   pdf_path,
                     }
                     self._save_epb_log(log)
-                    append_tracking(obt, contact.get("name", to_name), doc_id)
+                    append_tracking(obt, contact.get("name", to_name), doc_id, sender.get("name", ""))
                     _append_build_log(f"✓ EPB OBT:{obt} 調撥:{doc_id}")
                     self.after(0, lambda d=doc_id, n=obt, p=pdf_path:
                                self._log(f"✓ {d}  OBT:{n}" + (f"  → {Path(p).name}" if p else "")))
@@ -5901,6 +6283,180 @@ class ContactSkipPickerDialog(tk.Toplevel):
             messagebox.showinfo("未選取", "請先勾選要加入的門市。", parent=self)
             return
         self.on_select(sorted(self._checked))
+        self.destroy()
+
+
+class MultiContactPickerDialog(tk.Toplevel):
+    """多筆建單用：複選通訊錄（門市 / 廠商），回呼完整 contact dict 清單。"""
+
+    def __init__(self, parent, on_select):
+        super().__init__(parent)
+        self.title("選擇收件人（多選）")
+        self.configure(bg=PAPER)
+        self.geometry("760x600")
+        self.minsize(640, 480)
+        self.grab_set()
+        self.on_select = on_select
+        self._contacts = load_contacts()
+        self._checked: list[int] = []  # indices into self._contacts
+        self._filter = "全部"  # 全部 / 門市 / 廠商
+        self._build()
+        self._refresh()
+
+    def _build(self):
+        wrap = tk.Frame(self, bg=PAPER, padx=20, pady=20)
+        wrap.pack(fill="both", expand=True)
+
+        # 底部按鈕（先 pack 防裁切）
+        ba = tk.Frame(wrap, bg=PAPER)
+        ba.pack(side="bottom", fill="x", pady=(12, 0))
+        TwButton(ba, "加入清單", variant="primary",
+                 command=self._confirm).pack(side="left", padx=(0, 8))
+        TwButton(ba, "取消", variant="ghost",
+                 command=self.destroy).pack(side="left")
+        self.status_lbl = tk.Label(ba, text="", font=F_TINY,
+                                    bg=PAPER, fg=MUTED, anchor="e")
+        self.status_lbl.pack(side="right")
+
+        # 標題
+        tk.Label(wrap, text="從通訊錄選擇收件人", font=F_TITLE,
+                 bg=PAPER, fg=INK).pack(anchor="w", pady=(0, 4))
+        tk.Label(wrap,
+                 text="勾選後按「加入清單」帶回多筆建單。同一聯絡人可重複加入（會自動加流水）。",
+                 font=F_TINY, bg=PAPER, fg=MUTED).pack(anchor="w", pady=(0, 10))
+
+        # 搜尋 + 類別 filter + 全選/全不選
+        ctrl = tk.Frame(wrap, bg=PAPER)
+        ctrl.pack(fill="x", pady=(0, 10))
+
+        sbar = tk.Frame(ctrl, bg=CARD, highlightbackground=HAIR, highlightthickness=1)
+        sbar.pack(side="left", fill="x", expand=True)
+        tk.Label(sbar, text="🔍", bg=CARD, fg=MUTED,
+                 font=F_NORM).pack(side="left", padx=(10, 4), pady=8)
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *_: self._refresh())
+        self._search_entry = tk.Entry(sbar, textvariable=self.search_var,
+                                       font=F_NORM, bg=CARD, fg=INK,
+                                       relief="flat", highlightthickness=0,
+                                       bd=0)
+        self._search_entry.pack(side="left", fill="x", expand=True, pady=8)
+        self.after(50, self._search_entry.focus_set)
+
+        fbar = tk.Frame(ctrl, bg=PAPER)
+        fbar.pack(side="left", padx=(10, 0))
+        self._filter_seg = Segment(fbar, options=["全部", "門市", "廠商"],
+                                   selected="全部",
+                                   on_change=self._on_filter_change,
+                                   height=30, button_width=56)
+        self._filter_seg.pack()
+
+        abar = tk.Frame(ctrl, bg=PAPER)
+        abar.pack(side="left", padx=(10, 0))
+        TwButton(abar, "全選", variant="ghost",
+                 command=self._select_all_visible).pack(side="left", padx=2)
+        TwButton(abar, "全不選", variant="ghost",
+                 command=self._clear_all).pack(side="left", padx=2)
+
+        # Treeview
+        cols = ["sel", "category", "code", "name", "address"]
+        labels = {"sel": "選取", "category": "類別", "code": "代碼",
+                  "name": "名稱", "address": "地址"}
+        widths = {"sel": 50, "category": 60, "code": 100,
+                  "name": 200, "address": 320}
+        tcard = tk.Frame(wrap, bg=HAIR); tcard.pack(fill="both", expand=True)
+        inner = tk.Frame(tcard, bg=CARD); inner.pack(fill="both", expand=True,
+                                                       padx=1, pady=1)
+        self.tree = ttk.Treeview(inner, columns=cols, show="headings",
+                                 style="Tw.Treeview", height=14)
+        for c in cols:
+            anchor = "center" if c in ("sel", "category", "code") else "w"
+            self.tree.heading(c, text=labels[c], anchor=anchor)
+            self.tree.column(c, width=widths[c], anchor=anchor)
+        vsb = ttk.Scrollbar(inner, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        _bind_mousewheel_on_hover(self.tree, self.tree)
+        self.tree.tag_configure("checked", foreground=OK)
+        self.tree.tag_configure("normal",  foreground=INK)
+        self.tree.bind("<Button-1>", self._on_row_click)
+        self.tree.bind("<Double-1>", self._on_row_click)
+
+    def _on_filter_change(self, val: str):
+        self._filter = val
+        self._refresh()
+
+    def _matches_filter(self, c: dict) -> bool:
+        if self._filter == "全部":
+            return True
+        cat = (c.get("category") or "").strip()
+        return cat == self._filter
+
+    def _matches_search(self, c: dict, keyword: str) -> bool:
+        if not keyword:
+            return True
+        haystack = " ".join(str(c.get(k, "")) for k in
+                            ("name", "store_id", "brand_id", "phone",
+                             "mobile", "address", "notes")).lower()
+        return keyword in haystack
+
+    def _refresh(self):
+        keyword = self.search_var.get().lower().strip()
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        shown = 0
+        for idx, c in enumerate(self._contacts):
+            if not self._matches_filter(c):
+                continue
+            if not self._matches_search(c, keyword):
+                continue
+            checked = idx in self._checked
+            tag = "checked" if checked else "normal"
+            sel = "☑" if checked else "☐"
+            code = (c.get("store_id") or c.get("brand_id") or "").strip()
+            self.tree.insert("", "end", iid=str(idx), tags=(tag,),
+                             values=[sel, c.get("category") or "—",
+                                     code, c.get("name", ""),
+                                     c.get("address", "")])
+            shown += 1
+        self.status_lbl.config(
+            text=f"顯示 {shown} · 已勾選 {len(self._checked)}",
+            fg=MUTED)
+
+    def _on_row_click(self, event):
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return
+        idx = int(row_id)
+        if idx in self._checked:
+            self._checked.remove(idx)
+        else:
+            self._checked.append(idx)
+        self._refresh()
+
+    def _select_all_visible(self):
+        keyword = self.search_var.get().lower().strip()
+        for idx, c in enumerate(self._contacts):
+            if not self._matches_filter(c):
+                continue
+            if not self._matches_search(c, keyword):
+                continue
+            if idx not in self._checked:
+                self._checked.append(idx)
+        self._refresh()
+
+    def _clear_all(self):
+        self._checked = []
+        self._refresh()
+
+    def _confirm(self):
+        if not self._checked:
+            messagebox.showinfo("未選取", "請先勾選要加入的收件人。", parent=self)
+            return
+        picked = [self._contacts[i] for i in self._checked]
+        self.on_select(picked)
         self.destroy()
 
 

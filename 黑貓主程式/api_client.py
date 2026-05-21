@@ -34,7 +34,7 @@ _ssl_ctx.check_hostname = False
 _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 
-def _post(endpoint: str, payload: dict) -> dict:
+def _post(endpoint: str, payload: dict, timeout: int = 15) -> dict:
     url = f"{API_BASE}/{endpoint}"
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
@@ -44,7 +44,7 @@ def _post(endpoint: str, payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, context=_ssl_ctx, timeout=15) as r:
+        with urllib.request.urlopen(req, context=_ssl_ctx, timeout=timeout) as r:
             body = r.read().decode("utf-8")
             return json.loads(body)
     except urllib.error.HTTPError as e:
@@ -104,17 +104,27 @@ class SudaClient:
         }
         return _post("PrintOBT", payload)
 
-    def cancel_obt(self, obt_numbers: list[str], cancel_type: str = "01") -> dict:
+    def cancel_obt(self, obt_numbers, cancel_type: str = "01") -> dict:
         """
         取消託運單。
         cancel_type: 01=取消
+
+        實測：黑貓 server 處理 CancelOBT 可能需要 100+ 秒；OBTNumber 須為
+        字串（傳 list 會回 HTTP 500 空 body）。
         """
+        # 接受 list 或 str，內部一律轉為單一字串呼叫
+        if isinstance(obt_numbers, (list, tuple)):
+            if not obt_numbers:
+                raise ValueError("obt_numbers 不可為空")
+            obt = str(obt_numbers[0]).strip()
+        else:
+            obt = str(obt_numbers).strip()
         payload = {
             **self._auth(),
             "CancelType": cancel_type,
-            "OBTNumber": obt_numbers,
+            "OBTNumber": obt,
         }
-        return _post("CancelOBT", payload)
+        return _post("CancelOBT", payload, timeout=180)
 
     def download_obt(self, file_no: str) -> bytes:
         """
