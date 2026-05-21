@@ -3620,11 +3620,11 @@ class TrackingView(tk.Frame):
             slbl.bind("<Enter>", lambda e, t=queried: slbl.config(text=f"查詢 {t[11:16]}"))
             slbl.bind("<Leave>", lambda e, s=status: slbl.config(text=f"● {s}"))
 
-        tk.Label(inner, text=snt,    font=F_TINY, bg=CARD, fg=MUTED, anchor="w").grid(row=0, column=1, sticky="ew", padx=(10, 4), pady=2)
-        tk.Label(inner, text=obt,    font=F_MONO, bg=CARD, fg=INK,   anchor="w").grid(row=0, column=2, sticky="ew", padx=(10, 4), pady=2)
-        tk.Label(inner, text=name,   font=F_NORM, bg=CARD, fg=INK,   anchor="w").grid(row=0, column=3, sticky="ew", padx=(10, 4), pady=2)
-        tk.Label(inner, text=sender, font=F_TINY, bg=CARD, fg=INK2,  anchor="w").grid(row=0, column=4, sticky="ew", padx=(10, 4), pady=2)
-        tk.Label(inner, text=notes,  font=F_TINY, bg=CARD, fg=MUTED, anchor="w").grid(row=0, column=5, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=snt,    font=F_TINY, bg=CARD, fg=MUTED, anchor="w", width=10).grid(row=0, column=1, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=obt,    font=F_MONO, bg=CARD, fg=INK,   anchor="w", width=15).grid(row=0, column=2, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=name,   font=F_NORM, bg=CARD, fg=INK,   anchor="w", width=18).grid(row=0, column=3, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=sender, font=F_TINY, bg=CARD, fg=INK2,  anchor="w", width=15).grid(row=0, column=4, sticky="ew", padx=(10, 4), pady=2)
+        tk.Label(inner, text=notes,  font=F_TINY, bg=CARD, fg=MUTED, anchor="w", width=18).grid(row=0, column=5, sticky="ew", padx=(10, 4), pady=2)
 
         btns = tk.Frame(inner, bg=CARD)
         btns.grid(row=0, column=6, sticky="e", padx=(4, 8), pady=2)
