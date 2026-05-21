@@ -3933,30 +3933,35 @@ class TrackingView(tk.Frame):
 
             new_obts = [obt for obt in merged
                         if obt not in existing_obts and obt not in deleted_obts]
-            total_detail = len(new_obts)
+            # existing records that are missing sender_name also need a detail fetch
+            need_sender = [obt for obt in merged
+                           if obt not in deleted_obts
+                           and obt in existing_map
+                           and not existing_map[obt].get("sender_name", "").strip()]
+            total_detail = len(new_obts) + len(need_sender)
             self.after(0, lambda t=total_detail: _show_detail_progress(t))
 
             added    = 0
             enriched = 0
             done     = 0
 
-            # 從配置取寄件人名稱
+            # 從配置取寄件人名稱（查詢結果沒有時使用）
             cfg = load_cfg()
             cfg_sender_name = cfg.get("sender", {}).get("name", "")
 
-            # new records — fetch TranBillDetail for recipient_name + fallbacks
+            # new records — fetch TranBillDetail for sender_name + fallbacks
             for obt in new_obts:
                 rec = dict(merged[obt])
                 try:
                     detail = self.app._web.fetch_obt_detail(obt)
-                    # 寄件人來自配置
-                    rec["sender_name"] = cfg_sender_name
+                    # 優先使用 TranBillDetail 中的寄件人，無則用配置
+                    rec["sender_name"] = detail.get("sender_name", "") or cfg_sender_name
                     if not rec["recipient_name"]:
                         rec["recipient_name"] = detail.get("recipient_name", "")
                     if not rec["notes"]:
                         rec["notes"] = detail.get("notes", "")
                 except Exception:
-                    pass
+                    rec["sender_name"] = cfg_sender_name
                 done += 1
                 self.after(0, lambda d=done, t=total_detail: _update_progress(d, t))
                 existing.append(rec)
@@ -3975,13 +3980,26 @@ class TrackingView(tk.Frame):
                     if not rec.get(field, "").strip() and m.get(src, "").strip():
                         rec[field] = m[src]
                         changed = True
-                # 同時更新 sender_name 為配置中的寄件人
-                old_sender = rec.get("sender_name", "")
-                rec["sender_name"] = cfg_sender_name
-                if cfg_sender_name != old_sender:
-                    changed = True
                 if changed:
                     enriched += 1
+
+            # existing records missing sender_name — fetch TranBillDetail
+            for obt in need_sender:
+                rec = existing_map[obt]
+                try:
+                    detail = self.app._web.fetch_obt_detail(obt)
+                    sn = detail.get("sender_name", "").strip() or cfg_sender_name
+                    if sn:
+                        rec["sender_name"] = sn
+                        if not rec.get("recipient_name", "").strip():
+                            rec["recipient_name"] = detail.get("recipient_name", "")
+                        if not rec.get("notes", "").strip():
+                            rec["notes"] = detail.get("notes", "")
+                        enriched += 1
+                except Exception:
+                    rec["sender_name"] = cfg_sender_name
+                done += 1
+                self.after(0, lambda d=done, t=total_detail: _update_progress(d, t))
 
             if added or enriched:
                 save_tracking(existing)
