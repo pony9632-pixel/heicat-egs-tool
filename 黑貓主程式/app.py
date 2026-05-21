@@ -95,7 +95,7 @@ def _append_build_log(msg: str):
     pass
 
 
-VERSION     = "2.3.0"
+VERSION     = "v2.4.0"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Cool Glass palette (Tahoe-inspired) ────────────────────────────────────
