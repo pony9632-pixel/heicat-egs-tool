@@ -747,6 +747,11 @@ class App(tk.Tk):
                         app_bundle.rename(backup)
                         app_bundle.with_suffix(".app.new").rename(app_bundle)
                         shutil.rmtree(str(backup), ignore_errors=True)
+                    # 清除 quarantine，避免 macOS Gatekeeper 擋住更新後的 .app
+                    subprocess.run(
+                        ["xattr", "-dr", "com.apple.quarantine", str(app_bundle)],
+                        capture_output=True,
+                    )
                 else:
                     # 源碼模式：覆蓋程式目錄，保留用戶資料
                     dst_root = Path(__file__).parent.parent
