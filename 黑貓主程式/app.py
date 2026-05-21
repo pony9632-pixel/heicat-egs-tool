@@ -18,6 +18,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, font as _tkfont, messagebox, scrolledtext, ttk
+import customtkinter as ctk
 
 import yaml
 
@@ -333,118 +334,28 @@ def make_client(cfg: dict) -> SudaClient:
 
 # ─── primitives ──────────────────────────────────────────────────────────────
 
-class TwButton(tk.Canvas):
-    """Pill-shaped button (spec v3). variant: primary | default | ghost | danger | accent"""
-    _PADX = 18
-    _PADY = 9
+class TwButton(ctk.CTkButton):
+    """Pill button (CustomTkinter). variant: primary | default | ghost | danger | accent"""
+
+    _VCFG: dict = {}  # populated after color constants are defined (see below)
 
     def __init__(self, master, text, command=None, variant="default", **kw):
-        self._outer_bg = kw.pop("bg", None) or _frame_bg(master)
-        kw.pop("width", None)   # ignore legacy char-width param
-        self.command = command
+        kw.pop("bg", None)
+        kw.pop("width", None)
         self.variant = variant
-        self._enabled = True
-        self._hovering = False
-        self._text_str = text
-        self._font = F_BOLD
-        self._configure_colors()
-        # Measure natural size from font metrics
-        _f = _tkfont.Font(family=self._font[0], size=self._font[1], weight="bold")
-        _w = _f.measure(text) + self._PADX * 2
-        _h = _f.metrics("linespace") + self._PADY * 2
-        super().__init__(master, width=_w, height=_h,
-                         bg=self._outer_bg, highlightthickness=0, bd=0, **kw)
-        self._draw()
-        self.bind("<Configure>", lambda e: self._draw())
-        self.bind("<Enter>",     self._on_enter)
-        self.bind("<Leave>",     self._on_leave)
-        self.bind("<Button-1>",  self._on_click)
-        self.configure(cursor="hand2")
-
-    def _configure_colors(self):
-        v = self.variant
-        if v == "primary":
-            self._bg, self._fg = INK, "#FFFFFF"
-            self._bg_h, self._fg_h = "#2A3142", "#FFFFFF"
-            self._border = None
-        elif v == "ghost":
-            self._bg, self._fg = self._outer_bg, INK2
-            self._bg_h, self._fg_h = RAIL, INK
-            self._border = None
-        elif v == "danger":
-            self._bg, self._fg = CARD, ERR
-            self._bg_h, self._fg_h = ERR2, ERR
-            self._border = "#F2D6D3"
-        elif v == "accent":
-            self._bg, self._fg = ACCENT2, ACCENT
-            self._bg_h, self._fg_h = "#F5D3D0", "#B5342A"
-            self._border = None
-        else:  # default
-            self._bg, self._fg = CARD, INK
-            self._bg_h, self._fg_h = "#F4F6FA", INK
-            self._border = HAIR
-
-    def _draw(self):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w <= 1 or h <= 1:
-            self.after(10, self._draw)
-            return
-        active = self._hovering and self._enabled
-        bg = self._bg_h if active else self._bg
-        fg = (self._fg_h if active else self._fg) if self._enabled else MUTED
-        d = h  # circle diameter = height for true pill
-        # Fill: two end-caps + center rectangle
-        self.create_oval(0, 0, d, d, fill=bg, outline="")
-        self.create_oval(w - d, 0, w, d, fill=bg, outline="")
-        self.create_rectangle(d // 2, 0, w - d // 2, h, fill=bg, outline="")
-        # Border outline for default/danger (only when not hovered)
-        if self._border and not active:
-            bc = self._border
-            self.create_arc(0, 0, d, d,
-                            start=90, extent=180, style="arc", outline=bc, width=1)
-            self.create_arc(w - d, 0, w, d,
-                            start=270, extent=180, style="arc", outline=bc, width=1)
-            self.create_line(d // 2, 0,   w - d // 2, 0,   fill=bc, width=1)
-            self.create_line(d // 2, h-1, w - d // 2, h-1, fill=bc, width=1)
-        self.create_text(w // 2, h // 2, text=self._text_str,
-                         font=self._font, fill=fg, anchor="center")
-
-    def _on_enter(self, e=None):
-        if not self._enabled:
-            return
-        self._hovering = True
-        self._draw()
-
-    def _on_leave(self, e=None):
-        self._hovering = False
-        self._draw()
-
-    def _on_click(self, e=None):
-        if self._enabled and self.command:
-            self.command()
+        cfg = dict(self._VCFG.get(variant, self._VCFG["default"]))
+        cfg["text_color_disabled"] = MUTED
+        super().__init__(master, text=text, command=command,
+                         corner_radius=999,
+                         font=(FONT_FAMILY, _sz(13), "bold"),
+                         height=36,
+                         **cfg, **kw)
 
     def set_text(self, t):
-        self._text_str = t
-        # Resize Canvas to fit new text
-        _f = _tkfont.Font(family=self._font[0], size=self._font[1], weight="bold")
-        new_w = _f.measure(t) + self._PADX * 2
-        tk.Canvas.configure(self, width=new_w)
-        self._draw()
+        self.configure(text=t)
 
     def set_enabled(self, enabled: bool):
-        self._enabled = bool(enabled)
-        tk.Canvas.configure(self, cursor="hand2" if enabled else "arrow")
-        self._draw()
-
-    def configure(self, **kw):
-        # Intercept 'state' so legacy code using state="disabled"/"normal" still works
-        state = kw.pop("state", None)
-        if state is not None:
-            self.set_enabled(state != "disabled")
-        if kw:
-            tk.Canvas.configure(self, **kw)
+        self.configure(state="normal" if enabled else "disabled")
 
 
 def _frame_bg(widget):
@@ -455,6 +366,16 @@ def _frame_bg(widget):
             return widget.cget("background")
         except tk.TclError:
             return PAPER
+
+
+# Populate TwButton variant config after color constants are defined
+TwButton._VCFG = {
+    "primary": dict(fg_color=INK,     hover_color="#2A3142",  text_color="#FFFFFF", border_width=0),
+    "ghost":   dict(fg_color="transparent", hover_color=RAIL, text_color=INK2,      border_width=0),
+    "danger":  dict(fg_color=CARD,    hover_color=ERR2,       text_color=ERR,       border_color="#F2D6D3", border_width=1),
+    "accent":  dict(fg_color=ACCENT2, hover_color="#F5D3D0",  text_color=ACCENT,    border_width=0),
+    "default": dict(fg_color=CARD,    hover_color="#F4F6FA",  text_color=INK,       border_color=HAIR,      border_width=1),
+}
 
 
 class Card(tk.Frame):
@@ -5734,6 +5655,8 @@ class EpbUnlockDialog(tk.Toplevel):
 # ─── entry ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    ctk.set_appearance_mode("light")
+    ctk.set_default_color_theme("blue")
     _ensure_data_dir()
     app = App()
     app.mainloop()
