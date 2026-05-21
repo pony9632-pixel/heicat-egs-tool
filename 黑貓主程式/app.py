@@ -3505,8 +3505,9 @@ class TrackingView(tk.Frame):
         _apply_trk_grid(hdr)
         for i, (txt, mn, w) in enumerate(_TRK_GCOLS):
             if txt:
+                widths = [1, 10, 15, 18, 15, 18, 1]  # 對應各列 width
                 tk.Label(hdr, text=txt, font=F_KICKER, bg=PAPER2, fg=MUTED,
-                         anchor="w").grid(row=0, column=i, sticky="ew", padx=(10, 4), pady=8)
+                         anchor="w", width=widths[i] if i < len(widths) else 1).grid(row=0, column=i, sticky="ew", padx=(10, 4), pady=8)
         Hairline(tcard.body).pack(fill="x")
 
         # scrollable list
