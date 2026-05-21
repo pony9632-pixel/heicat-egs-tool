@@ -3,7 +3,7 @@
 # 用法：./release.sh 1.6.2 "版本說明（可省略）"
 set -e
 
-VERSION=$1
+VERSION=${1#v}   # 去掉開頭的 v，統一存純數字版號 x.y.z
 NOTES=${2:-""}
 
 if [ -z "$VERSION" ]; then
@@ -12,6 +12,7 @@ if [ -z "$VERSION" ]; then
 fi
 
 APP_PY="黑貓主程式/app.py"
+SPEC_FILE="黑貓宅急便工具.spec"
 
 # 1. 確認 git 工作目錄乾淨（排除 config.yaml / contacts.json）
 DIRTY=$(git status --porcelain | grep -v "config.yaml" | grep -v "contacts.json" | grep -v "^??" || true)
@@ -21,8 +22,10 @@ if [ -n "$DIRTY" ]; then
   exit 1
 fi
 
-# 2. 更新 app.py 裡的 VERSION 字串
+# 2. 更新 app.py 裡的 VERSION 字串 + spec 裡的 bundle version
 sed -i '' "s/^VERSION     = \".*\"/VERSION     = \"$VERSION\"/" "$APP_PY"
+sed -i '' "s/\"CFBundleShortVersionString\": \".*\"/\"CFBundleShortVersionString\": \"$VERSION\"/" "$SPEC_FILE"
+sed -i '' "s/\"CFBundleVersion\":            \".*\"/\"CFBundleVersion\":            \"$VERSION\"/" "$SPEC_FILE"
 echo "✓ VERSION → $VERSION"
 
 # 3. 確認語法正確
@@ -30,7 +33,7 @@ python3 -c "import ast; ast.parse(open('$APP_PY').read())" || { echo "❌ 語法
 echo "✓ 語法檢查通過"
 
 # 4. Commit + Push
-git add "$APP_PY"
+git add "$APP_PY" "$SPEC_FILE"
 git commit -m "release: v$VERSION"
 git push origin HEAD:main
 echo "✓ 推送完成"

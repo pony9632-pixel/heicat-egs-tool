@@ -666,6 +666,9 @@ class App(tk.Tk):
     # ── startup version check ────────────────────────────────────────────────
 
     def _startup_check(self):
+        if not load_cfg().get("check_updates", True):
+            self.after(0, self._init_ui)
+            return
         just_updated = "--just-updated" in sys.argv
         frozen = getattr(sys, "frozen", False)
         try:
@@ -679,7 +682,7 @@ class App(tk.Tk):
                 data = json.loads(r.read())
             tag = data.get("tag_name", "").lstrip("v")
             if tag:
-                current = tuple(int(x) for x in VERSION.split("."))
+                current = tuple(int(x) for x in VERSION.lstrip("v").split("."))
                 latest  = tuple(int(x) for x in tag.split("."))
                 if latest > current:
                     if just_updated:
@@ -688,10 +691,10 @@ class App(tk.Tk):
                         return
                     html = data.get("html_url", "")
                     if frozen:
-                        # frozen .app：從 release assets 找 .app.zip
+                        # frozen .app：從 release assets 找 .app.zip（不依賴中文檔名）
                         assets = data.get("assets", [])
                         asset = next(
-                            (a for a in assets if a["name"] == "黑貓宅急便工具.app.zip"),
+                            (a for a in assets if a["name"].endswith(".app.zip")),
                             None,
                         )
                         if not asset:
