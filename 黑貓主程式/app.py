@@ -3982,17 +3982,12 @@ class TrackingView(tk.Frame):
                 if changed:
                     enriched += 1
 
-            # existing records — 重抓 TranBillDetail 並覆寫 sender_name
+            # existing records — 重抓 TranBillDetail（不覆寫 sender_name，保留建單時的值）
             for obt in need_sender:
                 rec = existing_map[obt]
                 try:
                     detail = self.app._web.fetch_obt_detail(obt)
-                    sn = detail.get("sender_name", "").strip()
-                    if sn:
-                        old_sn = rec.get("sender_name", "")
-                        rec["sender_name"] = sn   # 強制覆寫
-                        if sn != old_sn:
-                            enriched += 1
+                    # sender_name 只來自建單時的輸入（FuncNo=135），不從 TranBillDetail 覆寫
                     # 收件人 / 備註只在空白時補
                     if not rec.get("recipient_name", "").strip():
                         rec["recipient_name"] = detail.get("recipient_name", "")
