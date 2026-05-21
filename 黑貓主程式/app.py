@@ -73,7 +73,11 @@ def _ensure_data_dir():
 # paths — all relative to get_data_dir(), evaluated at call time
 def _cfg_path()              -> Path: return get_data_dir() / "config.yaml"
 def _contacts_path()         -> Path: return get_data_dir() / "contacts.json"
-def _default_contacts_path() -> Path: return get_data_dir() / "default_contacts.json"
+def _default_contacts_path() -> Path:
+    """預設通訊錄隨 app 出貨，不放 data dir，確保每次更新都覆蓋到最新版。"""
+    if getattr(sys, "frozen", False):          # PyInstaller 打包版
+        return Path(sys.executable).parent / "default_contacts.json"
+    return Path(__file__).parent / "default_contacts.json"  # 開發 / 源碼模式
 def _tracking_path()         -> Path: return get_data_dir() / "tracking.json"
 def _deleted_path()          -> Path: return get_data_dir() / "deleted_obts.json"
 def _epb_log_path()          -> Path: return get_data_dir() / "epb_transfer_log.json"
@@ -95,7 +99,7 @@ def _append_build_log(msg: str):
     pass
 
 
-VERSION     = "2.4.4"
+VERSION     = "2.4.5"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Cool Glass palette (Tahoe-inspired) ────────────────────────────────────
@@ -882,14 +886,7 @@ class App(tk.Tk):
             v.place(relx=0, rely=0, relwidth=1, relheight=1)
 
         self.show_view("single")
-        self.bind_all("<Command-1>", lambda e: self.show_view("single"))
-        self.bind_all("<Command-2>", lambda e: self.show_view("print_queue"))
-        self.bind_all("<Command-3>", lambda e: self.show_view("batch"))
-        self.bind_all("<Command-4>", lambda e: self.show_view("tracking"))
-        self.bind_all("<Command-5>", lambda e: self.show_view("freight"))
-        self.bind_all("<Command-6>", lambda e: self.show_view("contacts"))
-        self.bind_all("<Command-7>", lambda e: self.show_view("settings"))
-        self.bind_all("<Command-8>", lambda e: self.show_view("epb_transfer"))
+        # ⌘1~8 導覽捷徑改由 _keycode_guard 處理（支援注音 IME）
         # 隱藏快捷鍵：EPB 進階功能解鎖／鎖定入口（不顯示在任何 UI 上）
         self.bind_all("<Command-Option-e>", lambda e: self._open_epb_unlock_dialog())
         self.bind_all("<Command-Option-E>", lambda e: self._open_epb_unlock_dialog())
@@ -1035,14 +1032,32 @@ class App(tk.Tk):
             self.bind_class(_cls, "<Command-a>", _guarded(_do_select_all))
 
         _KC = {9: _do_paste, 8: _do_copy, 7: _do_cut, 0: _do_select_all}
+        # macOS Carbon virtual keycodes for 1-8（注音模式下 keysym 失效，只能靠 keycode）
+        # 注意：5 的 keycode=23，6 的 keycode=22（非連續，為 Mac 鍵盤硬體排列）
+        _NAV_KC = {
+            18: "single",       # 1
+            19: "batch",        # 2
+            20: "epb_transfer", # 3
+            21: "print_queue",  # 4
+            23: "tracking",     # 5
+            22: "freight",      # 6
+            26: "contacts",     # 7
+            28: "settings",     # 8
+        }
         def _keycode_guard(e):
             kc = e.keycode
             # 英文模式 keycode 直接命中；注音模式 Tk 認不出 keysym，會把硬體 keycode 塞到最高 byte
-            fn = _KC.get(kc) or _KC.get((kc >> 24) & 0xFF)
-            if fn is None: return
-            now = _time.time()
-            if now - _last_t[0] < 0.05: return "break"
-            _last_t[0] = now; fn(); return "break"
+            raw = kc if kc < 0x1000000 else (kc >> 24) & 0xFF
+            fn = _KC.get(kc) or _KC.get(raw)
+            if fn is not None:
+                now = _time.time()
+                if now - _last_t[0] < 0.05: return "break"
+                _last_t[0] = now; fn(); return "break"
+            # ⌘1~8 導覽捷徑（keycode 方式，穿透注音 IME）
+            view = _NAV_KC.get(raw)
+            if view:
+                self.show_view(view)
+                return "break"
         self.bind_all("<Command-KeyPress>", _keycode_guard, add="+")
         def _keycode_guard_state(e):
             if not (e.state & 8): return
@@ -1393,13 +1408,13 @@ def _load_logo(px: int = 36):
 
 _NAV_ITEMS = [
     ("single",        "建立寄件單",   "1", "📤"),
-    ("print_queue",   "待列印貨運單", "2", "🖨"),
-    ("batch",         "批次建單",     "3", "☰"),
-    ("tracking",      "貨運查詢",     "4", "⊙"),
-    ("freight",       "費用查詢",     "5", "💳"),
-    ("contacts",      "通訊錄",       "6", "⊞"),
-    ("epb_transfer",  "EPB 調撥",     "8", "📦"),
-    ("settings",      "設定",         "7", "⚙"),
+    ("batch",         "多筆建單",     "2", "☰"),
+    ("epb_transfer",  "EPB 調撥",     "3", "📦"),
+    ("print_queue",   "待列印貨運單", "4", "🖨"),
+    ("tracking",      "貨運查詢",     "5", "⊙"),
+    ("freight",       "費用查詢",     "6", "💳"),
+    ("contacts",      "通訊錄",       "7", "⊞"),
+    ("settings",      "設定",         "8", "⚙"),
 ]
 
 class Sidebar(tk.Frame):
@@ -1719,7 +1734,7 @@ class NavItem(tk.Frame):
 _VIEW_NAMES = {
     "single":       "建立寄件單",
     "print_queue":  "待列印貨運單",
-    "batch":        "批次建單",
+    "batch":        "多筆建單",
     "tracking":     "貨運查詢",
     "freight":      "費用查詢",
     "contacts":     "通訊錄",
@@ -2705,7 +2720,7 @@ class BatchOrderView(tk.Frame):
 
         # header
         head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 16))
-        SectionHeader(head, "CSV 匯入", "批次建單").pack(side="left")
+        SectionHeader(head, "CSV 匯入", "多筆建單").pack(side="left")
         ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
         TwButton(ba, "產生 CSV 範本", variant="default",
                  command=self._gen_template).pack(side="left", padx=4)
@@ -3023,6 +3038,7 @@ class TrackingView(tk.Frame):
         self._status_labels: dict[str, tk.Label] = {}
         self._filter_btns: dict[str, tk.Label] = {}
         self._count_lbls: dict[str, tk.Label] = {}
+        self._last_sync_ts: float = 0   # epoch，用於自動同步冷卻
         self._build()
 
     def _build(self):
@@ -3118,6 +3134,8 @@ class TrackingView(tk.Frame):
         refresh_btn.bind("<Button-1>", lambda e: self.refresh())
         refresh_btn.bind("<Enter>", lambda e: refresh_btn.config(fg=INK))
         refresh_btn.bind("<Leave>", lambda e: refresh_btn.config(fg=MUTED))
+        self._last_sync_lbl = tk.Label(tab_bar, text="尚未同步", font=F_TINY, bg=CARD, fg=MUTED)
+        self._last_sync_lbl.pack(side="right", padx=(0, 4))
         Hairline(tcard.body).pack(fill="x")
 
         # column header
@@ -3166,6 +3184,10 @@ class TrackingView(tk.Frame):
 
     def on_show(self):
         self.refresh()
+        # 進入頁面自動靜默查詢狀態（距上次查詢超過 5 分鐘才觸發）
+        import time as _t
+        if (_t.time() - self._last_sync_ts) > 300:
+            self._query_all(silent=True)
 
     def refresh(self):
         import datetime
@@ -3378,7 +3400,7 @@ class TrackingView(tk.Frame):
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _query_all(self):
+    def _query_all(self, silent: bool = False):
         obts = [r.get("obt_number") for r in self._records
                 if r.get("obt_number") and r.get("status") != "順利送達"]
         for obt in obts:
@@ -3390,8 +3412,15 @@ class TrackingView(tk.Frame):
             for obt in obts:
                 result = _fetch_obt_status(obt)
                 self.after(0, lambda _o=obt, _r=result: self._set_status(_o, _r))
-            self.after(0, lambda: messagebox.showinfo(
-                "查詢完成", f"已完成 {len(obts)} 筆托運單狀態查詢。"))
+            import datetime, time as _t
+            self._last_sync_ts = _t.time()
+            def _done(n=len(obts)):
+                import datetime
+                now_str = datetime.datetime.now().strftime("%H:%M")
+                self._last_sync_lbl.config(text=f"最後更新 {now_str}")
+                if not silent:
+                    messagebox.showinfo("查詢完成", f"已完成 {n} 筆托運單狀態查詢。")
+            self.after(0, _done)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -3399,11 +3428,12 @@ class TrackingView(tk.Frame):
         self.clipboard_clear()
         self.clipboard_append(text)
 
-    def _sync_from_web(self):
+    def _sync_from_web(self, silent: bool = False):
         """Pull the last 14 days of OBT records from the web portal and merge into tracking.json."""
         if self.app._web is None:
-            messagebox.showinfo("尚未登入",
-                "請先到「費用查詢」頁完成契客專區登入，再回來同步。")
+            if not silent:
+                messagebox.showinfo("尚未登入",
+                    "請先到「費用查詢」頁完成契客專區登入，再回來同步。")
             return
 
         import datetime, threading
@@ -3594,19 +3624,27 @@ class TrackingView(tk.Frame):
 
             if added or enriched:
                 save_tracking(existing)
-            self.after(0, _hide_progress)
-            self.after(0, self.refresh)
 
-            total_rows = len(merged)
-            def _msg(n=added, e=enriched, t=total_rows):
-                parts = []
-                if n: parts.append(f"新增 {n} 筆")
-                if e: parts.append(f"補填資料 {e} 筆")
-                detail_line = "、".join(parts) if parts else "皆已是最新紀錄"
-                return (f"同步範圍：{start_label} ～ {end_label}\n"
-                        f"共抓到 {t} 筆，{detail_line}。\n\n即將自動查詢所有配送狀態…")
-            self.after(0, lambda: messagebox.showinfo("同步完成", _msg()))
-            self.after(200, self._query_all)
+            import time as _t
+            self._last_sync_ts = _t.time()
+
+            def _finish(n=added, e=enriched, t=len(merged)):
+                _hide_progress()
+                self.refresh()
+                import datetime
+                now_str = datetime.datetime.now().strftime("%H:%M")
+                self._last_sync_lbl.config(text=f"最後更新 {now_str}")
+                if not silent:
+                    parts = []
+                    if n: parts.append(f"新增 {n} 筆")
+                    if e: parts.append(f"補填資料 {e} 筆")
+                    detail_line = "、".join(parts) if parts else "皆已是最新紀錄"
+                    msg = (f"同步範圍：{start_label} ～ {end_label}\n"
+                           f"共抓到 {t} 筆，{detail_line}。\n\n即將自動查詢所有配送狀態…")
+                    messagebox.showinfo("同步完成", msg)
+                self.after(200, self._query_all)
+
+            self.after(0, _finish)
 
         threading.Thread(target=run, daemon=True).start()
 
