@@ -21,6 +21,8 @@ from tkinter import filedialog, font as _tkfont, messagebox, scrolledtext, ttk
 import customtkinter as ctk
 
 import yaml
+from theme import LIGHT as T
+import tokens as TOK
 
 from api_client import SudaClient, save_pdf, default_shipment_date, default_delivery_date, _skip_sunday
 from web_client import TakkyubinWebClient
@@ -122,6 +124,8 @@ RAIL    = "#E9EDF3"   # Sidebar 底
 RAIL2   = "#DBE0E8"   # Sidebar hover
 INPUT_BG     = "#F4F6FA"   # Field / Select 背景
 INPUT_BORDER = "#DCE1EA"   # Field border
+SUMMARY_BG   = "#F4F6FA"   # strip / chip 底色
+SEG_BG       = "#E2E7EE"   # Segment 容器底色
 
 import platform
 _IS_MAC = platform.system() == "Darwin"
@@ -359,6 +363,9 @@ class TwButton(ctk.CTkButton):
 
 
 def _frame_bg(widget):
+    if isinstance(widget, ctk.CTkBaseClass):
+        col = widget.cget("fg_color")
+        return col[0] if isinstance(col, (list, tuple)) else col
     try:
         return widget.cget("bg")
     except tk.TclError:
@@ -378,20 +385,151 @@ TwButton._VCFG = {
 }
 
 
-class Card(tk.Frame):
-    """White card — 3-layer frame simulates spec §14 shadow: outer glow → hairline → white."""
+class Card(ctk.CTkFrame):
+    """White card with true r=14 rounded corners and hairline border (CTkFrame)."""
     def __init__(self, master, padding=20, **kw):
-        # outer: PAPER2 soft-glow ring (4px all sides)
-        super().__init__(master, bg=PAPER2, highlightthickness=0, **kw)
-        # middle: HAIR hairline outline (1px)
-        _mid = tk.Frame(self, bg=HAIR)
-        _mid.pack(fill="both", expand=True, padx=3, pady=3)
-        # inner: white surface
-        self.inner = tk.Frame(_mid, bg=CARD)
-        self.inner.pack(fill="both", expand=True, padx=1, pady=1)
+        for _k in ("highlightthickness", "highlightbackground", "relief", "bd", "bg"):
+            kw.pop(_k, None)
+        super().__init__(master,
+                         fg_color=CARD,
+                         corner_radius=16,
+                         border_width=1,
+                         border_color=HAIR,
+                         **kw)
+        self.inner = self
         self._pad = padding
-        self.body = tk.Frame(self.inner, bg=CARD)
+        self.body = tk.Frame(self, bg=CARD)
         self.body.pack(fill="both", expand=True, padx=padding, pady=padding)
+
+
+class Segment(tk.Frame):
+    """Pill-style single-select segmented control.
+
+    Selected pill = white (CARD) floating on SEG_BG container.
+    """
+
+    def __init__(self, parent, options: list, selected: str = "",
+                 on_change=None, height: int = 30, button_width=None, **kw):
+        bg = _frame_bg(parent)
+        super().__init__(parent, bg=bg, **kw)
+        self._opts = list(options)
+        self._val = selected if selected in options else ""
+        self._on_change = on_change
+        self._btns: dict = {}
+        container_radius = min(12, max(8, height // 2))
+        button_radius = min(12, max(8, height // 2))
+
+        self._container = ctk.CTkFrame(
+            self, fg_color=SEG_BG, corner_radius=container_radius,
+            border_width=1, border_color=HAIR,
+        )
+        self._container.pack()
+
+        for opt in options:
+            btn_kw = {}
+            if button_width is not None:
+                btn_kw["width"] = button_width
+            btn = ctk.CTkButton(
+                self._container, text=opt,
+                font=(FONT_FAMILY, _sz(12), "normal"),
+                fg_color=SEG_BG, hover_color="#D8DDE5",
+                text_color=INK3, border_width=0,
+                corner_radius=button_radius, height=height,
+                command=lambda o=opt: self._select(o),
+                **btn_kw,
+            )
+            btn.pack(side="left", padx=3, pady=3)
+            self._btns[opt] = btn
+
+        self._refresh()
+
+    def _select(self, opt: str):
+        self._val = opt
+        self._refresh()
+        if self._on_change:
+            self._on_change(opt)
+
+    def _refresh(self):
+        for opt, btn in self._btns.items():
+            sel = (opt == self._val)
+            btn.configure(
+                fg_color=CARD if sel else SEG_BG,
+                text_color=INK if sel else INK3,
+                font=(FONT_FAMILY, _sz(12), "bold" if sel else "normal"),
+                border_width=1 if sel else 0,
+                border_color=HAIR,
+            )
+
+    def get(self) -> str:
+        return self._val
+
+    def set(self, val: str):
+        self._val = val if val in self._btns else ""
+        self._refresh()
+
+
+class FieldEntry(tk.Frame):
+    """Entry with INPUT_BG + ACCENT focus double-ring. No layout shift.
+
+    Rest:  1px INPUT_BORDER + invisible 3px glow space
+    Focus: 1px ACCENT ring  + visible  3px ACCENT2 outer glow
+    """
+
+    _FORWARD_EVENTS = frozenset({
+        "<FocusIn>", "<FocusOut>", "<Escape>", "<Return>",
+        "<Key>", "<KeyPress>", "<KeyRelease>",
+    })
+
+    def __init__(self, parent, textvariable=None, mono=False, show="", **kw):
+        self._bg = _frame_bg(parent)
+        super().__init__(parent, bg=self._bg)
+        v = textvariable or tk.StringVar()
+
+        # Border frame: 1px ring shown via inner's padx=1,pady=1 gap
+        self._border = tk.Frame(self, bg=INPUT_BORDER)
+        self._border.pack(fill="x")
+
+        # Content area: INPUT_BG, 1px gap shows border bg as thin ring
+        self._inner = tk.Frame(self._border, bg=INPUT_BG, height=34)
+        self._inner.pack(fill="x", padx=1, pady=1)
+        self._inner.pack_propagate(False)
+
+        font = F_MONO if mono else F_NORM
+        self._entry = tk.Entry(
+            self._inner,
+            textvariable=v,
+            font=font,
+            bg=INPUT_BG,
+            fg=INK,
+            insertbackground=INK,
+            relief="flat",
+            highlightthickness=0,
+            bd=0,
+            show=show,
+        )
+        self._entry.pack(fill="both", expand=True, padx=11, pady=0)
+        self._entry.bind("<FocusIn>",  self._on_focus_in)
+        self._entry.bind("<FocusOut>", self._on_focus_out)
+
+    def _on_focus_in(self, _=None):
+        self._border.configure(bg=INK3)
+
+    def _on_focus_out(self, _=None):
+        self._border.configure(bg=INPUT_BORDER)
+
+    def bind(self, sequence=None, func=None, add=None):
+        if sequence in self._FORWARD_EVENTS:
+            return self._entry.bind(sequence, func, add)
+        return super().bind(sequence, func, add)
+
+    def get(self):
+        return self._entry.get()
+
+    def focus_set(self):
+        self._entry.focus_set()
+
+    def focus(self):
+        self._entry.focus()
 
 
 class Kicker(tk.Label):
@@ -655,19 +793,19 @@ class App(tk.Tk):
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Tw.TEntry",
-            fieldbackground=CARD, background=CARD, foreground=INK,
-            bordercolor=HAIR, lightcolor=HAIR, darkcolor=HAIR,
+            fieldbackground=INPUT_BG, background=INPUT_BG, foreground=INK,
+            bordercolor=INPUT_BORDER, lightcolor=INPUT_BORDER, darkcolor=INPUT_BORDER,
             padding=8, relief="flat")
-        style.map("Tw.TEntry", bordercolor=[("focus", INK)])
+        style.map("Tw.TEntry", bordercolor=[("focus", ACCENT)])
 
         style.configure("Tw.TCombobox",
-            fieldbackground=CARD, background=CARD, foreground=INK,
-            bordercolor=HAIR, lightcolor=HAIR, darkcolor=HAIR,
-            arrowcolor=MUTED, selectbackground=CARD, selectforeground=INK,
+            fieldbackground=INPUT_BG, background=INPUT_BG, foreground=INK,
+            bordercolor=INPUT_BORDER, lightcolor=INPUT_BORDER, darkcolor=INPUT_BORDER,
+            arrowcolor=MUTED, selectbackground=INPUT_BG, selectforeground=INK,
             padding=6, relief="flat")
         style.map("Tw.TCombobox",
-                  bordercolor=[("focus", INK)],
-                  fieldbackground=[("readonly", CARD)],
+                  bordercolor=[("focus", ACCENT)],
+                  fieldbackground=[("readonly", INPUT_BG)],
                   foreground=[("readonly", INK)])
 
         style.configure("Tw.Treeview",
@@ -1292,11 +1430,11 @@ class Sidebar(tk.Frame):
         # ── ⌘K search placeholder ─────────────────────────────────────────
         srch = tk.Frame(self, bg=RAIL)
         srch.pack(fill="x", padx=12, pady=(10, 6))
-        srch_inner = tk.Frame(srch, bg=CARD,
-                              highlightbackground=HAIR, highlightthickness=1)
-        srch_inner.pack(fill="x", ipady=5, ipadx=8)
+        srch_inner = ctk.CTkFrame(srch, fg_color=CARD, corner_radius=8,
+                                  border_width=1, border_color=HAIR)
+        srch_inner.pack(fill="x")
         tk.Label(srch_inner, text="🔍", bg=CARD, fg=MUTED,
-                 font=(FONT_FAMILY, _sz(10))).pack(side="left", padx=(6, 4))
+                 font=(FONT_FAMILY, _sz(10))).pack(side="left", padx=(6, 4), pady=6)
         tk.Label(srch_inner, text="快速指令…", bg=CARD, fg=MUTED,
                  font=(FONT_FAMILY, _sz(11)), anchor="w").pack(side="left", fill="x", expand=True)
         tk.Label(srch_inner, text="⌘K", bg=CARD, fg=MUTED2,
@@ -1347,10 +1485,9 @@ class Sidebar(tk.Frame):
         sender = cfg.get("sender") or {}
         has_token = bool(cfg.get("api_token") and cfg.get("username"))
 
-        wrap = tk.Frame(self.sender_card, bg=CARD,
-                        highlightbackground=HAIR, highlightthickness=1)
+        wrap = ctk.CTkFrame(self.sender_card, fg_color=CARD, corner_radius=10,
+                            border_width=1, border_color=HAIR)
         wrap.pack(fill="x")
-        wrap.columnconfigure(0, weight=1)
         inner = tk.Frame(wrap, bg=CARD)
         inner.pack(fill="x", padx=12, pady=10)
 
@@ -1673,180 +1810,291 @@ class SingleOrderView(tk.Frame):
         self._staging_card = None
         self._staging_list_frame = None
         self._cat_var = None
-        self._cat_btns = {}
+        self._cat_seg = None
         self._cat_map = {
-            "門市調撥": "Y 收件人付（運費到付）",
-            "客人":     "N 寄件人付",
-            "廠商":     "Y 收件人付（運費到付）",
+            "門市": "Y 收件人付（運費到付）",
+            "廠商": "Y 收件人付（運費到付）",
+            "個人": "N 寄件人付",
+            "其他": "N 寄件人付",
         }
         self._build()
 
     def _build(self):
-        # scrollable region for the form (since on small screens it may overflow)
+        # ─── scrollable canvas ────────────────────────────────────────────────
         canvas = tk.Canvas(self, bg=PAPER, highlightthickness=0)
         vsb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview,
                             style="Tw.Vertical.TScrollbar")
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-
         body = tk.Frame(canvas, bg=PAPER)
         win = canvas.create_window((0, 0), window=body, anchor="nw")
         body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
-
-        # mouse wheel — 只在游標進入時綁定，避免和其他分頁的 canvas 互相搶
         self._scroll_canvas = canvas
         _bind_mousewheel_on_hover(self, canvas)
 
         wrap = tk.Frame(body, bg=PAPER)
         wrap.pack(fill="both", expand=True, padx=28, pady=24)
 
-        # header
-        head = tk.Frame(wrap, bg=PAPER)
-        head.pack(fill="x", pady=(0, 18))
-        SectionHeader(head, "新建寄件單", "建立單筆寄件").pack(side="left")
-        ba = tk.Frame(head, bg=PAPER); ba.pack(side="right")
-        TwButton(ba, "清除", variant="ghost", command=self._clear).pack(side="left", padx=4)
-        TwButton(ba, "從剪貼板帶入", variant="default",
-                 command=self._paste_recipient_from_clipboard).pack(side="left", padx=4)
-        TwButton(ba, "從通訊錄", variant="default", command=self._pick_contact).pack(side="left", padx=4)
+        # ─── page header ──────────────────────────────────────────────────────
+        head = tk.Frame(wrap, bg=PAPER); head.pack(fill="x", pady=(0, 14))
+        head_left = tk.Frame(head, bg=PAPER); head_left.pack(side="left")
+        Kicker(head_left, "建立寄件單").pack(anchor="w")
+        tk.Label(head_left, text="新增單筆寄件",
+                 font=(FONT_FAMILY, _sz(24), "bold"),
+                 bg=PAPER, fg=INK).pack(anchor="w", pady=(2, 0))
+        tk.Label(head_left, text="填寫收件人資料後即可建立貨運單，並自動加入待列印佇列",
+                 font=F_SMALL, bg=PAPER, fg=INK3).pack(anchor="w", pady=(4, 0))
+        # service type: fixed to 宅配 (segment hidden)
+        self._svc_var = tk.StringVar(value="宅配")
 
-        # recipient card
-        rc = Card(wrap, padding=22); rc.pack(fill="x", pady=(0, 14))
-        Kicker(rc.body, "收件人資料").pack(anchor="w", pady=(0, 12))
-        grid1 = tk.Frame(rc.body, bg=CARD); grid1.pack(fill="x")
-        grid1.columnconfigure(0, weight=1); grid1.columnconfigure(1, weight=2)
-        self._field(grid1, 0, 0, "姓名", "recipient_name", required=True)
-        self._field(grid1, 0, 1, "地址", "recipient_address", required=True)
+        # ─── sender strip ─────────────────────────────────────────────────────
+        self._sender_strip_frame = ctk.CTkFrame(
+            wrap, fg_color=SUMMARY_BG, corner_radius=12,
+            border_width=1, border_color=HAIR2)
+        self._sender_strip_frame.pack(fill="x", pady=(0, 14))
+        self._refresh_sender_strip()
+
+        # ─── recipient card ───────────────────────────────────────────────────
+        rc = Card(wrap, padding=18); rc.pack(fill="x", pady=(0, 14))
+
+        rc_hdr = tk.Frame(rc.body, bg=CARD); rc_hdr.pack(fill="x", pady=(0, 14))
+        Kicker(rc_hdr, "收件人").pack(side="left")
+        lnk = tk.Frame(rc_hdr, bg=CARD); lnk.pack(side="right")
+        _clr_lbl = tk.Label(lnk, text="清空",
+                            font=(FONT_FAMILY, _sz(11), "bold"),
+                            fg=MUTED, bg=CARD, cursor="hand2")
+        _clr_lbl.pack(side="right")
+        _clr_lbl.bind("<Button-1>", lambda e: self._clear())
+        _pick_lbl = tk.Label(lnk, text="從通訊錄選擇 →",
+                             font=(FONT_FAMILY, _sz(11), "bold"),
+                             fg=INFO, bg=CARD, cursor="hand2")
+        _pick_lbl.pack(side="right", padx=(0, 14))
+        _pick_lbl.bind("<Button-1>", lambda e: self._pick_contact())
+
+        # row 1: 姓名, 手機, 市話
+        g1 = tk.Frame(rc.body, bg=CARD); g1.pack(fill="x")
+        g1.columnconfigure(0, weight=14)
+        g1.columnconfigure(1, weight=10)
+        g1.columnconfigure(2, weight=10)
+        self._field(g1, 0, 0, "姓名 / 公司名稱", "recipient_name", required=True)
+        self._field(g1, 0, 1, "手機", "recipient_mobile")
+        self._field(g1, 0, 2, "市話", "recipient_phone")
         self.after(100, lambda: self._attach_autocomplete("recipient_name"))
-        grid2 = tk.Frame(rc.body, bg=CARD); grid2.pack(fill="x", pady=(12, 0))
-        grid2.columnconfigure(0, weight=1); grid2.columnconfigure(1, weight=1)
-        self._field(grid2, 0, 0, "電話", "recipient_phone", required=True, hint="市話")
-        self._field(grid2, 0, 1, "手機", "recipient_mobile", hint="可空")
-        action = tk.Frame(rc.body, bg=CARD); action.pack(fill="x", pady=(12, 0))
-        TwButton(action, "＋ 存入通訊錄", variant="accent",
-                 command=self._save_to_contacts).pack(side="left")
 
-        # recipient category quick-select
+        # row 2: 收件地址（全寬）
+        g2 = tk.Frame(rc.body, bg=CARD); g2.pack(fill="x", pady=(12, 0))
+        g2.columnconfigure(0, weight=1)
+        self._field(g2, 0, 0, "收件地址", "recipient_address", required=True)
+
+        # divider + category row
+        Hairline(rc.body).pack(fill="x", pady=(18, 14))
+        choice_row = tk.Frame(rc.body, bg=CARD); choice_row.pack(fill="x")
+        choice_row.columnconfigure(0, weight=3)
+        choice_row.columnconfigure(1, weight=2)
+
+        cat_group = tk.Frame(choice_row, bg=CARD)
+        cat_group.grid(row=0, column=0, sticky="w")
+        tk.Label(cat_group, text="收件人分類",
+                 font=(FONT_FAMILY, _sz(12), "bold"),
+                 bg=CARD, fg=INK2).pack(anchor="w")
+        tk.Label(cat_group, text="會切換運費付款方式",
+                 font=(FONT_FAMILY, _sz(10)), bg=CARD, fg=MUTED).pack(anchor="w", pady=(2, 0))
         self._cat_var = tk.StringVar(value="")
-        cat_row = tk.Frame(rc.body, bg=CARD); cat_row.pack(fill="x", pady=(10, 0))
-        field_label(cat_row, "收件人分類", hint="自動帶入備註與付款方式").pack(anchor="w", pady=(0, 6))
-        cat_container = tk.Frame(cat_row, bg=HAIR); cat_container.pack(fill="x")
-        for i, lbl in enumerate(self._cat_map):
-            btn = tk.Label(cat_container, text=lbl, font=F_BOLD, padx=14, pady=9,
-                           cursor="hand2", bg=CARD, fg=INK)
-            btn.pack(side="left", fill="x", expand=True, padx=(1 if i > 0 else 0, 0))
-            self._cat_btns[lbl] = btn
-            btn.bind("<Button-1>", lambda e, l=lbl: self._select_category(l))
-            btn.bind("<Enter>", lambda e, b=btn: b.cget("bg") != INK and b.configure(bg=HAIR2))
-            btn.bind("<Leave>", lambda e, b=btn: b.cget("bg") != INK and b.configure(bg=CARD))
+        cat_controls = tk.Frame(cat_group, bg=CARD)
+        cat_controls.pack(anchor="w", pady=(8, 0))
+        self._cat_seg = Segment(cat_controls, options=list(self._cat_map.keys()),
+                                on_change=self._select_category, height=32,
+                                button_width=88)
+        self._cat_seg.pack(side="left")
 
-        # parcel card
-        pc = Card(wrap, padding=22); pc.pack(fill="x", pady=(0, 14))
-        pc_hdr = tk.Frame(pc.body, bg=CARD); pc_hdr.pack(fill="x")
-        Kicker(pc_hdr, "包裹明細").pack(side="left")
-        self._pkg_toggle_lbl = tk.Label(pc_hdr, text="▸ 展開",
-            font=F_SMALL, bg=CARD, fg=ACCENT, cursor="hand2")
-        self._pkg_toggle_lbl.pack(side="right")
+        freight_group = tk.Frame(choice_row, bg=CARD)
+        freight_group.grid(row=0, column=1, sticky="e")
+        tk.Label(freight_group, text="付款設定",
+                 font=(FONT_FAMILY, _sz(12), "bold"),
+                 bg=CARD, fg=INK2).pack(anchor="w")
+        tk.Label(freight_group, text="依收件人分類自動切換",
+                 font=(FONT_FAMILY, _sz(10)), bg=CARD, fg=MUTED).pack(anchor="w", pady=(2, 0))
+        freight_controls = tk.Frame(freight_group, bg=CARD)
+        freight_controls.pack(anchor="w", pady=(8, 0))
+        self._toggle_group(freight_controls, 0, 0, "", "is_freight",
+                           ["N 寄件人付", "Y 收件人付（運費到付）"],
+                           default="N 寄件人付", button_width=124)
+
+        # ─── 進階選項（全寬）────────────────────────────────────────────────────
+        adv = Card(wrap, padding=0); adv.pack(fill="x", pady=(0, 14))
+        adv_hdr = tk.Frame(adv.body, bg=CARD)
+        adv_hdr.pack(fill="x", padx=18, pady=14)
+        tbox = ctk.CTkFrame(adv_hdr, fg_color=SUMMARY_BG, corner_radius=6,
+                             border_width=1, border_color=HAIR, width=22, height=22)
+        tbox.pack(side="left"); tbox.pack_propagate(False)
+        self._pkg_toggle_lbl = tk.Label(tbox, text="›",
+                                        font=(FONT_FAMILY, _sz(14)),
+                                        bg=SUMMARY_BG, fg=INK2, cursor="hand2")
+        self._pkg_toggle_lbl.pack(expand=True)
         self._pkg_toggle_lbl.bind("<Button-1>", lambda _: self._toggle_pkg_detail())
+        tbox.bind("<Button-1>", lambda _: self._toggle_pkg_detail())
+        adv_info = tk.Frame(adv_hdr, bg=CARD, cursor="hand2")
+        adv_info.pack(side="left", padx=(10, 0))
+        adv_title = tk.Label(adv_info, text="進階選項",
+                             font=(FONT_FAMILY, _sz(13), "bold"),
+                             bg=CARD, fg=INK, cursor="hand2")
+        adv_title.pack(anchor="w")
+        adv_subtitle = tk.Label(adv_info, text="尺寸 · 溫層 · 日期",
+                                font=(FONT_FAMILY, _sz(10)),
+                                bg=CARD, fg=MUTED, cursor="hand2")
+        adv_subtitle.pack(anchor="w", pady=(2, 0))
+        for _w in (adv_info, adv_title, adv_subtitle):
+            _w.bind("<Button-1>", lambda _: self._toggle_pkg_detail())
+        self._adv_dates_header = tk.Frame(adv_hdr, bg=CARD)
+        self._adv_dates_header.pack(side="right", padx=(20, 10), anchor="center")
+        self._adv_dates_header.columnconfigure(0, weight=1)
+        self._adv_dates_header.columnconfigure(1, weight=1)
+        self._bound_field(self._adv_dates_header, 0, 0, "出貨日 YYYYMMDD", "shipment_date",
+                          default=default_shipment_date(), mono=True)
+        self._bound_field(self._adv_dates_header, 0, 1, "配送日 YYYYMMDD", "delivery_date",
+                          default=default_delivery_date(), mono=True)
         self._pkg_expanded = False
+        self._pkg_detail = tk.Frame(adv.body, bg=CARD)
 
-        gp1 = tk.Frame(pc.body, bg=CARD); gp1.pack(fill="x", pady=(12, 0))
-        gp1.columnconfigure(0, weight=2); gp1.columnconfigure(1, weight=2)
-        self._field(gp1, 0, 0, "訂單編號", "order_id", required=True)
-        self._field(gp1, 0, 1, "貨品名稱", "product_name", default="一般物品")
-
-        self._pkg_detail = tk.Frame(pc.body, bg=CARD)
-        # 預設收合，不 pack
-
-        gp2 = tk.Frame(self._pkg_detail, bg=CARD); gp2.pack(fill="x", pady=(12, 0))
-        gp2.columnconfigure(0, weight=1); gp2.columnconfigure(1, weight=1)
-        self._combo_field(gp2, 0, 0, "尺寸", "spec",
+        # advanced fields (inside _pkg_detail, hidden by default)
+        adv_g1 = tk.Frame(self._pkg_detail, bg=CARD)
+        adv_g1.pack(fill="x", padx=18, pady=(0, 12))
+        adv_g1.columnconfigure(0, weight=1); adv_g1.columnconfigure(1, weight=1)
+        self._combo_field(adv_g1, 0, 0, "尺寸", "spec",
                           list(SPEC_OPTIONS.keys()), default="0001  60 cm")
-        self._combo_field(gp2, 0, 1, "溫層", "thermosphere",
-                          list(THERMO_OPTIONS.keys()), default="0001 常溫")
-
-        gp3 = tk.Frame(self._pkg_detail, bg=CARD); gp3.pack(fill="x", pady=(12, 0))
-        gp3.columnconfigure(0, weight=1); gp3.columnconfigure(1, weight=1); gp3.columnconfigure(2, weight=1)
-        self._field(gp3, 0, 0, "出貨日 YYYYMMDD", "shipment_date",
-                    default=default_shipment_date(), mono=True)
-        self._field(gp3, 0, 1, "配送日 YYYYMMDD", "delivery_date",
-                    default=default_delivery_date(), mono=True)
-        self._combo_field(gp3, 0, 2, "配送時段", "delivery_time",
+        self._combo_field(adv_g1, 0, 1, "配送時段", "delivery_time",
                           list(DTIME_OPTIONS.keys()), default="01 不指定")
-
-        # 快速日期按鈕（出貨日）
+        adv_g2 = tk.Frame(self._pkg_detail, bg=CARD)
+        adv_g2.pack(fill="x", padx=18, pady=(0, 12))
+        adv_g2.columnconfigure(0, weight=1)
+        self._locked_field(adv_g2, 0, 0, "溫層", "thermosphere",
+                           default="0001 常溫")
+        adv_dates_detail = tk.Frame(self._pkg_detail, bg=CARD)
+        adv_dates_detail.pack(fill="x", padx=18, pady=(0, 12))
+        adv_dates_detail.columnconfigure(0, weight=1)
+        adv_dates_detail.columnconfigure(1, weight=1)
+        self._bound_field(adv_dates_detail, 0, 0, "出貨日 YYYYMMDD", "shipment_date",
+                          default=default_shipment_date(), mono=True)
+        self._bound_field(adv_dates_detail, 0, 1, "配送日 YYYYMMDD", "delivery_date",
+                          default=default_delivery_date(), mono=True)
+        adv_g3 = tk.Frame(self._pkg_detail, bg=CARD)
+        adv_g3.pack(fill="x", padx=18, pady=(0, 12))
+        adv_g3.columnconfigure(0, weight=1); adv_g3.columnconfigure(1, weight=1)
+        tk.Label(adv_g3, text="日期快速設定",
+                 font=(FONT_FAMILY, _sz(11), "bold"),
+                 bg=CARD, fg=INK2).grid(row=0, column=0, sticky="w")
         def _quick_ship(offset):
             from datetime import date, timedelta
             d = _skip_sunday(date.today() + timedelta(days=offset))
             self.fields["shipment_date"].set(d.strftime("%Y%m%d"))
-        sbtn_row = tk.Frame(gp3, bg=CARD)
-        sbtn_row.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(2, 0))
+        _sbtn_row = tk.Frame(adv_g3, bg=CARD)
+        _sbtn_row.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(2, 0))
         for _lbl, _off in [("今天", 0), ("明天", 1), ("後天", 2)]:
-            tk.Label(sbtn_row, text=_lbl, font=F_TINY, bg=CARD, fg=ACCENT,
+            tk.Label(_sbtn_row, text=_lbl, font=F_TINY, bg=CARD, fg=ACCENT,
                      cursor="hand2").pack(side="left", padx=(0, 6))
-        for w, off in zip(sbtn_row.winfo_children(), [0, 1, 2]):
-            w.bind("<Button-1>", lambda _, o=off: _quick_ship(o))
-
-        # 快速日期按鈕（配送日）
+        for _w, _off in zip(_sbtn_row.winfo_children(), [0, 1, 2]):
+            _w.bind("<Button-1>", lambda _, o=_off: _quick_ship(o))
         def _quick_deliv(offset):
             from datetime import date, timedelta
             d = _skip_sunday(date.today() + timedelta(days=offset))
             self.fields["delivery_date"].set(d.strftime("%Y%m%d"))
-        dbtn_row = tk.Frame(gp3, bg=CARD)
-        dbtn_row.grid(row=1, column=1, sticky="w", padx=(0, 8), pady=(2, 0))
+        _dbtn_row = tk.Frame(adv_g3, bg=CARD)
+        _dbtn_row.grid(row=1, column=1, sticky="w", padx=(0, 8), pady=(2, 0))
         for _lbl, _off in [("今天", 0), ("明天", 1), ("後天", 2)]:
-            tk.Label(dbtn_row, text=_lbl, font=F_TINY, bg=CARD, fg=ACCENT,
+            tk.Label(_dbtn_row, text=_lbl, font=F_TINY, bg=CARD, fg=ACCENT,
                      cursor="hand2").pack(side="left", padx=(0, 6))
-        for w, off in zip(dbtn_row.winfo_children(), [0, 1, 2]):
-            w.bind("<Button-1>", lambda _, o=off: _quick_deliv(o))
+        for _w, _off in zip(_dbtn_row.winfo_children(), [0, 1, 2]):
+            _w.bind("<Button-1>", lambda _, o=_off: _quick_deliv(o))
 
-        # payment card
-        pmc = Card(wrap, padding=22); pmc.pack(fill="x", pady=(0, 14))
-        Kicker(pmc.body, "付款設定").pack(anchor="w", pady=(0, 12))
-        gpay = tk.Frame(pmc.body, bg=CARD); gpay.pack(fill="x")
-        gpay.columnconfigure(0, weight=1); gpay.columnconfigure(1, weight=1)
-        self._toggle_group(gpay, 0, 0, "運費付款方式", "is_freight",
-                           ["N 寄件人付", "Y 收件人付（運費到付）"], default="N 寄件人付")
-
-        # 代收金額 — 僅在選擇代收時顯示
-        gpay_cod = tk.Frame(pmc.body, bg=CARD)
-        gpay_cod.columnconfigure(0, weight=1)
-        self._field(gpay_cod, 0, 0, "代收金額", "collection_amount", default="0", mono=True)
-
-        # 備註 — 永遠顯示
-        gpay_notes = tk.Frame(pmc.body, bg=CARD)
-        gpay_notes.columnconfigure(0, weight=1)
-        self._field(gpay_notes, 0, 0, "備註", "notes", hint="選填")
-        gpay_notes.pack(fill="x", pady=(12, 0))
-
-        def _on_collection_change(val):
-            if val.startswith("Y"):
-                gpay_cod.pack(fill="x", pady=(12, 0), before=gpay_notes)
-            else:
-                gpay_cod.pack_forget()
-
-        self._toggle_group(gpay, 0, 1, "代收貨款", "is_collection",
+        # 代收 toggle (in advanced)
+        adv_pay = tk.Frame(self._pkg_detail, bg=CARD)
+        adv_pay.pack(fill="x", padx=18, pady=(0, 14))
+        adv_pay.columnconfigure(0, weight=1)
+        self._toggle_group(adv_pay, 0, 0, "代收貨款", "is_collection",
                            ["N 不代收", "Y 代收（貨到付款）"], default="N 不代收",
-                           on_change=_on_collection_change)
+                           on_change=self._on_collection_change)
+        self._gpay_cod = tk.Frame(self._pkg_detail, bg=CARD)
+        self._gpay_cod.columnconfigure(0, weight=1)
+        self._field(self._gpay_cod, 0, 0, "代收金額", "collection_amount",
+                    default="0", mono=True)
 
-        # submit
-        sbtn = tk.Frame(wrap, bg=PAPER); sbtn.pack(fill="x", pady=(4, 0))
-        TwButton(sbtn, "建立寄件單  →", variant="primary",
-                 command=self._submit, width=20).pack(side="left")
-        self._next_btn = TwButton(sbtn, "建立下一筆  →", variant="ghost",
+        # ─── 訂單編號 + 備註（全寬）─────────────────────────────────────────────
+        ord_c = Card(wrap, padding=18); ord_c.pack(fill="x", pady=(0, 14))
+        ord_g = tk.Frame(ord_c.body, bg=CARD); ord_g.pack(fill="x")
+        ord_g.columnconfigure(0, weight=2)
+        ord_g.columnconfigure(1, weight=3)
+        ord_g.columnconfigure(2, weight=5)
+        self._field(ord_g, 0, 0, "訂單編號", "order_id", required=True, mono=True)
+        self._field(ord_g, 0, 1, "貨品名稱", "product_name", default="一般物品")
+        self._field(ord_g, 0, 2, "備註", "notes", hint="會印在託運單上")
+
+        # ─── action bar ───────────────────────────────────────────────────────
+        ab = ctk.CTkFrame(wrap, fg_color=CARD, corner_radius=14,
+                          border_width=1, border_color=HAIR2)
+        ab.pack(fill="x", pady=(4, 0))
+        ab_inner = tk.Frame(ab, bg=CARD); ab_inner.pack(fill="x", padx=18, pady=12)
+        tk.Label(ab_inner, text="● 填寫收件人資料後即可建單",
+                 font=F_SMALL, bg=CARD, fg=INK3).pack(side="left")
+        TwButton(ab_inner, "建立寄件單  →", variant="primary",
+                 command=self._submit).pack(side="right", padx=(8, 0))
+        TwButton(ab_inner, "從剪貼板帶入", variant="default",
+                 command=self._paste_recipient_from_clipboard).pack(side="right", padx=(4, 0))
+        TwButton(ab_inner, "存入通訊錄", variant="ghost",
+                 command=self._save_to_contacts).pack(side="right", padx=(4, 0))
+        self._next_btn = TwButton(ab_inner, "建立下一筆  →", variant="ghost",
                                   command=self._clear_for_next)
-        self._go_print_btn = TwButton(sbtn, "前往待列印貨運單  →", variant="ghost",
+        self._go_print_btn = TwButton(ab_inner, "前往待列印  →", variant="ghost",
                                       command=lambda: self.app.show_view("print_queue"))
-        # both buttons initially hidden; shown after first successful submit
+        # both hidden initially; shown after first successful submit
 
         self.result_var = tk.StringVar()
         self.result_lbl = tk.Label(wrap, textvariable=self.result_var,
             bg=PAPER, fg=INK2, font=F_SMALL, wraplength=820, justify="left")
-        self.result_lbl.pack(fill="x", pady=(14, 0))
+        self.result_lbl.pack(fill="x", pady=(10, 0))
 
-        # (staging display moved to 待列印貨運單 view)
+    def _select_svc(self, svc: str):
+        self._svc_var.set(svc)
+
+    def _refresh_sender_strip(self):
+        for w in self._sender_strip_frame.winfo_children():
+            w.destroy()
+        cfg = load_cfg()
+        sender = cfg.get("sender") or {}
+        name = sender.get("name") or "（未設定）"
+        addr = sender.get("address") or ""
+        phone = sender.get("phone") or ""
+        row = tk.Frame(self._sender_strip_frame, bg=SUMMARY_BG)
+        row.pack(fill="x", padx=14, pady=10)
+        tk.Label(row, text="寄件人",
+                 font=(FONT_FAMILY, _sz(10), "bold"),
+                 fg=MUTED, bg=SUMMARY_BG).pack(side="left")
+        tk.Frame(row, bg=HAIR, width=1, height=14).pack(side="left", padx=10)
+        av = tk.Label(row, text=(name[:2] if name else "SA"),
+                      font=(FONT_FAMILY, _sz(9), "bold"),
+                      bg=ACCENT2, fg=ACCENT, width=3, pady=2)
+        av.pack(side="left", padx=(0, 8))
+        tk.Label(row, text=name,
+                 font=(FONT_FAMILY, _sz(12), "bold"),
+                 fg=INK, bg=SUMMARY_BG).pack(side="left")
+        if phone or addr:
+            tk.Label(row, text=f"· {phone}  {addr}",
+                     font=(FONT_FAMILY, _sz(11)), fg=INK3, bg=SUMMARY_BG).pack(side="left", padx=(8, 0))
+        tk.Label(row, text="切換 →",
+                 font=(FONT_FAMILY, _sz(11), "bold"),
+                 fg=INFO, bg=SUMMARY_BG, cursor="hand2").pack(side="right")
+        tk.Label(row, text="預設",
+                 font=(FONT_FAMILY, _sz(10), "bold"),
+                 fg=OK, bg=SUMMARY_BG).pack(side="right", padx=(0, 10))
+
+    def _on_collection_change(self, val: str):
+        if not hasattr(self, '_gpay_cod'):
+            return
+        if val.startswith("Y"):
+            self._gpay_cod.pack(fill="x", padx=18, pady=(0, 12))
+        else:
+            self._gpay_cod.pack_forget()
 
     def _field(self, parent, r, c, label, key, required=False, default="", mono=False, hint=None):
         cell = tk.Frame(parent, bg=_frame_bg(parent))
@@ -1854,10 +2102,21 @@ class SingleOrderView(tk.Frame):
         field_label(cell, label, required=required, hint=hint).pack(fill="x", pady=(0, 6))
         v = tk.StringVar(value=default)
         self.fields[key] = v
-        e = ttk.Entry(cell, textvariable=v, style="Tw.TEntry",
-                      font=F_MONO if mono else F_NORM)
-        e.pack(fill="x")
-        self._field_widgets[key] = e
+        fe = FieldEntry(cell, textvariable=v, mono=mono)
+        fe.pack(fill="x")
+        self._field_widgets[key] = fe
+
+    def _bound_field(self, parent, r, c, label, key, required=False, default="", mono=False, hint=None):
+        cell = tk.Frame(parent, bg=_frame_bg(parent))
+        cell.grid(row=r*2, column=c, sticky="ew", padx=(0 if c == 0 else 12, 0))
+        field_label(cell, label, required=required, hint=hint).pack(fill="x", pady=(0, 6))
+        v = self.fields.get(key)
+        if v is None:
+            v = tk.StringVar(value=default)
+            self.fields[key] = v
+        fe = FieldEntry(cell, textvariable=v, mono=mono)
+        fe.pack(fill="x")
+        self._field_widgets[key] = fe
 
     def _combo_field(self, parent, r, c, label, key, options, default=""):
         cell = tk.Frame(parent, bg=_frame_bg(parent))
@@ -1869,39 +2128,68 @@ class SingleOrderView(tk.Frame):
                           state="readonly", style="Tw.TCombobox", font=F_NORM)
         cb.pack(fill="x")
 
-    def _toggle_group(self, parent, r, c, label, key, options, default="", on_change=None):
-        """Segmented toggle button group. options = list of display strings (e.g. 'N 寄件人付')."""
+    def _locked_field(self, parent, r, c, label, key, default=""):
         cell = tk.Frame(parent, bg=_frame_bg(parent))
         cell.grid(row=r*2, column=c, sticky="ew", padx=(0 if c == 0 else 12, 0))
         field_label(cell, label).pack(fill="x", pady=(0, 6))
+        v = tk.StringVar(value=default)
+        self.fields[key] = v
+        box = tk.Frame(cell, bg=INPUT_BORDER)
+        box.pack(fill="x")
+        inner = tk.Frame(box, bg=INPUT_BG, height=34)
+        inner.pack(fill="x", padx=1, pady=1)
+        inner.pack_propagate(False)
+        tk.Label(inner, textvariable=v, font=F_NORM, bg=INPUT_BG, fg=MUTED,
+                 anchor="w").pack(fill="both", expand=True, padx=11)
+
+    def _toggle_group(self, parent, r, c, label, key, options, default="", on_change=None,
+                      button_width=None):
+        """Segmented toggle button group using CTkButton pills."""
+        cell = tk.Frame(parent, bg=_frame_bg(parent))
+        cell.grid(row=r*2, column=c, sticky="ew", padx=(0 if c == 0 else 12, 0))
+        if label:
+            field_label(cell, label).pack(fill="x", pady=(0, 6))
 
         v = tk.StringVar(value=default)
         self.fields[key] = v
 
-        container = tk.Frame(cell, bg=HAIR)
-        container.pack(fill="x")
+        radius = 12
+        container = ctk.CTkFrame(cell, fg_color=SEG_BG, corner_radius=radius,
+                                 border_width=1, border_color=HAIR)
+        container.pack()
 
         btn_map = {}
 
         def _refresh(*_):
             val = v.get()
             for bval, btn in btn_map.items():
-                if bval == val:
-                    btn.configure(bg=INK, fg="#FFFFFF")
-                else:
-                    btn.configure(bg=CARD, fg=INK)
+                sel = (bval == val)
+                btn.configure(
+                    fg_color=CARD if sel else SEG_BG,
+                    text_color=INK if sel else INK3,
+                    font=(FONT_FAMILY, _sz(13), "bold" if sel else "normal"),
+                    border_width=1 if sel else 0,
+                    border_color=HAIR,
+                    hover_color=HAIR2 if sel else "#D8DDE5",
+                )
             if on_change:
                 on_change(val)
 
-        for i, opt in enumerate(options):
+        for opt in options:
             display = opt[2:] if len(opt) > 2 else opt
-            btn = tk.Label(container, text=display, font=F_BOLD, padx=14, pady=9,
-                           cursor="hand2", bg=CARD, fg=INK)
-            btn.pack(side="left", fill="x", expand=True, padx=(1 if i > 0 else 0, 0))
+            btn_kw = {}
+            if button_width is not None:
+                btn_kw["width"] = button_width
+            btn = ctk.CTkButton(
+                container, text=display,
+                font=(FONT_FAMILY, _sz(13), "normal"),
+                fg_color=SEG_BG, hover_color="#D8DDE5", text_color=INK3,
+                corner_radius=radius, height=38, border_width=0,
+                command=lambda o=opt: v.set(o),
+                **btn_kw,
+            )
+            btn.pack(side="left", padx=3, pady=3)
             btn_map[opt] = btn
-            btn.bind("<Button-1>", lambda e, val=opt: v.set(val))
-            btn.bind("<Enter>", lambda e, b=btn: b.cget("bg") != INK and b.configure(bg=HAIR2))
-            btn.bind("<Leave>", lambda e, b=btn: b.cget("bg") != INK and b.configure(bg=CARD))
 
         v.trace_add("write", _refresh)
         _refresh()
@@ -1920,9 +2208,6 @@ class SingleOrderView(tk.Frame):
 
     def _select_category(self, label: str) -> None:
         self._cat_var.set(label)
-        for lbl, btn in self._cat_btns.items():
-            btn.configure(bg=INK if lbl == label else CARD,
-                          fg="#FFFFFF" if lbl == label else INK)
         self.fields["notes"].set(label)
         self.fields["is_freight"].set(self._cat_map[label])
 
@@ -1942,8 +2227,8 @@ class SingleOrderView(tk.Frame):
         self.result_var.set("")
         if self._cat_var:
             self._cat_var.set("")
-            for btn in self._cat_btns.values():
-                btn.configure(bg=CARD, fg=INK)
+            if hasattr(self, "_cat_seg"):
+                self._cat_seg.set("")
 
     def _pick_contact(self):
         def on_select(contact):
@@ -2036,7 +2321,8 @@ class SingleOrderView(tk.Frame):
                     "recipient_address", "order_id"):
             if key in self.fields:
                 self.fields[key].set("")
-        cat = self._cat_var.get() if self._cat_var else ""
+        cat = (self._cat_seg.get() if self._cat_seg else
+               self._cat_var.get() if self._cat_var else "")
         if cat:
             self.fields["notes"].set(cat)
             self.fields["is_freight"].set(self._cat_map[cat])
@@ -2289,11 +2575,13 @@ class SingleOrderView(tk.Frame):
     def _toggle_pkg_detail(self):
         if self._pkg_expanded:
             self._pkg_detail.pack_forget()
-            self._pkg_toggle_lbl.configure(text="▸ 展開")
+            self._adv_dates_header.pack(side="right", padx=(20, 10), anchor="center")
+            self._pkg_toggle_lbl.configure(text="›")
             self._pkg_expanded = False
         else:
+            self._adv_dates_header.pack_forget()
             self._pkg_detail.pack(fill="x")
-            self._pkg_toggle_lbl.configure(text="▾ 收合")
+            self._pkg_toggle_lbl.configure(text="‹")
             self._pkg_expanded = True
 
     def _submit(self):
@@ -3955,9 +4243,8 @@ class ConfigView(tk.Frame):
             cell.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 12, 0))
             field_label(cell, label, required=True).pack(fill="x", pady=(0, 6))
             v = tk.StringVar(); self.vars[key] = v
-            e = ttk.Entry(cell, textvariable=v, style="Tw.TEntry",
-                          font=F_MONO,
-                          show="*" if key == "api_token" else "")
+            e = FieldEntry(cell, textvariable=v, mono=True,
+                           show="*" if key == "api_token" else "")
             e.pack(fill="x")
 
         ba = tk.Frame(ac.body, bg=CARD); ba.pack(fill="x", pady=(14, 0))
@@ -3978,8 +4265,7 @@ class ConfigView(tk.Frame):
                 cell.pack(fill="x", pady=(12, 0))
                 field_label(cell, label, required=True).pack(fill="x", pady=(0, 6))
                 v = tk.StringVar(); self.vars[key] = v
-                ttk.Entry(cell, textvariable=v, style="Tw.TEntry",
-                          font=F_NORM).pack(fill="x")
+                FieldEntry(cell, textvariable=v).pack(fill="x")
             else:
                 cell = tk.Frame(sg, bg=CARD)
                 cell.grid(row=r, column=c, sticky="ew",
@@ -3987,8 +4273,8 @@ class ConfigView(tk.Frame):
                 req = field in ("name", "tel", "zipcode")
                 field_label(cell, label, required=req).pack(fill="x", pady=(0, 6))
                 v = tk.StringVar(); self.vars[key] = v
-                ttk.Entry(cell, textvariable=v, style="Tw.TEntry",
-                          font=F_MONO if field in ("tel","mobile","zipcode") else F_NORM).pack(fill="x")
+                FieldEntry(cell, textvariable=v,
+                           mono=field in ("tel", "mobile", "zipcode")).pack(fill="x")
 
         # Product type
         pt_cell = tk.Frame(sc.body, bg=CARD); pt_cell.pack(fill="x", pady=(12, 0))
@@ -4892,10 +5178,8 @@ class ContactDialog(tk.Toplevel):
             lbl.grid(row=i*2, column=0, sticky="w", pady=(8 if i else 0, 4))
             v = tk.StringVar(value=contact.get(key, ""))
             self.vars[key] = v
-            ent = ttk.Entry(grid, textvariable=v, style="Tw.TEntry",
-                            font=F_MONO if key in ("phone","mobile","store_id","brand_id")
-                                        else F_NORM,
-                            width=36)
+            ent = FieldEntry(grid, textvariable=v,
+                             mono=key in ("phone", "mobile", "store_id", "brand_id"))
             ent.grid(row=i*2+1, column=0, sticky="ew")
             self._field_widgets[key] = (lbl, ent)
 

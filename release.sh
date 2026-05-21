@@ -42,6 +42,22 @@ else
   gh release create "v$VERSION" --title "v$VERSION" --generate-notes
 fi
 
+# 6. 打包 DMG + app.zip 並上傳（需要 PyInstaller）
+if command -v pyinstaller &>/dev/null; then
+  echo ""
+  echo "📦 開始打包 DMG..."
+  packaging/build_dmg.sh "$VERSION"
+  DMG="$HOME/Desktop/黑貓宅急便工具_v${VERSION}.dmg"
+  APP_ZIP="packaging/dist/黑貓宅急便工具.app.zip"
+  gh release upload "v$VERSION" "$DMG" "$APP_ZIP"
+  echo "✓ DMG + app.zip 已上傳至 Release"
+else
+  echo ""
+  echo "⚠️  未偵測到 pyinstaller，跳過 DMG 打包。"
+  echo "   若需打包請先執行：pip install pyinstaller"
+  echo "   然後手動執行：packaging/build_dmg.sh $VERSION"
+fi
+
 echo ""
 echo "🎉 v$VERSION 發布完成！"
 echo "   Release 頁面：https://github.com/pony9632-pixel/heicat-egs-tool/releases/tag/v$VERSION"

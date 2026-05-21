@@ -15,6 +15,16 @@
 # PDF 輸出（客戶資料）
 黑貓單號/
 
+# PyInstaller 打包產物
+build/
+dist/
+packaging/dist/
+packaging/dmg_staging/
+
+# 設計文件（不進版控）
+黑貓主程式/design_brief.md
+黑貓主程式/ui_spec.py
+
 # Python 快取
 __pycache__/
 *.pyc
