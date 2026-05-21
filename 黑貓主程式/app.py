@@ -3415,7 +3415,7 @@ class TrackingView(tk.Frame):
         self._sync_btn = TwButton(ba, "同步 14 天紀錄", variant="ghost",
                  command=self._sync_from_web)
         self._sync_btn.pack(side="left", padx=4)
-        TwButton(ba, "清除兩週前紀錄", variant="ghost", command=self._prune).pack(side="left", padx=4)
+        TwButton(ba, "清除所有資料", variant="ghost", command=self._prune).pack(side="left", padx=4)
 
         # sync progress bar (hidden until sync starts)
         self._sync_prog_frame = tk.Frame(wrap, bg=PAPER)
@@ -3933,27 +3933,24 @@ class TrackingView(tk.Frame):
 
             new_obts = [obt for obt in merged
                         if obt not in existing_obts and obt not in deleted_obts]
-            # 既有紀錄一律重抓一次 sender_name（強制覆寫過去同步錯誤的值）
-            need_sender = [obt for obt in merged
-                           if obt not in deleted_obts
-                           and obt in existing_map]
-            total_detail = len(new_obts) + len(need_sender)
+            total_detail = len(new_obts)
             self.after(0, lambda t=total_detail: _show_detail_progress(t))
 
             added    = 0
             enriched = 0
             done     = 0
 
-            # new records — fetch TranBillDetail for sender_name + fallbacks
+            # 從配置取寄件人名稱
+            cfg = load_cfg()
+            cfg_sender_name = cfg.get("sender", {}).get("name", "")
+
+            # new records — fetch TranBillDetail for recipient_name + fallbacks
             for obt in new_obts:
                 rec = dict(merged[obt])
                 try:
                     detail = self.app._web.fetch_obt_detail(obt)
-                    sn = detail.get("sender_name", "")
-                    # 晶實科技股份有限公司 → 新店裕隆城
-                    if sn == "晶實科技股份有限公司":
-                        sn = "新店裕隆城"
-                    rec["sender_name"] = sn
+                    # 寄件人來自配置
+                    rec["sender_name"] = cfg_sender_name
                     if not rec["recipient_name"]:
                         rec["recipient_name"] = detail.get("recipient_name", "")
                     if not rec["notes"]:
@@ -3978,29 +3975,13 @@ class TrackingView(tk.Frame):
                     if not rec.get(field, "").strip() and m.get(src, "").strip():
                         rec[field] = m[src]
                         changed = True
+                # 同時更新 sender_name 為配置中的寄件人
+                old_sender = rec.get("sender_name", "")
+                rec["sender_name"] = cfg_sender_name
+                if cfg_sender_name != old_sender:
+                    changed = True
                 if changed:
                     enriched += 1
-
-            # existing records missing sender_name — fetch TranBillDetail
-            for obt in need_sender:
-                rec = existing_map[obt]
-                try:
-                    detail = self.app._web.fetch_obt_detail(obt)
-                    sn = detail.get("sender_name", "").strip()
-                    # 晶實科技股份有限公司 → 新店裕隆城
-                    if sn == "晶實科技股份有限公司":
-                        sn = "新店裕隆城"
-                    if sn:
-                        rec["sender_name"] = sn
-                        if not rec.get("recipient_name", "").strip():
-                            rec["recipient_name"] = detail.get("recipient_name", "")
-                        if not rec.get("notes", "").strip():
-                            rec["notes"] = detail.get("notes", "")
-                        enriched += 1
-                except Exception:
-                    pass
-                done += 1
-                self.after(0, lambda d=done, t=total_detail: _update_progress(d, t))
 
             if added or enriched:
                 save_tracking(existing)
@@ -4029,18 +4010,14 @@ class TrackingView(tk.Frame):
         threading.Thread(target=run, daemon=True).start()
 
     def _prune(self):
-        import datetime
         records = load_tracking()
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
-        kept = [r for r in records
-                if _normalize_created_at(r.get("created_at", "")) >= cutoff]
-        removed = len(records) - len(kept)
-        save_tracking(kept)
-        self.refresh()
-        if removed:
-            messagebox.showinfo("清除完成", f"已刪除 {removed} 筆兩週前的紀錄。")
-        else:
-            messagebox.showinfo("無需清除", "沒有兩週前的紀錄。")
+        if not records:
+            messagebox.showinfo("無需清除", "沒有任何紀錄。")
+            return
+        if messagebox.askyesno("確認清除", f"確定要清除全部 {len(records)} 筆紀錄嗎？"):
+            save_tracking([])
+            self.refresh()
+            messagebox.showinfo("清除完成", f"已刪除全部 {len(records)} 筆紀錄。")
 
 
 # ─── print queue view ────────────────────────────────────────────────────────
