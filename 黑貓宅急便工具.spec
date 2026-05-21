@@ -77,8 +77,8 @@ app = BUNDLE(
     icon=str(ROOT / "packaging" / "icon.icns"),
     bundle_identifier="com.studioa.heicat",
     info_plist={
-        "CFBundleShortVersionString": "2.4.3",
-        "CFBundleVersion":            "2.4.3",
+        "CFBundleShortVersionString": "2.4.4",
+        "CFBundleVersion":            "2.4.4",
         "NSHighResolutionCapable":    True,
         "NSRequiresAquaSystemAppearance": False,
         "LSMinimumSystemVersion":     "11.0",
