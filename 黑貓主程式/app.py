@@ -3949,7 +3949,11 @@ class TrackingView(tk.Frame):
                 rec = dict(merged[obt])
                 try:
                     detail = self.app._web.fetch_obt_detail(obt)
-                    rec["sender_name"] = detail.get("sender_name", "")
+                    sn = detail.get("sender_name", "")
+                    # 晶實科技股份有限公司 → 新店裕隆城
+                    if sn == "晶實科技股份有限公司":
+                        sn = "新店裕隆城"
+                    rec["sender_name"] = sn
                     if not rec["recipient_name"]:
                         rec["recipient_name"] = detail.get("recipient_name", "")
                     if not rec["notes"]:
@@ -3983,6 +3987,9 @@ class TrackingView(tk.Frame):
                 try:
                     detail = self.app._web.fetch_obt_detail(obt)
                     sn = detail.get("sender_name", "").strip()
+                    # 晶實科技股份有限公司 → 新店裕隆城
+                    if sn == "晶實科技股份有限公司":
+                        sn = "新店裕隆城"
                     if sn:
                         rec["sender_name"] = sn
                         if not rec.get("recipient_name", "").strip():
