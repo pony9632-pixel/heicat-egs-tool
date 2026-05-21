@@ -335,13 +335,8 @@ def _normalize_created_at(ca: str) -> str:
     return ca
 
 
-def append_tracking(obt_number: str, recipient_name: str, order_id: str,
-                    sender_name: str = ""):
-    """Add a new tracking record; auto-prune records older than 14 days.
-
-    sender_name 為本地寄件人名稱（用 cfg["sender"]["name"]），記下後
-    `_sync_from_web` 不會用碼頭回傳的公司戶名覆蓋掉。
-    """
+def append_tracking(obt_number: str, recipient_name: str, order_id: str):
+    """Add a new tracking record; auto-prune records older than 14 days."""
     import datetime
     records = load_tracking()
     records.append({
@@ -349,7 +344,6 @@ def append_tracking(obt_number: str, recipient_name: str, order_id: str,
         "obt_number": obt_number,
         "recipient_name": recipient_name,
         "order_id": order_id,
-        "sender_name": sender_name,
     })
     cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
     records = [r for r in records
@@ -2693,7 +2687,7 @@ class SingleOrderView(tk.Frame):
                 if r["success"]:
                     msg = f"✓ 建單成功！OBT：{r['obt_number']}"
                     _append_build_log(f"✓ OBT:{r['obt_number']} 收件人:{values.get('recipient_name','')} 訂單:{values.get('order_id','')}")
-                    append_tracking(r['obt_number'], values.get('recipient_name',''), values.get('order_id',''), sender.get('name',''))
+                    append_tracking(r['obt_number'], values.get('recipient_name',''), values.get('order_id',''))
                     if r["pdf_path"]:
                         self._normalize_pdf_rotation(r["pdf_path"])
                         self.after(0, lambda obt=r["obt_number"], nm=values["recipient_name"],
@@ -3982,17 +3976,19 @@ class TrackingView(tk.Frame):
                 if changed:
                     enriched += 1
 
-            # existing records — 重抓 TranBillDetail（不覆寫 sender_name，保留建單時的值）
+            # existing records missing sender_name — fetch TranBillDetail
             for obt in need_sender:
                 rec = existing_map[obt]
                 try:
                     detail = self.app._web.fetch_obt_detail(obt)
-                    # sender_name 只來自建單時的輸入（FuncNo=135），不從 TranBillDetail 覆寫
-                    # 收件人 / 備註只在空白時補
-                    if not rec.get("recipient_name", "").strip():
-                        rec["recipient_name"] = detail.get("recipient_name", "")
-                    if not rec.get("notes", "").strip():
-                        rec["notes"] = detail.get("notes", "")
+                    sn = detail.get("sender_name", "").strip()
+                    if sn:
+                        rec["sender_name"] = sn
+                        if not rec.get("recipient_name", "").strip():
+                            rec["recipient_name"] = detail.get("recipient_name", "")
+                        if not rec.get("notes", "").strip():
+                            rec["notes"] = detail.get("notes", "")
+                        enriched += 1
                 except Exception:
                     pass
                 done += 1
@@ -6062,7 +6058,7 @@ class EpbTransferView(tk.Frame):
                         "pdf_path":   pdf_path,
                     }
                     self._save_epb_log(log)
-                    append_tracking(obt, contact.get("name", to_name), doc_id, sender.get("name", ""))
+                    append_tracking(obt, contact.get("name", to_name), doc_id)
                     _append_build_log(f"✓ EPB OBT:{obt} 調撥:{doc_id}")
                     self.after(0, lambda d=doc_id, n=obt, p=pdf_path:
                                self._log(f"✓ {d}  OBT:{n}" + (f"  → {Path(p).name}" if p else "")))
