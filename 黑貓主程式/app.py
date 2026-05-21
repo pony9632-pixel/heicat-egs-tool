@@ -12,11 +12,12 @@ import io
 import json
 import re
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, font as _tkfont, messagebox, scrolledtext, ttk
 
 import yaml
 
@@ -29,7 +30,11 @@ from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS
 # 黑貓資料庫/ 可以放在雲端硬碟（iCloud / Dropbox 等），跨裝置共用
 
 _DATAPATH_FILE    = Path(__file__).parent / ".datapath"
-_DEFAULT_DATA_DIR = Path.home() / "黑貓資料庫"
+_DEFAULT_DATA_DIR = (
+    Path.home() / "Library" / "Application Support" / "黑貓宅急便工具"
+    if getattr(sys, "frozen", False)
+    else Path.home() / "黑貓資料庫"
+)
 _APP_DIR          = Path(__file__).parent   # 程式目錄（舊檔案位置）
 
 def get_data_dir() -> Path:
@@ -90,30 +95,32 @@ def _append_build_log(msg: str):
 VERSION     = "2.3.0"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
-# ─── Pro palette ─────────────────────────────────────────────────────────────
-PAPER   = "#F4F1EA"   # warm cream
-PAPER2  = "#EFEBE3"
-CARD    = "#FFFFFF"
-INK     = "#15171C"
-INK2    = "#3B404B"
-INK3    = "#5F6573"
-MUTED   = "#8E94A1"
-MUTED2  = "#B5BAC4"
-HAIR    = "#E3DFD5"
-HAIR2   = "#EDE9DF"
-HAIR3   = "#F4F0E6"
-ACCENT  = "#D8352B"
-ACCENT2 = "#FAEAE9"   # ~7% tint of accent
-OK      = "#1F7A4D"
-OK2     = "#E4F2EA"
-WARN    = "#A0681A"
-WARN2   = "#FAEFD6"
+# ─── Cool Glass palette (Tahoe-inspired) ────────────────────────────────────
+PAPER   = "#EEF1F5"   # 主背景（冷灰藍）
+PAPER2  = "#E5E9EF"   # 次背景
+CARD    = "#FFFFFF"   # 卡片
+INK     = "#15171C"   # 主文字（品牌鎖定）
+INK2    = "#3A4150"   # 次要文字
+INK3    = "#5F6878"   # 輔助文字
+MUTED   = "#8B94A4"   # 弱化／提示
+MUTED2  = "#B8BFC9"
+HAIR    = "#DCE1EA"   # 主分隔線
+HAIR2   = "#E7EBF2"   # 次分隔線
+HAIR3   = "#F1F4F8"   # 極淡
+ACCENT  = "#D8352B"   # STUDIO A 品牌紅（鎖定）
+ACCENT2 = "#FBE7E5"   # 淺紅底
+OK      = "#1F7A52"
+OK2     = "#DCEFE3"
+WARN    = "#9B6919"
+WARN2   = "#FBEED9"
 ERR     = "#B5342A"
-ERR2    = "#FBE5E2"
-INFO    = "#2469A8"
-INFO2   = "#E1EEF8"
-RAIL    = "#F0ECE2"
-RAIL2   = "#E6E1D5"
+ERR2    = "#FBE0DD"
+INFO    = "#2A6FD4"
+INFO2   = "#DEE9F8"
+RAIL    = "#E9EDF3"   # Sidebar 底
+RAIL2   = "#DBE0E8"   # Sidebar hover
+INPUT_BG     = "#F4F6FA"   # Field / Select 背景
+INPUT_BORDER = "#DCE1EA"   # Field border
 
 import platform
 _IS_MAC = platform.system() == "Darwin"
@@ -138,15 +145,15 @@ _FS = _load_font_scale()
 def _sz(n: int) -> int:
     return max(7, int(round(n * _FS)))
 
-F_NORM   = (FONT_FAMILY, _sz(12))
-F_SMALL  = (FONT_FAMILY, _sz(11))
-F_TINY   = (FONT_FAMILY, _sz(10))
-F_BOLD   = (FONT_FAMILY, _sz(12), "bold")
+F_NORM   = (FONT_FAMILY, _sz(13))
+F_SMALL  = (FONT_FAMILY, _sz(12))
+F_TINY   = (FONT_FAMILY, _sz(11))
+F_BOLD   = (FONT_FAMILY, _sz(13), "bold")
 F_TITLE  = (FONT_FAMILY, _sz(18), "bold")
-F_KICKER = (FONT_FAMILY, _sz(10), "bold")
-F_LABEL  = (FONT_FAMILY, _sz(10))
+F_KICKER = (FONT_FAMILY, _sz(11), "bold")
+F_LABEL  = (FONT_FAMILY, _sz(11))
 F_MONO   = (MONO_FAMILY, _sz(11))
-F_NAV    = (FONT_FAMILY, _sz(12))
+F_NAV    = (FONT_FAMILY, _sz(13))
 
 
 SPEC_OPTIONS   = {"0001  60 cm": "0001", "0002  90 cm": "0002", "0003 120 cm": "0003", "0004 150 cm": "0004"}
@@ -326,52 +333,118 @@ def make_client(cfg: dict) -> SudaClient:
 
 # ─── primitives ──────────────────────────────────────────────────────────────
 
-class TwButton(tk.Frame):
-    """Tidewater button — flat, with hover. variant: primary | default | ghost | danger"""
-    def __init__(self, master, text, command=None, variant="default", width=None, **kw):
-        bg = kw.pop("bg", None) or _frame_bg(master)
-        super().__init__(master, bg=bg)
+class TwButton(tk.Canvas):
+    """Pill-shaped button (spec v3). variant: primary | default | ghost | danger | accent"""
+    _PADX = 18
+    _PADY = 9
+
+    def __init__(self, master, text, command=None, variant="default", **kw):
+        self._outer_bg = kw.pop("bg", None) or _frame_bg(master)
+        kw.pop("width", None)   # ignore legacy char-width param
         self.command = command
         self.variant = variant
         self._enabled = True
+        self._hovering = False
+        self._text_str = text
+        self._font = F_BOLD
         self._configure_colors()
-        self.lbl = tk.Label(self, text=text, bg=self._bg, fg=self._fg,
-                            font=F_BOLD, padx=14, pady=8, cursor="hand2",
-                            width=width)
-        if variant == "default":
-            self.lbl.configure(highlightbackground=HAIR, highlightthickness=1)
-        self.lbl.pack(fill="both", expand=True)
-        self.lbl.bind("<Enter>",   lambda e: self._enabled and self.lbl.configure(bg=self._bg_hover, fg=self._fg_hover))
-        self.lbl.bind("<Leave>",   lambda e: self._enabled and self.lbl.configure(bg=self._bg, fg=self._fg))
-        self.lbl.bind("<Button-1>",lambda e: self._enabled and command and command())
+        # Measure natural size from font metrics
+        _f = _tkfont.Font(family=self._font[0], size=self._font[1], weight="bold")
+        _w = _f.measure(text) + self._PADX * 2
+        _h = _f.metrics("linespace") + self._PADY * 2
+        super().__init__(master, width=_w, height=_h,
+                         bg=self._outer_bg, highlightthickness=0, bd=0, **kw)
+        self._draw()
+        self.bind("<Configure>", lambda e: self._draw())
+        self.bind("<Enter>",     self._on_enter)
+        self.bind("<Leave>",     self._on_leave)
+        self.bind("<Button-1>",  self._on_click)
+        self.configure(cursor="hand2")
 
     def _configure_colors(self):
         v = self.variant
         if v == "primary":
             self._bg, self._fg = INK, "#FFFFFF"
-            self._bg_hover, self._fg_hover = "#0D1420", "#FFFFFF"
+            self._bg_h, self._fg_h = "#2A3142", "#FFFFFF"
+            self._border = None
         elif v == "ghost":
-            self._bg, self._fg = _frame_bg(self.master), INK2
-            self._bg_hover, self._fg_hover = HAIR2, INK
+            self._bg, self._fg = self._outer_bg, INK2
+            self._bg_h, self._fg_h = RAIL, INK
+            self._border = None
         elif v == "danger":
             self._bg, self._fg = CARD, ERR
-            self._bg_hover, self._fg_hover = "#FFE9E5", ERR
+            self._bg_h, self._fg_h = ERR2, ERR
+            self._border = "#F2D6D3"
         elif v == "accent":
             self._bg, self._fg = ACCENT2, ACCENT
-            self._bg_hover, self._fg_hover = "#FFE2D0", ACCENT
+            self._bg_h, self._fg_h = "#F5D3D0", "#B5342A"
+            self._border = None
         else:  # default
             self._bg, self._fg = CARD, INK
-            self._bg_hover, self._fg_hover = HAIR2, INK
+            self._bg_h, self._fg_h = "#F4F6FA", INK
+            self._border = HAIR
 
-    def set_text(self, t): self.lbl.configure(text=t)
+    def _draw(self):
+        self.delete("all")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w <= 1 or h <= 1:
+            self.after(10, self._draw)
+            return
+        active = self._hovering and self._enabled
+        bg = self._bg_h if active else self._bg
+        fg = (self._fg_h if active else self._fg) if self._enabled else MUTED
+        d = h  # circle diameter = height for true pill
+        # Fill: two end-caps + center rectangle
+        self.create_oval(0, 0, d, d, fill=bg, outline="")
+        self.create_oval(w - d, 0, w, d, fill=bg, outline="")
+        self.create_rectangle(d // 2, 0, w - d // 2, h, fill=bg, outline="")
+        # Border outline for default/danger (only when not hovered)
+        if self._border and not active:
+            bc = self._border
+            self.create_arc(0, 0, d, d,
+                            start=90, extent=180, style="arc", outline=bc, width=1)
+            self.create_arc(w - d, 0, w, d,
+                            start=270, extent=180, style="arc", outline=bc, width=1)
+            self.create_line(d // 2, 0,   w - d // 2, 0,   fill=bc, width=1)
+            self.create_line(d // 2, h-1, w - d // 2, h-1, fill=bc, width=1)
+        self.create_text(w // 2, h // 2, text=self._text_str,
+                         font=self._font, fill=fg, anchor="center")
+
+    def _on_enter(self, e=None):
+        if not self._enabled:
+            return
+        self._hovering = True
+        self._draw()
+
+    def _on_leave(self, e=None):
+        self._hovering = False
+        self._draw()
+
+    def _on_click(self, e=None):
+        if self._enabled and self.command:
+            self.command()
+
+    def set_text(self, t):
+        self._text_str = t
+        # Resize Canvas to fit new text
+        _f = _tkfont.Font(family=self._font[0], size=self._font[1], weight="bold")
+        new_w = _f.measure(t) + self._PADX * 2
+        tk.Canvas.configure(self, width=new_w)
+        self._draw()
 
     def set_enabled(self, enabled: bool):
-        """啟用/停用按鈕（TwButton 不是 ttk，不支援 configure(state=...)）。"""
         self._enabled = bool(enabled)
-        self.lbl.configure(
-            cursor="hand2" if enabled else "arrow",
-            fg=self._fg if enabled else MUTED,
-        )
+        tk.Canvas.configure(self, cursor="hand2" if enabled else "arrow")
+        self._draw()
+
+    def configure(self, **kw):
+        # Intercept 'state' so legacy code using state="disabled"/"normal" still works
+        state = kw.pop("state", None)
+        if state is not None:
+            self.set_enabled(state != "disabled")
+        if kw:
+            tk.Canvas.configure(self, **kw)
 
 
 def _frame_bg(widget):
@@ -385,20 +458,24 @@ def _frame_bg(widget):
 
 
 class Card(tk.Frame):
-    """White card with hairline border and inner padding."""
+    """White card — 3-layer frame simulates spec §14 shadow: outer glow → hairline → white."""
     def __init__(self, master, padding=20, **kw):
-        super().__init__(master, bg=HAIR, highlightthickness=0, **kw)
-        self.inner = tk.Frame(self, bg=CARD)
+        # outer: PAPER2 soft-glow ring (4px all sides)
+        super().__init__(master, bg=PAPER2, highlightthickness=0, **kw)
+        # middle: HAIR hairline outline (1px)
+        _mid = tk.Frame(self, bg=HAIR)
+        _mid.pack(fill="both", expand=True, padx=3, pady=3)
+        # inner: white surface
+        self.inner = tk.Frame(_mid, bg=CARD)
         self.inner.pack(fill="both", expand=True, padx=1, pady=1)
         self._pad = padding
-        # padding sub-frame
         self.body = tk.Frame(self.inner, bg=CARD)
         self.body.pack(fill="both", expand=True, padx=padding, pady=padding)
 
 
 class Kicker(tk.Label):
     """Uppercase eyebrow label."""
-    def __init__(self, master, text, color=MUTED, **kw):
+    def __init__(self, master, text, color=ACCENT, **kw):
         super().__init__(master, text=text.upper(), font=F_KICKER,
                          fg=color, bg=_frame_bg(master), **kw)
 
@@ -530,8 +607,8 @@ class App(tk.Tk):
     # ── startup version check ────────────────────────────────────────────────
 
     def _startup_check(self):
-        import sys
         just_updated = "--just-updated" in sys.argv
+        frozen = getattr(sys, "frozen", False)
         try:
             import urllib.request as _req, ssl
             _ctx = ssl.create_default_context()
@@ -550,56 +627,85 @@ class App(tk.Tk):
                         # 剛更新過卻仍偵測到更新 → Release 版本與 VERSION 不符，防止死循環
                         self.after(0, self._init_ui)
                         return
-                    zipball = data.get("zipball_url", "")
-                    html    = data.get("html_url", "")
-                    self.after(0, lambda t=tag, z=zipball, h=html:
-                               self._do_startup_update(t, z, h))
+                    html = data.get("html_url", "")
+                    if frozen:
+                        # frozen .app：從 release assets 找 .app.zip
+                        assets = data.get("assets", [])
+                        asset = next(
+                            (a for a in assets if a["name"] == "黑貓宅急便工具.app.zip"),
+                            None,
+                        )
+                        if not asset:
+                            self.after(0, self._init_ui)
+                            return
+                        download_url = asset["browser_download_url"]
+                    else:
+                        download_url = data.get("zipball_url", "")
+                    self.after(0, lambda t=tag, u=download_url, h=html, fr=frozen:
+                               self._do_startup_update(t, u, h, frozen=fr))
                     return
         except Exception:
             pass
         self.after(0, self._init_ui)
 
-    def _do_startup_update(self, new_version, zipball_url, html_url):
+    def _do_startup_update(self, new_version, download_url, html_url, frozen=False):
         self._splash_lbl.config(text=f"發現新版本 v{new_version}，自動更新中…")
 
         def run():
             try:
-                import ssl, shutil, tempfile, os
+                import ssl, shutil, tempfile, os, zipfile
                 import urllib.request as _req
 
                 ssl_ctx = ssl.create_default_context()
                 ssl_ctx.check_hostname = False
                 ssl_ctx.verify_mode = ssl.CERT_NONE
-                req = _req.Request(zipball_url, headers={"User-Agent": "heicat-egs-tool"})
+                req = _req.Request(download_url, headers={"User-Agent": "heicat-egs-tool"})
                 with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
                     temp_zip = f.name
-                with _req.urlopen(req, context=ssl_ctx, timeout=60) as resp:
+                with _req.urlopen(req, context=ssl_ctx, timeout=120) as resp:
                     with open(temp_zip, "wb") as f:
                         shutil.copyfileobj(resp, f)
 
                 self.after(0, lambda: self._splash_lbl.config(text="解壓縮並套用更新…"))
 
-                import zipfile
-                dst_root = Path(__file__).parent.parent
-                preserve = {
-                    str(dst_root / "黑貓主程式" / "config.yaml"),
-                    str(dst_root / "黑貓主程式" / "contacts.json"),
-                }
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    with zipfile.ZipFile(temp_zip, "r") as z:
-                        z.extractall(tmpdir)
-                    top = next(p for p in Path(tmpdir).iterdir() if p.is_dir())
-                    for src in top.rglob("*"):
-                        rel = src.relative_to(top)
-                        dst = dst_root / rel
-                        if src.is_dir():
-                            dst.mkdir(parents=True, exist_ok=True)
-                        elif str(dst) not in preserve:
-                            dst.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(str(src), str(dst))
-                            # GitHub zipball 不帶執行權限，.command 雙擊會失效
-                            if dst.suffix == ".command":
-                                os.chmod(str(dst), 0o755)
+                if frozen:
+                    # frozen .app：覆蓋整個 .app bundle
+                    app_bundle = Path(sys.executable).parent.parent.parent
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        with zipfile.ZipFile(temp_zip, "r") as z:
+                            z.extractall(tmpdir)
+                        new_app = next(
+                            p for p in Path(tmpdir).rglob("*.app") if p.is_dir()
+                        )
+                        # 先備份再替換（確保同一 volume，可以原子 rename）
+                        backup = app_bundle.with_suffix(".app.bak")
+                        if backup.exists():
+                            shutil.rmtree(str(backup))
+                        shutil.copytree(str(new_app), str(app_bundle.with_suffix(".app.new")))
+                        app_bundle.rename(backup)
+                        app_bundle.with_suffix(".app.new").rename(app_bundle)
+                        shutil.rmtree(str(backup), ignore_errors=True)
+                else:
+                    # 源碼模式：覆蓋程式目錄，保留用戶資料
+                    dst_root = Path(__file__).parent.parent
+                    preserve = {
+                        str(dst_root / "黑貓主程式" / "config.yaml"),
+                        str(dst_root / "黑貓主程式" / "contacts.json"),
+                    }
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        with zipfile.ZipFile(temp_zip, "r") as z:
+                            z.extractall(tmpdir)
+                        top = next(p for p in Path(tmpdir).iterdir() if p.is_dir())
+                        for src in top.rglob("*"):
+                            rel = src.relative_to(top)
+                            dst = dst_root / rel
+                            if src.is_dir():
+                                dst.mkdir(parents=True, exist_ok=True)
+                            elif str(dst) not in preserve:
+                                dst.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(str(src), str(dst))
+                                if dst.suffix == ".command":
+                                    os.chmod(str(dst), 0o755)
 
                 os.unlink(temp_zip)
                 self.after(0, self._restart_app)
@@ -609,9 +715,15 @@ class App(tk.Tk):
         threading.Thread(target=run, daemon=True).start()
 
     def _restart_app(self):
-        import os, sys
-        args = [sys.executable, str(Path(__file__)), "--just-updated"]
-        os.execv(sys.executable, args)
+        import os
+        if getattr(sys, "frozen", False):
+            # frozen .app：用 open 啟動更新後的 bundle，然後結束自身
+            app_bundle = str(Path(sys.executable).parent.parent.parent)
+            subprocess.Popen(["open", "-n", "-a", app_bundle, "--args", "--just-updated"])
+            sys.exit(0)
+        else:
+            args = [sys.executable, str(Path(__file__)), "--just-updated"]
+            os.execv(sys.executable, args)
 
     # ── build full UI ────────────────────────────────────────────────────────
 
@@ -1458,34 +1570,43 @@ class Sidebar(tk.Frame):
 
 
 class NavItem(tk.Frame):
+    """Sidebar nav row. Active state shows a white pill floating on the RAIL bg."""
     def __init__(self, master, label, kbd, icon, on_click):
-        super().__init__(master, bg=RAIL)
+        # outer frame stays RAIL — provides the 4px horizontal "pill margin"
+        super().__init__(master, bg=RAIL, padx=6, pady=2)
         self._active = False
         self._on_click = on_click
-        self.inner = tk.Frame(self, bg=RAIL)
-        self.inner.pack(fill="x")
+        # inner pill: HAIR border when active, RAIL otherwise
+        self._pill_border = tk.Frame(self, bg=RAIL)
+        self._pill_border.pack(fill="x")
+        self.inner = tk.Frame(self._pill_border, bg=RAIL)
+        self.inner.pack(fill="x", padx=1, pady=1)
         # icon
         self.icn = tk.Label(self.inner, text=icon,
-                            font=(FONT_FAMILY, _sz(12)), bg=RAIL, fg=MUTED,
-                            width=2, padx=2, pady=7)
+                            font=(FONT_FAMILY, _sz(13)), bg=RAIL, fg=MUTED,
+                            width=2, padx=2, pady=6)
         self.icn.pack(side="left", padx=(6, 0))
         self.lbl = tk.Label(self.inner, text=label, font=F_NAV,
-                            bg=RAIL, fg=INK2, anchor="w", pady=7)
+                            bg=RAIL, fg=INK2, anchor="w", pady=6)
         self.lbl.pack(side="left", fill="x", expand=True, padx=4)
         self.kbd = tk.Label(self.inner, text=f"⌘{kbd}",
-                            font=(MONO_FAMILY, _sz(9)),
-                            bg=RAIL, fg=MUTED2, padx=8)
+                            font=(MONO_FAMILY, _sz(10)),
+                            bg=RAIL, fg=MUTED, padx=8)
         self.kbd.pack(side="right")
         # badge (hidden by default, shown when count > 0)
         self.badge_lbl = tk.Label(self.inner, text="",
-                                  font=(MONO_FAMILY, _sz(9), "bold"),
+                                  font=(MONO_FAMILY, _sz(10), "bold"),
                                   bg=ACCENT, fg="#FFFFFF",
                                   padx=5, pady=1, relief="flat", borderwidth=0)
-        for w in (self.inner, self.icn, self.lbl, self.kbd):
+        for w in (self._pill_border, self.inner, self.icn, self.lbl, self.kbd):
             w.bind("<Button-1>", lambda e: self._on_click())
             w.bind("<Enter>", self._hover)
             w.bind("<Leave>", self._unhover)
             w.configure(cursor="hand2")
+        self.bind("<Button-1>", lambda e: self._on_click())
+        self.bind("<Enter>", self._hover)
+        self.bind("<Leave>", self._unhover)
+        self.configure(cursor="hand2")
         self.badge_lbl.bind("<Button-1>", lambda e: self._on_click())
         self.badge_lbl.configure(cursor="hand2")
 
@@ -1497,12 +1618,12 @@ class NavItem(tk.Frame):
         else:
             self.badge_lbl.pack_forget()
 
-    def _all(self): return (self.inner, self.icn, self.lbl, self.kbd)
+    def _all(self): return (self._pill_border, self.inner, self.icn, self.lbl, self.kbd)
 
     def _hover(self, e):
         if self._active: return
         for w in self._all():
-            w.configure(bg=HAIR2)
+            w.configure(bg=RAIL2)
 
     def _unhover(self, e):
         if self._active: return
@@ -1511,15 +1632,20 @@ class NavItem(tk.Frame):
 
     def set_active(self, on):
         self._active = on
-        bg  = CARD if on else RAIL
-        fg  = INK  if on else INK2
-        ifg = ACCENT if on else MUTED
-        for w in self._all():
-            w.configure(bg=bg)
-        self.lbl.configure(fg=fg,
-                           font=(FONT_FAMILY, _sz(12), "bold") if on else F_NAV)
-        self.icn.configure(fg=ifg)
-        self.kbd.configure(fg=MUTED2)
+        if on:
+            # white pill floating: HAIR border frame + CARD inner
+            self._pill_border.configure(bg=HAIR)
+            self.inner.configure(bg=CARD)
+            self.icn.configure(bg=CARD, fg=ACCENT)
+            self.lbl.configure(bg=CARD, fg=INK,
+                               font=(FONT_FAMILY, _sz(13), "bold"))
+            self.kbd.configure(bg=CARD, fg=MUTED)
+        else:
+            for w in self._all():
+                w.configure(bg=RAIL)
+            self.lbl.configure(fg=INK2, font=F_NAV)
+            self.icn.configure(fg=MUTED)
+            self.kbd.configure(fg=MUTED)
 
 
 # ─── top bar ─────────────────────────────────────────────────────────────────
@@ -3653,7 +3779,7 @@ class ContactsView(tk.Frame):
                  font=F_TINY, bg=bg, fg=INK2, anchor="w",
                  wraplength=360, justify="left").pack(fill="x")
         if c.get("notes"):
-            tag = tk.Label(body, text=c["notes"][:8], font=F_TINY,
+            tag = tk.Label(body, text=c["notes"][:12], font=F_TINY,
                            bg="#FFE9D8", fg=ACCENT, padx=6, pady=2)
             tag.pack(side="right")
         Hairline(self.list_body).pack(fill="x")
