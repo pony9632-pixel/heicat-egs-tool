@@ -832,6 +832,15 @@ class App(tk.Tk):
     # ── startup version check ────────────────────────────────────────────────
 
     def _startup_check(self):
+        # 剛自動更新完重開（--just-updated）：跳過再一次的 GitHub 版本檢查（省掉約 5 秒
+        # 「確認版本中…」等待），直接進入載入；建構期間 splash 會顯示「更新完成，載入中…」。
+        if "--just-updated" in sys.argv:
+            try:
+                self._splash_lbl.config(text="更新完成，載入中…")
+            except Exception:
+                pass
+            self.after(0, self._init_ui)
+            return
         if not load_cfg().get("check_updates", True):
             self.after(0, self._init_ui)
             return
@@ -1229,6 +1238,12 @@ class App(tk.Tk):
             view = _NAV_KC.get(raw)
             if view:
                 self.show_view(view)
+                return "break"
+            # ⌘+⌥+E 進階功能隱藏解鎖：Tk 9.0 的 <Command-Option-e> keysym 綁定收不到
+            #（Option 被當成 Alt），改用 keycode（e=14）+ Option 修飾鍵（state & 0x10）判斷，
+            # 穿透 Tk 9.0 / 注音；單純 ⌘E（無 Option）不會觸發，維持隱藏。
+            if raw == 14 and (e.state & 0x10):
+                self._open_epb_unlock_dialog()
                 return "break"
         self.bind_all("<Command-KeyPress>", _keycode_guard, add="+")
         def _keycode_guard_state(e):
