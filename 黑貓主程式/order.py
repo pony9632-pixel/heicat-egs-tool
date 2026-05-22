@@ -134,11 +134,10 @@ def _csv_row_to_api_order(row: dict, sender: dict) -> dict:
     }
 
 
-def create_orders(client: SudaClient, orders: list[dict], sender: dict, output_dir: str = ".", print_obt_type: str = "01") -> list[dict]:
+def create_orders(client: SudaClient, orders: list[dict], sender: dict, output_dir: str = ".") -> list[dict]:
     """
     批次建立寄件單。
     每筆成功時儲存 PDF 至 output_dir，並回傳結果清單。
-    print_obt_type: "01"=標準, "02"=A4兩模
     """
     results = []
     for i, row in enumerate(orders, start=1):
@@ -146,7 +145,7 @@ def create_orders(client: SudaClient, orders: list[dict], sender: dict, output_d
         print(f"[Create] ({i}/{len(orders)}) 訂單 {order_id} - {row['recipient_name']}")
 
         api_order = _csv_row_to_api_order(row, sender)
-        resp = client.print_obt([api_order], print_obt_type=print_obt_type)
+        resp = client.print_obt([api_order])
 
         if resp.get("IsOK") == "Y":
             data = resp.get("Data") or {}

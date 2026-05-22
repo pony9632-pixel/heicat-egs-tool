@@ -99,7 +99,7 @@ def _append_build_log(msg: str):
     pass
 
 
-VERSION     = "2.5.3"
+VERSION     = "2.5.4"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Cool Glass palette (Tahoe-inspired) ────────────────────────────────────
@@ -1851,7 +1851,6 @@ class SingleOrderView(tk.Frame):
         self._staging_list_frame = None
         self._cat_var = None
         self._cat_seg = None
-        self._print_type_var = tk.StringVar(value="01")
         self._cat_map = {
             "門市": "Y 收件人付（運費到付）",
             "廠商": "Y 收件人付（運費到付）",
@@ -2080,31 +2079,6 @@ class SingleOrderView(tk.Frame):
                  font=F_SMALL, bg=CARD, fg=INK3).pack(side="left")
         TwButton(ab_inner, "建立寄件單  →", variant="primary",
                  command=self._submit).pack(side="right", padx=(8, 0))
-        # 列印格式切換
-        fmt_frame = tk.Frame(ab_inner, bg=CARD)
-        fmt_frame.pack(side="right", padx=(4, 4))
-        tk.Label(fmt_frame, text="格式", font=F_TINY, bg=CARD, fg=MUTED).pack(side="left", padx=(0, 4))
-        for label, val in [("標準", "01"), ("A4兩模", "02")]:
-            b = tk.Label(fmt_frame, text=label, font=F_SMALL, cursor="hand2",
-                         padx=8, pady=3, relief="flat")
-            def _update_fmt(v=val, frm=fmt_frame):
-                self._print_type_var.set(v)
-                for child in frm.winfo_children():
-                    if isinstance(child, tk.Label) and child.cget("cursor") == "hand2":
-                        is_sel = child.cget("text") == (
-                            "標準" if v == "01" else "A4兩模"
-                        )
-                        child.config(bg=INK if is_sel else HAIR3,
-                                     fg="#FFFFFF" if is_sel else INK2)
-            b.config(bg=INK if val == "01" else HAIR3,
-                     fg="#FFFFFF" if val == "01" else INK2)
-            b.bind("<Button-1>", lambda e, _v=val, _b=b, _frm=fmt_frame:
-                   [self._print_type_var.set(_v),
-                    [c.config(bg=INK if c.cget("text") == _b.cget("text") else HAIR3,
-                              fg="#FFFFFF" if c.cget("text") == _b.cget("text") else INK2)
-                     for c in _frm.winfo_children()
-                     if isinstance(c, tk.Label) and c.cget("cursor") == "hand2"]])
-            b.pack(side="left", padx=2)
         TwButton(ab_inner, "從剪貼板帶入", variant="default",
                  command=self._paste_recipient_from_clipboard).pack(side="right", padx=(4, 0))
         TwButton(ab_inner, "存入通訊錄", variant="ghost",
@@ -2708,8 +2682,7 @@ class SingleOrderView(tk.Frame):
             try:
                 client = make_client(cfg)
                 Path(get_output_dir()).mkdir(parents=True, exist_ok=True)
-                results = create_orders(client, [values], sender, output_dir=get_output_dir(),
-                                        print_obt_type=self._print_type_var.get())
+                results = create_orders(client, [values], sender, output_dir=get_output_dir())
                 r = results[0]
                 if r["success"]:
                     msg = f"✓ 建單成功！OBT：{r['obt_number']}"
@@ -2751,7 +2724,6 @@ class BatchOrderView(tk.Frame):
         self.app = app
         self.rows: list[dict] = []   # each: {"data": dict, "card": Card, "widgets": dict}
         self.output_dir = get_output_dir()
-        self._print_type_var = tk.StringVar(value="01")
         self._build()
 
     def _build(self):
@@ -2833,18 +2805,6 @@ class BatchOrderView(tk.Frame):
         fa = tk.Frame(ft, bg=PAPER); fa.pack(side="right")
         TwButton(fa, "全部建單  →", variant="primary",
                  command=self._submit_all).pack(side="left", padx=4)
-        tk.Label(fa, text="格式", font=F_TINY, bg=PAPER, fg=MUTED).pack(side="left", padx=(12, 4))
-        for label, val in [("標準", "01"), ("A4兩模", "02")]:
-            b = tk.Label(fa, text=label, font=F_SMALL, cursor="hand2",
-                         padx=8, pady=3, bg=INK if val == "01" else HAIR3,
-                         fg="#FFFFFF" if val == "01" else INK2)
-            b.bind("<Button-1>", lambda e, _v=val, _b=b, _fa=fa:
-                   [self._print_type_var.set(_v),
-                    [c.config(bg=INK if c.cget("text") == _b.cget("text") else HAIR3,
-                              fg="#FFFFFF" if c.cget("text") == _b.cget("text") else INK2)
-                     for c in _fa.winfo_children()
-                     if isinstance(c, tk.Label) and c.cget("cursor") == "hand2"]])
-            b.pack(side="left", padx=2)
 
         # ─── progress + log
         self.progress_lbl = tk.Label(wrap, text="", font=F_SMALL,
@@ -3220,7 +3180,7 @@ class BatchOrderView(tk.Frame):
                 oid = order.get("order_id", f"#{i}")
                 try:
                     api_order = _csv_row_to_api_order(order, sender)
-                    resp = client.print_obt([api_order], print_obt_type=self._print_type_var.get())
+                    resp = client.print_obt([api_order])
                     if resp.get("IsOK") == "Y":
                         data = resp.get("Data") or {}
                         if isinstance(data, list) and data: data = data[0]
