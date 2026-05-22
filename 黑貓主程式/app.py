@@ -607,23 +607,106 @@ def _wheel_units(event) -> int:
     return units
 
 
+_MOUSEWHEEL_EVENTS = ("<MouseWheel>", "<Button-4>", "<Button-5>")
+_MOUSEWHEEL_BINDTAG = "HeicatMouseWheel"
+
+
+def _scroll_widget(widget, event):
+    try:
+        widget.yview_scroll(_wheel_units(event), "units")
+        return "break"
+    except Exception:
+        return None
+
+
 def _bind_mousewheel_all(widget, callback):
-    widget.bind_all("<MouseWheel>", callback)
-    widget.bind_all("<Button-4>", callback)
-    widget.bind_all("<Button-5>", callback)
+    for sequence in _MOUSEWHEEL_EVENTS:
+        widget.bind_all(sequence, callback)
 
 
 def _unbind_mousewheel_all(widget):
-    widget.unbind_all("<MouseWheel>")
-    widget.unbind_all("<Button-4>")
-    widget.unbind_all("<Button-5>")
+    for sequence in _MOUSEWHEEL_EVENTS:
+        widget.unbind_all(sequence)
+
+
+def _event_scroll_target(event):
+    widget = event.widget
+    while widget is not None:
+        target = getattr(widget, "_heicat_scroll_target", None)
+        if target is not None:
+            try:
+                if target.winfo_exists():
+                    return target
+            except Exception:
+                pass
+        try:
+            parent = widget.winfo_parent()
+            widget = widget.nametowidget(parent) if parent else None
+        except Exception:
+            break
+    try:
+        return getattr(event.widget.winfo_toplevel(), "_active_view_canvas", None)
+    except Exception:
+        return None
+
+
+def _install_mousewheel_class_binding(root):
+    if getattr(root, "_heicat_mousewheel_class_bound", False):
+        return
+
+    def _on_wheel(event):
+        target = _event_scroll_target(event)
+        if target is None:
+            return None
+        return _scroll_widget(target, event)
+
+    for sequence in _MOUSEWHEEL_EVENTS:
+        root.bind_class(_MOUSEWHEEL_BINDTAG, sequence, _on_wheel)
+    root._heicat_mousewheel_class_bound = True
+
+
+def _mark_mousewheel_area(widget, scroll_target):
+    try:
+        top = widget.winfo_toplevel()
+        _install_mousewheel_class_binding(top)
+    except Exception:
+        return
+
+    def visit(w):
+        try:
+            w._heicat_scroll_target = scroll_target
+            tags = w.bindtags()
+            if _MOUSEWHEEL_BINDTAG not in tags:
+                w.bindtags((tags[0], _MOUSEWHEEL_BINDTAG, *tags[1:]))
+            children = w.winfo_children()
+        except Exception:
+            return
+        for child in children:
+            visit(child)
+
+    visit(widget)
+
+
+def _schedule_mousewheel_area_mark(widget, scroll_target):
+    if getattr(widget, "_heicat_wheel_mark_scheduled", False):
+        return
+    widget._heicat_wheel_mark_scheduled = True
+
+    def run():
+        widget._heicat_wheel_mark_scheduled = False
+        _mark_mousewheel_area(widget, scroll_target)
+
+    try:
+        widget.after_idle(run)
+    except Exception:
+        _mark_mousewheel_area(widget, scroll_target)
 
 
 def _bind_mousewheel_on_hover(hover_widget, canvas):
     """游標在 hover_widget 範圍內時把 wheel 綁到 canvas；離開時還原為
     App._active_view_canvas（若有）以避免殺掉外層綁定。"""
     def _on_wheel(e):
-        canvas.yview_scroll(_wheel_units(e), "units")
+        return _scroll_widget(canvas, e)
     def _on_enter(_):
         _bind_mousewheel_all(hover_widget.winfo_toplevel(), _on_wheel)
     def _on_leave(e):
@@ -642,9 +725,18 @@ def _bind_mousewheel_on_hover(hover_widget, canvas):
         if outer is not None:
             _bind_mousewheel_all(
                 top,
-                lambda e, _c=outer: _c.yview_scroll(_wheel_units(e), "units"))
+                lambda e, _c=outer: _scroll_widget(_c, e))
         else:
             _unbind_mousewheel_all(top)
+    _schedule_mousewheel_area_mark(hover_widget, canvas)
+    hover_widget.bind(
+        "<Configure>",
+        lambda e, _w=hover_widget, _c=canvas: _schedule_mousewheel_area_mark(_w, _c),
+        add="+")
+    hover_widget.bind(
+        "<Map>",
+        lambda e, _w=hover_widget, _c=canvas: _schedule_mousewheel_area_mark(_w, _c),
+        add="+")
     hover_widget.bind("<Enter>", _on_enter)
     hover_widget.bind("<Leave>", _on_leave)
 
@@ -954,9 +1046,10 @@ class App(tk.Tk):
         if hasattr(v, "_scroll_canvas"):
             c = v._scroll_canvas
             self._active_view_canvas = c
+            _schedule_mousewheel_area_mark(v, c)
             _bind_mousewheel_all(
                 self,
-                lambda e, _c=c: _c.yview_scroll(_wheel_units(e), "units"))
+                lambda e, _c=c: _scroll_widget(_c, e))
         else:
             self._active_view_canvas = None
             _unbind_mousewheel_all(self)
