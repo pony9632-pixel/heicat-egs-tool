@@ -586,12 +586,18 @@ def field_label(master, text, required=False, hint=None):
 
 def _wheel_units(event) -> int:
     """
-    把跨平台 MouseWheel.delta 轉成 yview_scroll 需要的「行數」。
+    把跨平台滑鼠滾輪事件轉成 yview_scroll 需要的「行數」。
     - Windows / X11：delta 是 ±120 的倍數 → 除 120
     - macOS（含 trackpad）：delta 是 ±1~5 的小整數 → 直接用、不除
+    - 部分 Tk / 外接滑鼠：滾輪會送 Button-4 / Button-5，沒有 delta
     保證符號正確且絕對值至少為 1（避免 int 截斷成 0 害事件被吞）。
     """
-    d = event.delta
+    num = getattr(event, "num", None)
+    if num == 4:
+        return -1
+    if num == 5:
+        return 1
+    d = getattr(event, "delta", 0)
     if abs(d) >= 120:
         units = int(-d / 120)
     else:
@@ -601,13 +607,25 @@ def _wheel_units(event) -> int:
     return units
 
 
+def _bind_mousewheel_all(widget, callback):
+    widget.bind_all("<MouseWheel>", callback)
+    widget.bind_all("<Button-4>", callback)
+    widget.bind_all("<Button-5>", callback)
+
+
+def _unbind_mousewheel_all(widget):
+    widget.unbind_all("<MouseWheel>")
+    widget.unbind_all("<Button-4>")
+    widget.unbind_all("<Button-5>")
+
+
 def _bind_mousewheel_on_hover(hover_widget, canvas):
     """游標在 hover_widget 範圍內時把 wheel 綁到 canvas；離開時還原為
     App._active_view_canvas（若有）以避免殺掉外層綁定。"""
     def _on_wheel(e):
         canvas.yview_scroll(_wheel_units(e), "units")
     def _on_enter(_):
-        hover_widget.winfo_toplevel().bind_all("<MouseWheel>", _on_wheel)
+        _bind_mousewheel_all(hover_widget.winfo_toplevel(), _on_wheel)
     def _on_leave(e):
         try:
             wx = hover_widget.winfo_rootx()
@@ -622,11 +640,11 @@ def _bind_mousewheel_on_hover(hover_widget, canvas):
         top = hover_widget.winfo_toplevel()
         outer = getattr(top, "_active_view_canvas", None)
         if outer is not None:
-            top.bind_all(
-                "<MouseWheel>",
+            _bind_mousewheel_all(
+                top,
                 lambda e, _c=outer: _c.yview_scroll(_wheel_units(e), "units"))
         else:
-            top.unbind_all("<MouseWheel>")
+            _unbind_mousewheel_all(top)
     hover_widget.bind("<Enter>", _on_enter)
     hover_widget.bind("<Leave>", _on_leave)
 
@@ -936,11 +954,12 @@ class App(tk.Tk):
         if hasattr(v, "_scroll_canvas"):
             c = v._scroll_canvas
             self._active_view_canvas = c
-            self.bind_all("<MouseWheel>",
-                          lambda e, _c=c: _c.yview_scroll(_wheel_units(e), "units"))
+            _bind_mousewheel_all(
+                self,
+                lambda e, _c=c: _c.yview_scroll(_wheel_units(e), "units"))
         else:
             self._active_view_canvas = None
-            self.unbind_all("<MouseWheel>")
+            _unbind_mousewheel_all(self)
 
     # ── macOS clipboard fix (preserved from original) ─────────────────────────
 
