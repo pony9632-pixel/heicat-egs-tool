@@ -18,19 +18,21 @@
 
 ## 給同事的快速安裝
 
-不需要先下載任何東西，只要有 Mac 和網路。
+### 步驟 1：安裝 Python（沒裝過才需要）
 
-### 步驟 1：一鍵安裝
+前往 **https://www.python.org/downloads/** 下載最新版 Python 3，執行安裝檔，全部選預設按「繼續」即可。
+
+> 已經有 Python 3.10 以上的電腦可以跳過這步。
+
+### 步驟 2：一鍵安裝工具
 
 開「**終端機**」（Spotlight 搜尋 `Terminal`），貼上以下指令後按 Enter，等它跑完即可：
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/pony9632-pixel/heicat-egs-tool/faea6e4/install.sh" | bash
+curl -fsSL "https://raw.githubusercontent.com/pony9632-pixel/heicat-egs-tool/main/install.sh" | bash
 ```
 
-腳本會自動完成所有事情：確認 Python 3、下載程式、安裝套件，完成後自動開啟程式資料夾。
-
-> 若出現要求輸入電腦登入密碼的提示，輸入後按 Enter 即可（安裝 Python 的正常步驟）。
+腳本會自動下載程式、建立執行環境、安裝套件，完成後自動開啟程式資料夾。
 
 ### 步驟 2：填設定
 
