@@ -189,6 +189,8 @@ if [[ \$STATUS -ne 0 || \$DURATION -lt 3 ]]; then
     echo "請把這個畫面或「黑貓啟動診斷.log」傳給維護者。"
     echo "按 Enter 關閉視窗。"
     read
+else
+    osascript -e 'tell application "Terminal" to close (every window whose name contains "啟動黑貓工具")' &
 fi
 EOF
 chmod +x "$INSTALL_DIR/黑貓主程式/啟動黑貓工具.command"

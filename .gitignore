@@ -25,6 +25,10 @@ packaging/dmg_staging/
 黑貓主程式/design_brief.md
 黑貓主程式/ui_spec.py
 
+# 啟動 / 滾輪診斷紀錄（執行期產生，不進版控）
+啟動診斷.log
+黑貓滾輪診斷.log
+
 # Python 快取
 __pycache__/
 *.pyc
