@@ -99,7 +99,7 @@ def _append_build_log(msg: str):
     pass
 
 
-VERSION     = "2.5.1"
+VERSION     = "2.5.2"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Cool Glass palette (Tahoe-inspired) ────────────────────────────────────
@@ -3400,6 +3400,8 @@ class TrackingView(tk.Frame):
         self._filter_btns: dict[str, tk.Label] = {}
         self._count_lbls: dict[str, tk.Label] = {}
         self._last_sync_ts: float = 0   # epoch，用於自動同步冷卻
+        self._search_var = tk.StringVar()
+        self._row_widgets: dict[str, tk.Frame] = {}
         self._build()
 
     def _build(self):
@@ -3455,21 +3457,25 @@ class TrackingView(tk.Frame):
         ac = Card(wrap, padding=14); ac.pack(fill="x", pady=(0, 14))
         add_bar = tk.Frame(ac.body, bg=CARD); add_bar.pack(fill="x")
         Kicker(add_bar, "手動新增").pack(side="left", padx=(0, 14))
-        self._add_obt_var  = tk.StringVar()
-        self._add_name_var = tk.StringVar()
+        self._add_obt_var = tk.StringVar()
         e_obt = tk.Entry(add_bar, textvariable=self._add_obt_var,
                          font=F_MONO, relief="flat", bg=HAIR3, fg=INK,
                          highlightthickness=1, highlightbackground=HAIR,
                          width=20)
         e_obt.pack(side="left", padx=(0, 8), ipady=5)
-        e_name = tk.Entry(add_bar, textvariable=self._add_name_var,
-                          font=F_NORM, relief="flat", bg=HAIR3, fg=INK,
-                          highlightthickness=1, highlightbackground=HAIR,
-                          width=14)
-        e_name.pack(side="left", padx=(0, 8), ipady=5)
         TwButton(add_bar, "新增到清單", variant="default",
                  command=self._manual_add).pack(side="left")
         e_obt.bind("<Return>", lambda _: self._manual_add())
+
+        # search field
+        tk.Frame(add_bar, bg=CARD, width=24).pack(side="left")
+        Kicker(add_bar, "尋找單號").pack(side="left", padx=(0, 10))
+        e_search = tk.Entry(add_bar, textvariable=self._search_var,
+                            font=F_MONO, relief="flat", bg=HAIR3, fg=INK,
+                            highlightthickness=1, highlightbackground=HAIR,
+                            width=18)
+        e_search.pack(side="left", ipady=5)
+        e_search.bind("<Return>", lambda _: self._find_obt())
 
         # table card (filter tabs + rows)
         tcard = Card(wrap, padding=0)
@@ -3577,6 +3583,7 @@ class TrackingView(tk.Frame):
             w.destroy()
         self._status_labels.clear()
 
+        self._row_widgets.clear()
         filt = self._filter
         shown = [r for r in self._records
                  if (filt == "all" and self._status_tone(r.get("status","—")) != "ok")
@@ -3605,6 +3612,7 @@ class TrackingView(tk.Frame):
 
         row = tk.Frame(self._list_body, bg=CARD)
         row.pack(fill="x")
+        self._row_widgets[obt] = row
         inner = tk.Frame(row, bg=CARD)
         inner.pack(fill="x", padx=4, pady=8)
         _apply_trk_grid(inner)
@@ -3643,9 +3651,50 @@ class TrackingView(tk.Frame):
         if divider:
             Hairline(self._list_body).pack(fill="x")
 
+    def _find_obt(self):
+        q = self._search_var.get().strip()
+        if not q:
+            return
+        rec = next((r for r in self._records if q in r.get("obt_number", "")), None)
+        if not rec:
+            messagebox.showinfo("找不到", f"找不到包含「{q}」的單號。", parent=self)
+            return
+        obt = rec["obt_number"]
+        # 切到能顯示這筆的 tab（ok 狀態在「順利送達」，其餘在「全部」）
+        tone = self._status_tone(rec.get("status", "—"))
+        target = "ok" if tone == "ok" else "all"
+        if self._filter != target:
+            self._set_filter(target)
+        # 等 render 完再捲動
+        self.after(50, lambda: self._scroll_to_obt(obt))
+
+    def _scroll_to_obt(self, obt: str):
+        row = self._row_widgets.get(obt)
+        if not row:
+            return
+        canvas = self._scroll_canvas
+        canvas.update_idletasks()
+        wy = row.winfo_y()
+        total = self._list_body.winfo_height()
+        if total > 0:
+            canvas.yview_moveto(max(0.0, (wy - 20) / total))
+        # 黃色閃爍 highlight
+        def _flash(widgets, color, count):
+            for w in widgets:
+                try:
+                    w.config(bg=color)
+                except Exception:
+                    pass
+            if count > 0:
+                next_color = CARD if color != CARD else "#FFF3CD"
+                row.after(200, lambda: _flash(widgets, next_color, count - 1))
+        all_widgets = [row] + list(row.winfo_children())
+        for child in list(row.winfo_children()):
+            all_widgets += list(child.winfo_children())
+        _flash(all_widgets, "#FFF3CD", 5)
+
     def _manual_add(self):
-        obt  = self._add_obt_var.get().strip()
-        name = self._add_name_var.get().strip() or "—"
+        obt = self._add_obt_var.get().strip()
         if not obt:
             messagebox.showwarning("請填寫單號", "請輸入貨運單號後再新增。", parent=self)
             return
@@ -3653,9 +3702,8 @@ class TrackingView(tk.Frame):
         if any(r.get("obt_number") == obt for r in records):
             messagebox.showinfo("已存在", f"單號 {obt} 已在清單中。", parent=self)
             return
-        append_tracking(obt, name, "—")
+        append_tracking(obt, "—", "—")
         self._add_obt_var.set("")
-        self._add_name_var.set("")
         self.refresh()
 
     def _cancel_obt(self, obt: str, name: str):
@@ -3933,35 +3981,32 @@ class TrackingView(tk.Frame):
 
             new_obts = [obt for obt in merged
                         if obt not in existing_obts and obt not in deleted_obts]
-            # existing records that are missing sender_name also need a detail fetch
-            need_sender = [obt for obt in merged
-                           if obt not in deleted_obts
-                           and obt in existing_map
-                           and not existing_map[obt].get("sender_name", "").strip()]
-            total_detail = len(new_obts) + len(need_sender)
+            total_detail = len(new_obts)
             self.after(0, lambda t=total_detail: _show_detail_progress(t))
 
             added    = 0
             enriched = 0
             done     = 0
 
-            # 從配置取寄件人名稱（查詢結果沒有時使用）
             cfg = load_cfg()
             cfg_sender_name = cfg.get("sender", {}).get("name", "")
 
-            # new records — fetch TranBillDetail for sender_name + fallbacks
+            # new records — TranBillDetail 補 recipient_name / notes；
+            # sender 用 TranBillDetail，但若是公司帳號名（含「有限公司」）則改用 cfg
             for obt in new_obts:
                 rec = dict(merged[obt])
+                rec["sender_name"] = cfg_sender_name
                 try:
                     detail = self.app._web.fetch_obt_detail(obt)
-                    # 優先使用 TranBillDetail 中的寄件人，無則用配置
-                    rec["sender_name"] = detail.get("sender_name", "") or cfg_sender_name
+                    api_sender = detail.get("sender_name", "").strip()
+                    if api_sender and "有限公司" not in api_sender:
+                        rec["sender_name"] = api_sender
                     if not rec["recipient_name"]:
                         rec["recipient_name"] = detail.get("recipient_name", "")
                     if not rec["notes"]:
                         rec["notes"] = detail.get("notes", "")
                 except Exception:
-                    rec["sender_name"] = cfg_sender_name
+                    pass
                 done += 1
                 self.after(0, lambda d=done, t=total_detail: _update_progress(d, t))
                 existing.append(rec)
@@ -3982,24 +4027,6 @@ class TrackingView(tk.Frame):
                         changed = True
                 if changed:
                     enriched += 1
-
-            # existing records missing sender_name — fetch TranBillDetail
-            for obt in need_sender:
-                rec = existing_map[obt]
-                try:
-                    detail = self.app._web.fetch_obt_detail(obt)
-                    sn = detail.get("sender_name", "").strip() or cfg_sender_name
-                    if sn:
-                        rec["sender_name"] = sn
-                        if not rec.get("recipient_name", "").strip():
-                            rec["recipient_name"] = detail.get("recipient_name", "")
-                        if not rec.get("notes", "").strip():
-                            rec["notes"] = detail.get("notes", "")
-                        enriched += 1
-                except Exception:
-                    rec["sender_name"] = cfg_sender_name
-                done += 1
-                self.after(0, lambda d=done, t=total_detail: _update_progress(d, t))
 
             if added or enriched:
                 save_tracking(existing)
