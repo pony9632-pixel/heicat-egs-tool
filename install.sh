@@ -28,73 +28,44 @@ if [[ "$(uname)" != "Darwin" ]]; then
     exit 1
 fi
 
-# ── 2. 確認 Python 3.10 以上（沒有或太舊就自動安裝）────────────────────────
+# ── 2. 確認 Python 3.10 以上 ─────────────────────────────────────────────────
 echo "🔍 檢查 Python 3..."
 
 python_ok() {
     command -v python3 &>/dev/null && python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
 }
 
-ensure_homebrew() {
-    if ! command -v brew &>/dev/null; then
-        echo "📦 先安裝 Homebrew（macOS 套件管理器）..."
-        echo "   （過程中可能會要求輸入你的電腦登入密碼，這是正常的）"
-        echo ""
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    else
-        echo "✅ Homebrew 已存在"
-    fi
-
-    # Apple Silicon (M1/M2/M3) 的 Homebrew 裝在 /opt/homebrew；Intel 常見於 /usr/local
-    if [[ -f /opt/homebrew/bin/brew ]]; then
-        eval "$(/opt/homebrew/bin/brew shellenv)"
-    elif [[ -f /usr/local/bin/brew ]]; then
-        eval "$(/usr/local/bin/brew shellenv)"
-    fi
-}
-
 if ! python_ok; then
-    echo "⚠️  需要 Python 3.10 以上，嘗試自動安裝/更新..."
     echo ""
-
-    ensure_homebrew
-
+    echo "❌ 找不到 Python 3.10 以上版本。"
     echo ""
-    echo "📦 安裝 Python 3..."
-    brew install python3
-    brew upgrade python3 || true
+    echo "   請先安裝 Python，步驟如下："
     echo ""
-
-    # 再確認一次
-    if ! python_ok; then
-        echo "❌ Python 3.10 以上安裝後仍無法偵測，請重新開啟終端機後再執行一次安裝指令。"
-        exit 1
-    fi
+    echo "   1. 開啟瀏覽器，前往：https://www.python.org/downloads/"
+    echo "   2. 點「Download Python 3.x.x」下載安裝檔"
+    echo "   3. 執行安裝，全部選預設，一路按「繼續」即可"
+    echo "   4. 安裝完成後，重新開啟終端機（Terminal）"
+    echo "   5. 再次執行這個安裝指令"
+    echo ""
+    exit 1
 fi
 PYTHON_BIN="$(command -v python3)"
 echo "✅ $("$PYTHON_BIN" --version) 已就緒"
 echo ""
 
-# ── 2b. 確認 tkinter 可用（Homebrew Python 預設不含，需另裝 python-tk）──────
+# ── 2b. 確認 tkinter 可用 ─────────────────────────────────────────────────────
 echo "🔍 檢查 tkinter（GUI 模組）..."
 if ! "$PYTHON_BIN" -c "import tkinter" &>/dev/null; then
-    echo "⚠️  Python 缺少 tkinter，自動安裝..."
-    PY_VER=$("$PYTHON_BIN" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    ensure_homebrew
-    if brew install "python-tk@$PY_VER" 2>/dev/null; then
-        echo "✅ python-tk@$PY_VER 已安裝"
-    elif brew install python-tk 2>/dev/null; then
-        echo "✅ python-tk 已安裝"
-    else
-        echo "❌ python-tk 自動安裝失敗，請手動執行："
-        echo "      brew install python-tk@$PY_VER"
-        exit 1
-    fi
-    # 再確認
-    if ! "$PYTHON_BIN" -c "import tkinter" &>/dev/null; then
-        echo "❌ tkinter 安裝後仍無法載入，請重開終端機後再試。"
-        exit 1
-    fi
+    echo ""
+    echo "❌ Python 缺少 tkinter 模組（GUI 所需）。"
+    echo ""
+    echo "   請重新安裝 Python（官網版本內建 tkinter）："
+    echo ""
+    echo "   1. 前往：https://www.python.org/downloads/"
+    echo "   2. 下載並安裝最新版 Python 3.x"
+    echo "   3. 安裝完成後重新開啟終端機，再執行這個安裝指令"
+    echo ""
+    exit 1
 fi
 echo "✅ tkinter 可用"
 echo ""
