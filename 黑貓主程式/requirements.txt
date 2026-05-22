@@ -1,3 +1,4 @@
 requests>=2.31
 pyyaml
 pypdf>=4.0
+customtkinter
