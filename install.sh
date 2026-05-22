@@ -152,7 +152,20 @@ echo "✅ 套件安裝完成"
 cat > "$INSTALL_DIR/黑貓主程式/啟動黑貓工具.command" <<EOF
 #!/bin/bash
 cd "\$(dirname "\$0")"
-"$VENV_DIR/bin/python3" app.py
+LOG="\$HOME/Desktop/黑貓宅急便工具/啟動錯誤.log"
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] 啟動黑貓工具" > "\$LOG"
+"$VENV_DIR/bin/python3" app.py >> "\$LOG" 2>&1
+STATUS=\$?
+if [[ \$STATUS -ne 0 ]]; then
+    echo ""
+    echo "黑貓工具啟動失敗，錯誤紀錄已寫入：\$LOG"
+    echo ""
+    cat "\$LOG"
+    echo ""
+    echo "請把這個畫面或啟動錯誤.log 傳給維護者。"
+    echo "按 Enter 關閉視窗。"
+    read
+fi
 EOF
 chmod +x "$INSTALL_DIR/黑貓主程式/啟動黑貓工具.command"
 echo ""
