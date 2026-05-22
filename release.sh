@@ -12,7 +12,6 @@ if [ -z "$VERSION" ]; then
 fi
 
 APP_PY="黑貓主程式/app.py"
-SPEC_FILE="黑貓宅急便工具.spec"
 
 # 1. 確認 git 工作目錄乾淨（排除 config.yaml / contacts.json）
 DIRTY=$(git status --porcelain | grep -v "config.yaml" | grep -v "contacts.json" | grep -v "^??" || true)
@@ -22,10 +21,8 @@ if [ -n "$DIRTY" ]; then
   exit 1
 fi
 
-# 2. 更新 app.py 裡的 VERSION 字串 + spec 裡的 bundle version
+# 2. 更新 app.py 裡的 VERSION 字串
 sed -i '' "s/^VERSION     = \".*\"/VERSION     = \"$VERSION\"/" "$APP_PY"
-sed -i '' "s/\"CFBundleShortVersionString\": \".*\"/\"CFBundleShortVersionString\": \"$VERSION\"/" "$SPEC_FILE"
-sed -i '' "s/\"CFBundleVersion\":            \".*\"/\"CFBundleVersion\":            \"$VERSION\"/" "$SPEC_FILE"
 echo "✓ VERSION → $VERSION"
 
 # 3. 確認語法正確
@@ -33,7 +30,7 @@ python3 -c "import ast; ast.parse(open('$APP_PY').read())" || { echo "❌ 語法
 echo "✓ 語法檢查通過"
 
 # 4. Commit + Push
-git add "$APP_PY" "$SPEC_FILE"
+git add "$APP_PY"
 git commit -m "release: v$VERSION"
 git push origin HEAD:main
 echo "✓ 推送完成"
@@ -43,22 +40,6 @@ if [ -n "$NOTES" ]; then
   gh release create "v$VERSION" --title "v$VERSION — $NOTES" --notes "$NOTES"
 else
   gh release create "v$VERSION" --title "v$VERSION" --generate-notes
-fi
-
-# 6. 打包 DMG + app.zip 並上傳（需要 PyInstaller）
-if command -v pyinstaller &>/dev/null; then
-  echo ""
-  echo "📦 開始打包 DMG..."
-  packaging/build_dmg.sh "$VERSION"
-  DMG="$HOME/Desktop/黑貓宅急便工具_v${VERSION}.dmg"
-  APP_ZIP="packaging/dist/黑貓宅急便工具.app.zip"
-  gh release upload "v$VERSION" "$DMG" "$APP_ZIP"
-  echo "✓ DMG + app.zip 已上傳至 Release"
-else
-  echo ""
-  echo "⚠️  未偵測到 pyinstaller，跳過 DMG 打包。"
-  echo "   若需打包請先執行：pip install pyinstaller"
-  echo "   然後手動執行：packaging/build_dmg.sh $VERSION"
 fi
 
 echo ""
