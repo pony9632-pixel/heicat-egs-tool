@@ -607,138 +607,48 @@ def _wheel_units(event) -> int:
     return units
 
 
-_MOUSEWHEEL_EVENTS = ("<MouseWheel>", "<Button-4>", "<Button-5>")
-_MOUSEWHEEL_BINDTAG = "HeicatMouseWheel"
+# 自帶原生滾輪處理、應交給原生（不由我們再捲一次）的元件類別：
+# ttk Treeview / Text / Listbox / Scrollbar 在 Tk 8.6 與 9.0 都有原生滾輪綁定。
+_NATIVE_SCROLL_CLASSES = ("Treeview", "Text", "Listbox", "Scrollbar", "TScrollbar")
 
 
-def _scroll_widget(widget, event):
+def _scroll_target_under_pointer(app, event):
+    """從游標『實際所在』的 widget（用螢幕座標，最可靠）往上找：
+    - 遇到自帶捲動的元件（Tree/Text/Listbox/Scrollbar）→ 回 None，交給它原生處理，避免重複捲
+    - 遇到頁面 Canvas → 回該 canvas
+    - 都沒有 → 回目前頁面主 canvas（_active_view_canvas）當後援"""
     try:
-        widget.yview_scroll(_wheel_units(event), "units")
-        return "break"
+        w = app.winfo_containing(event.x_root, event.y_root)
     except Exception:
-        return None
-
-
-def _bind_mousewheel_all(widget, callback):
-    for sequence in _MOUSEWHEEL_EVENTS:
-        widget.bind_all(sequence, callback)
-
-
-def _unbind_mousewheel_all(widget):
-    for sequence in _MOUSEWHEEL_EVENTS:
-        widget.unbind_all(sequence)
-
-
-def _event_scroll_target(event):
-    widget = event.widget
-    while widget is not None:
-        target = getattr(widget, "_heicat_scroll_target", None)
-        if target is not None:
+        w = None
+    while w is not None:
+        try:
+            cls = w.winfo_class()
+        except Exception:
+            cls = ""
+        if cls in _NATIVE_SCROLL_CLASSES:
+            return None
+        # 只認「真的會捲」的 Canvas（有設 yscrollcommand）。customtkinter 的
+        # 按鈕/下拉內部也是 Canvas 但不可捲（yscrollcommand 為空），要略過，
+        # 否則游標停在 CTk 元件上時會去捲那個內部 canvas → 整頁卡住不動。
+        if cls == "Canvas":
             try:
-                if target.winfo_exists():
-                    return target
+                if str(w.cget("yscrollcommand")):
+                    return w
             except Exception:
                 pass
         try:
-            parent = widget.winfo_parent()
-            widget = widget.nametowidget(parent) if parent else None
+            parent = w.winfo_parent()
+            w = w.nametowidget(parent) if parent else None
         except Exception:
             break
-    try:
-        return getattr(event.widget.winfo_toplevel(), "_active_view_canvas", None)
-    except Exception:
-        return None
+    return getattr(app, "_active_view_canvas", None)
 
 
-def _install_mousewheel_class_binding(root):
-    if getattr(root, "_heicat_mousewheel_class_bound", False):
-        return
-
-    def _on_wheel(event):
-        target = _event_scroll_target(event)
-        if target is None:
-            return None
-        return _scroll_widget(target, event)
-
-    for sequence in _MOUSEWHEEL_EVENTS:
-        root.bind_class(_MOUSEWHEEL_BINDTAG, sequence, _on_wheel)
-    root._heicat_mousewheel_class_bound = True
-
-
-def _mark_mousewheel_area(widget, scroll_target):
-    try:
-        top = widget.winfo_toplevel()
-        _install_mousewheel_class_binding(top)
-    except Exception:
-        return
-
-    def visit(w):
-        try:
-            w._heicat_scroll_target = scroll_target
-            tags = w.bindtags()
-            if _MOUSEWHEEL_BINDTAG not in tags:
-                w.bindtags((tags[0], _MOUSEWHEEL_BINDTAG, *tags[1:]))
-            children = w.winfo_children()
-        except Exception:
-            return
-        for child in children:
-            visit(child)
-
-    visit(widget)
-
-
-def _schedule_mousewheel_area_mark(widget, scroll_target):
-    if getattr(widget, "_heicat_wheel_mark_scheduled", False):
-        return
-    widget._heicat_wheel_mark_scheduled = True
-
-    def run():
-        widget._heicat_wheel_mark_scheduled = False
-        _mark_mousewheel_area(widget, scroll_target)
-
-    try:
-        widget.after_idle(run)
-    except Exception:
-        _mark_mousewheel_area(widget, scroll_target)
-
-
+# 舊架構的逐區掛載函式；新架構改用全域 bind_all，這裡保留為相容用的 no-op，
+# 讓既有各 View 的呼叫不必改動。
 def _bind_mousewheel_on_hover(hover_widget, canvas):
-    """游標在 hover_widget 範圍內時把 wheel 綁到 canvas；離開時還原為
-    App._active_view_canvas（若有）以避免殺掉外層綁定。"""
-    def _on_wheel(e):
-        return _scroll_widget(canvas, e)
-    def _on_enter(_):
-        _bind_mousewheel_all(hover_widget.winfo_toplevel(), _on_wheel)
-    def _on_leave(e):
-        try:
-            wx = hover_widget.winfo_rootx()
-            wy = hover_widget.winfo_rooty()
-            ww = hover_widget.winfo_width()
-            wh = hover_widget.winfo_height()
-            if wx <= e.x_root < wx + ww and wy <= e.y_root < wy + wh:
-                return  # 還在元件範圍內（只是移進子元件），不切換
-        except Exception:
-            pass
-        # 離開內層 → 還原外層 view 的綁定，而不是 unbind_all（不然主畫面也滾不動）
-        top = hover_widget.winfo_toplevel()
-        outer = getattr(top, "_active_view_canvas", None)
-        if outer is not None:
-            _bind_mousewheel_all(
-                top,
-                lambda e, _c=outer: _scroll_widget(_c, e))
-        else:
-            _unbind_mousewheel_all(top)
-    _schedule_mousewheel_area_mark(hover_widget, canvas)
-    hover_widget.bind(
-        "<Configure>",
-        lambda e, _w=hover_widget, _c=canvas: _schedule_mousewheel_area_mark(_w, _c),
-        add="+")
-    hover_widget.bind(
-        "<Map>",
-        lambda e, _w=hover_widget, _c=canvas: _schedule_mousewheel_area_mark(_w, _c),
-        add="+")
-    hover_widget.bind("<Enter>", _on_enter)
-    hover_widget.bind("<Leave>", _on_leave)
+    return None
 
 
 # ─── 滾輪支援（含 Tk 9.0 觸控板）────────────────────────────────────────────
@@ -746,12 +656,11 @@ def _bind_mousewheel_on_hover(hover_widget, canvas):
 #  - Tk 8.6：滑鼠滾輪走 <MouseWheel>（macOS 小整數 delta）；X11 走 <Button-4/5>
 #  - Tk 9.0：觸控板改走「新事件」<TouchpadScroll>（不是 <MouseWheel>），這是部分
 #            同事（Python 3.14.5 內建 Tk 9.0）完全無法捲動的根因。
-# 作法：用一個最優先的 bindtag 攔截四種事件，依「游標實際所在位置」(winfo_containing)
-#       找到該捲的容器後捲動並 break，避免被 customtkinter / 內層元件吃掉。
-# WHEEL_DIAG 設 True 可把環境與每個事件寫到桌面「黑貓滾輪診斷.log」，方便日後對沒見過
-# 的環境除錯；正式版預設 False。
+# 作法：用 bind_all（涵蓋所有 widget 與對話框，且不需逐一標記、不需輪詢）攔截四種事件，
+#       依游標實際位置 (winfo_containing) 找頁面 Canvas 來捲；若游標下是自帶捲動的元件
+#       （Tree/Text/Listbox/Scrollbar）則交給其原生處理，避免重複捲。
+# WHEEL_DIAG 設 True 可把環境與事件寫到桌面「黑貓滾輪診斷.log」，方便日後對沒見過的環境除錯。
 WHEEL_DIAG = False
-_WHEEL_DIAG_TAG = "WheelDiagTop"
 
 
 def _wheel_diag_log_path():
@@ -773,36 +682,6 @@ def _wheel_diag_write(line):
             f.write(msg + "\n")
     except Exception:
         pass
-
-
-def _wheel_diag_find_target(app, event):
-    """從游標『實際所在』的 widget（用螢幕座標，最可靠）往上找可捲動的容器。"""
-    try:
-        under = app.winfo_containing(event.x_root, event.y_root)
-    except Exception:
-        under = None
-    w = under
-    while w is not None:
-        try:
-            cls = w.winfo_class()
-        except Exception:
-            cls = ""
-        # 內層自帶捲動的元件（log / 清單 / canvas）優先讓它自己捲
-        if cls in ("Text", "Listbox", "Canvas") and hasattr(w, "yview"):
-            return w, under
-        tgt = getattr(w, "_heicat_scroll_target", None)
-        if tgt is not None:
-            try:
-                if tgt.winfo_exists():
-                    return tgt, under
-            except Exception:
-                pass
-        try:
-            parent = w.winfo_parent()
-            w = w.nametowidget(parent) if parent else None
-        except Exception:
-            break
-    return getattr(app, "_active_view_canvas", None), under
 
 
 def _wheel_scroll_pixels(target, dy):
@@ -840,87 +719,61 @@ def _install_wheel_support(app):
         except Exception as e:
             _wheel_diag_write(f"ctk_version_error={e!r}")
 
-    counters = {"<MouseWheel>": 0, "<Button-4>": 0, "<Button-5>": 0}
-    LOG_FIRST = 20
+    _diag = {"mw": 0, "tp": 0}
 
     def on_wheel(e):
-        num = getattr(e, "num", None)
-        seq = "<Button-4>" if num == 4 else "<Button-5>" if num == 5 else "<MouseWheel>"
-        counters[seq] = counters.get(seq, 0) + 1
-        n = counters[seq]
-        target, under = _wheel_diag_find_target(app, e)
-        units = _wheel_units(e)
-        scrolled = False
-        if target is not None:
-            try:
-                target.yview_scroll(units, "units")
-                scrolled = True
-            except Exception as ex:
-                if n <= LOG_FIRST:
-                    _wheel_diag_write(f"scroll_error={ex!r}")
-        if WHEEL_DIAG and (n <= LOG_FIRST or n % 60 == 0):
-            ev = getattr(e, "widget", None)
-            ev_cls = ev.winfo_class() if hasattr(ev, "winfo_class") else "?"
-            und_cls = under.winfo_class() if (under is not None and hasattr(under, "winfo_class")) else None
-            tgt_cls = target.winfo_class() if (target is not None and hasattr(target, "winfo_class")) else None
-            _wheel_diag_write(
-                f"{seq} #{n} delta={getattr(e, 'delta', None)} num={num} units={units} "
-                f"ev_widget={ev_cls} under={und_cls} target={tgt_cls} scrolled={scrolled}")
-        return "break"
-
-    # Tk 9.0：觸控板走 <TouchpadScroll>（不是 <MouseWheel>），delta 為兩個 16-bit
-    # 打包值，用 tk::PreciseScrollDeltas 解出 dx/dy，再以 yview_moveto 平滑捲動。
-    tp_count = [0]
-
-    def on_touchpad(e):
-        tp_count[0] += 1
-        n = tp_count[0]
-        target, under = _wheel_diag_find_target(app, e)
+        # 滑鼠滾輪 / X11 Button-4-5：以「行」為單位捲動頁面 canvas
+        target = _scroll_target_under_pointer(app, e)
+        if target is None:
+            return None
         try:
-            dx, dy = app.tk.call("tk::PreciseScrollDeltas", e.delta)
-            dx, dy = int(dx), int(dy)
-        except Exception:
-            dx, dy = 0, 0
-        scrolled = False
-        if target is not None and dy:
-            scrolled = _wheel_scroll_pixels(target, dy)
-        if WHEEL_DIAG and (n <= LOG_FIRST or n % 60 == 0):
-            tgt_cls = target.winfo_class() if (target is not None and hasattr(target, "winfo_class")) else None
-            und_cls = under.winfo_class() if (under is not None and hasattr(under, "winfo_class")) else None
-            _wheel_diag_write(
-                f"<TouchpadScroll> #{n} raw={getattr(e, 'delta', None)} dx={dx} dy={dy} "
-                f"under={und_cls} target={tgt_cls} scrolled={scrolled}")
-        return "break"
-
-    # 專屬 bindtag 放在每個 widget 最前面 → 最優先收事件並 break，
-    # 不被 customtkinter / 既有綁定吃掉；定期重新標記後來新建的 widget。
-    for s in counters:
-        app.bind_class(_WHEEL_DIAG_TAG, s, on_wheel)
-    try:
-        app.bind_class(_WHEEL_DIAG_TAG, "<TouchpadScroll>", on_touchpad)
-    except Exception as ex:
-        _wheel_diag_write(f"touchpad_bind_unsupported={ex!r}")
-
-    def tag(w):
-        try:
-            tags = w.bindtags()
-            if _WHEEL_DIAG_TAG not in tags:
-                w.bindtags((_WHEEL_DIAG_TAG, *tags))
-            kids = w.winfo_children()
-        except Exception:
-            return
-        for k in kids:
-            tag(k)
-
-    def refresh():
-        tag(app)
-        try:
-            app.after(1500, refresh)
+            target.yview_scroll(_wheel_units(e), "units")
         except Exception:
             pass
+        if WHEEL_DIAG:
+            _diag["mw"] += 1
+            if _diag["mw"] <= 10:
+                _wheel_diag_write(f"MouseWheel delta={getattr(e, 'delta', None)} -> {target.winfo_class()}")
+        return None
 
-    app.after(300, refresh)
-    _wheel_diag_write("wheel support installed (MouseWheel/Button-4-5/TouchpadScroll, route by winfo_containing)")
+    def on_touchpad(e):
+        # Tk 9.0 觸控板：<TouchpadScroll> 的 %D 是兩個 16-bit 打包值，
+        # 用 tk::PreciseScrollDeltas 解出 dy，再以 yview_moveto 平滑捲動。
+        target = _scroll_target_under_pointer(app, e)
+        if target is None:
+            return None
+        try:
+            dx, dy = app.tk.call("tk::PreciseScrollDeltas", e.delta)
+            dy = int(dy)
+        except Exception:
+            dy = 0
+        if dy:
+            _wheel_scroll_pixels(target, dy)
+        if WHEEL_DIAG:
+            _diag["tp"] += 1
+            if _diag["tp"] <= 10:
+                _wheel_diag_write(f"TouchpadScroll dy={dy} -> {target.winfo_class()}")
+        return None
+
+    # ttk Combobox / Spinbox 預設會「用滾輪改變選項值」並吃掉事件 → 游標停在其上時
+    # 整頁捲不動、甚至誤改值。移除它們的滾輪綁定，讓事件落到下面的全域處理去捲頁面。
+    # （這些是 readonly 選單，靠點擊選取，不需要滾輪改值。）
+    for _klass in ("TCombobox", "TSpinbox"):
+        for _seq in ("<MouseWheel>", "<Shift-MouseWheel>", "<TouchpadScroll>",
+                     "<Button-4>", "<Button-5>", "<Shift-Button-4>", "<Shift-Button-5>"):
+            try:
+                app.unbind_class(_klass, _seq)
+            except Exception:
+                pass
+
+    # bind_all 會套用到所有 widget（含日後新建的與對話框 Toplevel），不需逐一標記或輪詢。
+    for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+        app.bind_all(seq, on_wheel, add="+")
+    try:
+        app.bind_all("<TouchpadScroll>", on_touchpad, add="+")
+    except Exception as ex:
+        _wheel_diag_write(f"touchpad_bind_unsupported={ex!r}")
+    _wheel_diag_write("wheel support installed (bind_all; page canvas only, native handles tree/text/list)")
 
 
 # ─── main window ─────────────────────────────────────────────────────────────
@@ -1108,7 +961,14 @@ class App(tk.Tk):
     # ── build full UI ────────────────────────────────────────────────────────
 
     def _init_ui(self):
-        self._splash.destroy()
+        # 先把啟動畫面改成「載入中…」並立刻畫出來；此時只有 splash，畫面乾淨。
+        # 接著同步建立整個 UI（這段較花時間），最後才移除 splash —— 避免建構期間
+        # 出現一片白讓使用者以為當掉。建構過程中不主動 update，故畫面維持在 splash。
+        try:
+            self._splash_lbl.config(text="載入中…")
+            self.update_idletasks()
+        except Exception:
+            pass
 
         # ttk style for entries / combos
         style = ttk.Style(self)
@@ -1205,6 +1065,12 @@ class App(tk.Tk):
         except Exception as _e:
             _wheel_diag_write(f"install_error={_e!r}")
 
+        # UI 全部就緒，才移除啟動畫面 —— 在此之前畫面一直顯示「載入中…」而非一片白。
+        try:
+            self._splash.destroy()
+        except Exception:
+            pass
+
     def _open_epb_unlock_dialog(self):
         EpbUnlockDialog(self, on_change=self._on_epb_lock_change)
 
@@ -1227,19 +1093,9 @@ class App(tk.Tk):
         if hasattr(v, "on_show"): v.on_show()
         self.sidebar.set_active(name)
         if hasattr(self, "_topbar"): self._topbar.set_view(name)
-        # 切換頁面時立刻把 MouseWheel 綁到該頁的主 canvas，
-        # 讓使用者在視窗任何地方都能捲動。同時記錄到 _active_view_canvas，
-        # 讓子區域 hover Leave 時能還原而不是 unbind 全砍。
-        if hasattr(v, "_scroll_canvas"):
-            c = v._scroll_canvas
-            self._active_view_canvas = c
-            _schedule_mousewheel_area_mark(v, c)
-            _bind_mousewheel_all(
-                self,
-                lambda e, _c=c: _scroll_widget(_c, e))
-        else:
-            self._active_view_canvas = None
-            _unbind_mousewheel_all(self)
+        # 記錄目前頁面的主 canvas，供全域滾輪處理在 winfo_containing 找不到時當後援。
+        # 實際的滾輪/觸控板綁定由 _install_wheel_support 的全域 bind_all 統一處理。
+        self._active_view_canvas = getattr(v, "_scroll_canvas", None)
 
     # ── macOS clipboard fix (preserved from original) ─────────────────────────
 
