@@ -99,7 +99,7 @@ def _append_build_log(msg: str):
     pass
 
 
-VERSION     = "2.6.2"
+VERSION     = "2.6.3"
 GITHUB_REPO = "pony9632-pixel/heicat-egs-tool"
 
 # ─── Cool Glass palette (Tahoe-inspired) ────────────────────────────────────
@@ -194,8 +194,14 @@ FIXED_PRODUCT_TYPE_ID    = "0006"
 def load_cfg() -> dict:
     p = _cfg_path()
     if p.exists():
-        with open(p, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        try:
+            with open(p, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            if isinstance(data, dict):
+                return data
+            _backup_bad_data_file(p, f"expected dict, got {type(data).__name__}")
+        except Exception as ex:
+            _backup_bad_data_file(p, str(ex))
     return {}
 
 def save_cfg(cfg: dict):
@@ -203,6 +209,47 @@ def save_cfg(cfg: dict):
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
+
+
+def _backup_bad_data_file(path: Path, reason: str):
+    """Move a malformed local data file aside so startup can continue."""
+    try:
+        if not path.exists():
+            return
+        from datetime import datetime
+        backup = path.with_name(f"{path.name}.bad-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+        path.rename(backup)
+        print(f"[WARN] {path.name} 讀取失敗，已備份為 {backup.name}: {reason}", flush=True)
+    except Exception as ex:
+        print(f"[WARN] 無法備份 {path}: {ex}", flush=True)
+
+
+def _load_json_list(path: Path) -> list:
+    if not path.exists():
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        _backup_bad_data_file(path, f"expected list, got {type(data).__name__}")
+    except Exception as ex:
+        _backup_bad_data_file(path, str(ex))
+    return []
+
+
+def _load_json_dict(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+        _backup_bad_data_file(path, f"expected dict, got {type(data).__name__}")
+    except Exception as ex:
+        _backup_bad_data_file(path, str(ex))
+    return {}
 
 
 # ─── EPB feature gate ───────────────────────────────────────────────────────
@@ -271,11 +318,7 @@ def save_contacts(contacts: list[dict]):
         json.dump(contacts, f, ensure_ascii=False, indent=2)
 
 def load_tracking() -> list[dict]:
-    p = _tracking_path()
-    if p.exists():
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
-    return []
+    return _load_json_list(_tracking_path())
 
 def save_tracking(records: list[dict]):
     p = _tracking_path()
@@ -284,11 +327,7 @@ def save_tracking(records: list[dict]):
         json.dump(records, f, ensure_ascii=False, indent=2)
 
 def load_deleted_obts() -> set:
-    p = _deleted_path()
-    if p.exists():
-        with open(p, encoding="utf-8") as f:
-            return set(json.load(f))
-    return set()
+    return set(_load_json_list(_deleted_path()))
 
 def add_deleted_obt(obt: str):
     obts = load_deleted_obts()
@@ -828,6 +867,32 @@ class App(tk.Tk):
         self._splash_lbl.pack(pady=24)
 
         threading.Thread(target=self._startup_check, daemon=True).start()
+
+    def report_callback_exception(self, exc, val, tb):
+        """Make Tk callback crashes visible instead of leaving the splash frozen."""
+        import traceback
+        traceback.print_exception(exc, val, tb)
+        try:
+            self._show_startup_error(val)
+        except Exception:
+            pass
+
+    def _show_startup_error(self, err):
+        msg = str(err) or err.__class__.__name__
+        if len(msg) > 160:
+            msg = msg[:157] + "..."
+        try:
+            if hasattr(self, "_splash") and self._splash.winfo_exists():
+                self._splash_lbl.config(
+                    text=f"啟動失敗：{msg}\n請把「啟動診斷.log」傳給維護者。"
+                )
+                return
+        except Exception:
+            pass
+        try:
+            messagebox.showerror("黑貓工具啟動失敗", f"{msg}\n\n請把「啟動診斷.log」傳給維護者。")
+        except Exception:
+            pass
 
     # ── startup version check ────────────────────────────────────────────────
 
@@ -5835,8 +5900,6 @@ class ContactDialog(tk.Toplevel):
 class EpbTransferView(tk.Frame):
     """EPB 調撥建單 — 讀取 EPB 待出貨調撥單，批次建立黑貓託運單。"""
 
-    _LOG_PATH = Path(__file__).resolve().parent / "epb_transfer_log.json"
-
     def __init__(self, master, app):
         super().__init__(master, bg=PAPER)
         self.app = app
@@ -5961,14 +6024,12 @@ class EpbTransferView(tk.Frame):
         self.log_box.configure(state="disabled")
 
     def _load_epb_log(self) -> dict:
-        try:
-            return json.loads(self._LOG_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        return _load_json_dict(_epb_log_path())
 
     def _save_epb_log(self, log: dict):
-        self._LOG_PATH.write_text(
-            json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+        path = _epb_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _match_contact(self, to_store_name: str, to_store_id: str = ""):
         """
