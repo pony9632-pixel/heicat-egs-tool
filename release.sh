@@ -42,6 +42,15 @@ else
   gh release create "v$VERSION" --title "v$VERSION" --generate-notes
 fi
 
+# 6. 若有打包好的 .app zip（dist/*.zip），連同 SHA-256 一起上傳，
+#    讓自動更新可以驗證下載檔完整性（找不到 .sha256 的舊版 release 會略過驗證）
+for ZIP in dist/*.zip; do
+  [ -e "$ZIP" ] || continue
+  shasum -a 256 "$ZIP" | awk '{print $1}' > "$ZIP.sha256"
+  gh release upload "v$VERSION" "$ZIP" "$ZIP.sha256"
+  echo "✓ 已上傳 $(basename "$ZIP") 與 SHA-256"
+done
+
 echo ""
 echo "🎉 v$VERSION 發布完成！"
 echo "   Release 頁面：https://github.com/pony9632-pixel/heicat-egs-tool/releases/tag/v$VERSION"

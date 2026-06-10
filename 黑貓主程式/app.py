@@ -10,6 +10,7 @@ import base64
 import csv
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from theme import LIGHT as T
 import tokens as TOK
 
 from api_client import SudaClient, save_pdf, default_shipment_date, default_delivery_date, _skip_sunday
+from sslctx import verified_context, insecure_context
 from web_client import TakkyubinWebClient
 from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS, _csv_row_to_api_order
 
@@ -50,10 +52,17 @@ def get_data_dir() -> Path:
         pass
     return _DEFAULT_DATA_DIR
 
+def _atomic_write_text(path: Path, text: str):
+    """寫入暫存檔再 os.replace，避免寫到一半中斷毀掉原檔。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
 def set_data_dir(new_path: str):
     """Save a new data folder path and create it if needed."""
     Path(new_path).mkdir(parents=True, exist_ok=True)
-    _DATAPATH_FILE.write_text(new_path, encoding="utf-8")
+    _atomic_write_text(_DATAPATH_FILE, new_path)
 
 def _ensure_data_dir():
     """On first run: create the data folder and migrate old files next to the app."""
@@ -205,10 +214,10 @@ def load_cfg() -> dict:
     return {}
 
 def save_cfg(cfg: dict):
-    p = _cfg_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
-        yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
+    _atomic_write_text(
+        _cfg_path(),
+        yaml.dump(cfg, allow_unicode=True, default_flow_style=False),
+    )
 
 
 def _backup_bad_data_file(path: Path, reason: str):
@@ -254,8 +263,12 @@ def _load_json_dict(path: Path) -> dict:
 
 # ─── EPB feature gate ───────────────────────────────────────────────────────
 # 進階功能（EPB 調撥）門檻：授權門市用隱藏快捷鍵 ⌘+⌥+E 輸入密碼解鎖。
-# 此 hash 為 SHA-256(密碼)；公開 repo 的軟鎖、防隨手翻看而已。
-_EPB_PASSWORD_HASH = "1b0d96aeffd87463093049c2063a65e03154712d8438ac4dde6f5749cd811046"
+# 公開 repo 的軟鎖，僅防隨手翻看；以 PBKDF2 疊在 SHA-256 之上提高離線破解成本。
+# 驗證流程：輸入密碼 → SHA-256 → PBKDF2-HMAC-SHA256 → 與下方常數比對。
+# salt 固定存在程式內即可（目的非保密 salt，而是拉高每次嘗試的計算成本）。
+_EPB_PBKDF2_SALT = b"heicat-epb-unlock-v1"
+_EPB_PBKDF2_ITERS = 200_000
+_EPB_PASSWORD_HASH = "8f6dbc1cca5eaa4e9931f9459d7210912dc1132c18c917729c2333a8a494ab0c"
 
 
 def _is_epb_unlocked() -> bool:
@@ -264,9 +277,13 @@ def _is_epb_unlocked() -> bool:
 
 def _try_unlock_epb(password: str) -> bool:
     import hashlib
+    import hmac
     if not password:
         return False
-    if hashlib.sha256(password.encode("utf-8")).hexdigest() == _EPB_PASSWORD_HASH:
+    sha = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    dk = hashlib.pbkdf2_hmac("sha256", sha.encode("utf-8"),
+                             _EPB_PBKDF2_SALT, _EPB_PBKDF2_ITERS).hex()
+    if hmac.compare_digest(dk, _EPB_PASSWORD_HASH):
         cfg = load_cfg()
         cfg["epb_unlocked"] = True
         save_cfg(cfg)
@@ -312,19 +329,15 @@ def load_custom_contacts() -> list[dict]:
 
 def save_contacts(contacts: list[dict]):
     """只儲存使用者自行新增的聯絡人（不覆蓋 default_contacts）。"""
-    p = _contacts_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(contacts, f, ensure_ascii=False, indent=2)
+    _atomic_write_text(_contacts_path(),
+                       json.dumps(contacts, ensure_ascii=False, indent=2))
 
 def load_tracking() -> list[dict]:
     return _load_json_list(_tracking_path())
 
 def save_tracking(records: list[dict]):
-    p = _tracking_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
+    _atomic_write_text(_tracking_path(),
+                       json.dumps(records, ensure_ascii=False, indent=2))
 
 def load_deleted_obts() -> set:
     return set(_load_json_list(_deleted_path()))
@@ -332,10 +345,8 @@ def load_deleted_obts() -> set:
 def add_deleted_obt(obt: str):
     obts = load_deleted_obts()
     obts.add(obt)
-    p = _deleted_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(sorted(obts), f, ensure_ascii=False, indent=2)
+    _atomic_write_text(_deleted_path(),
+                       json.dumps(sorted(obts), ensure_ascii=False, indent=2))
 
 
 def _cleanup_epb_log_for_obt(obt: str) -> int:
@@ -354,7 +365,7 @@ def _cleanup_epb_log_for_obt(obt: str) -> int:
         return 0
     for k in keys:
         del log[k]
-    path.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_text(path, json.dumps(log, ensure_ascii=False, indent=2))
     return len(keys)
 
 
@@ -830,7 +841,30 @@ def _ensure_launcher_executable():
         pass
 
 
-class App(tk.Tk):
+class SafeAfterMixin:
+    """讓 after() 排程的回呼在 widget 已被銷毀時靜默略過。
+
+    worker thread 完成時用 self.after(0, ...) 回主執行緒更新 UI，
+    若使用者此時關閉視窗，原生行為會丟 TclError；包一層防護，
+    並把「排程當下 widget 已不存在」的情況一併吃掉。
+    """
+
+    def after(self, ms, func=None, *args):
+        if func is None:
+            return super().after(ms)
+
+        def _safe():
+            try:
+                func(*args)
+            except tk.TclError:
+                pass
+        try:
+            return super().after(ms, _safe)
+        except (tk.TclError, RuntimeError):
+            return None
+
+
+class App(SafeAfterMixin, tk.Tk):
     def __init__(self):
         super().__init__()
         _ensure_launcher_executable()
@@ -912,10 +946,8 @@ class App(tk.Tk):
         just_updated = "--just-updated" in sys.argv
         frozen = getattr(sys, "frozen", False)
         try:
-            import urllib.request as _req, ssl
-            _ctx = ssl.create_default_context()
-            _ctx.check_hostname = False
-            _ctx.verify_mode = ssl.CERT_NONE
+            import urllib.request as _req
+            _ctx = verified_context()
             url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
             req = _req.Request(url, headers={"User-Agent": "heicat-egs-tool"})
             with _req.urlopen(req, context=_ctx, timeout=5) as r:
@@ -930,6 +962,7 @@ class App(tk.Tk):
                         self.after(0, self._init_ui)
                         return
                     html = data.get("html_url", "")
+                    sha_url = ""
                     if frozen:
                         # frozen .app：找第一個 .zip asset（GitHub 會去掉中文字）
                         assets = data.get("assets", [])
@@ -941,32 +974,53 @@ class App(tk.Tk):
                             self.after(0, self._init_ui)
                             return
                         download_url = asset["browser_download_url"]
+                        # 對應的 .sha256 asset（舊 release 沒有，找不到就略過驗證）
+                        sha_asset = next(
+                            (a for a in assets
+                             if a["name"] == asset["name"] + ".sha256"),
+                            None,
+                        )
+                        if sha_asset:
+                            sha_url = sha_asset["browser_download_url"]
                     else:
                         download_url = data.get("zipball_url", "")
-                    self.after(0, lambda t=tag, u=download_url, h=html, fr=frozen:
-                               self._do_startup_update(t, u, h, frozen=fr))
+                    self.after(0, lambda t=tag, u=download_url, h=html, fr=frozen, s=sha_url:
+                               self._do_startup_update(t, u, h, frozen=fr, sha_url=s))
                     return
-        except Exception:
-            pass
+        except Exception as ex:
+            # 離線或 GitHub 連不上時仍要能啟動，但把原因留在 stderr 供除錯
+            print(f"[WARN] 啟動版本檢查失敗：{ex}", file=sys.stderr, flush=True)
         self.after(0, self._init_ui)
 
-    def _do_startup_update(self, new_version, download_url, html_url, frozen=False):
+    def _do_startup_update(self, new_version, download_url, html_url, frozen=False, sha_url=""):
         self._splash_lbl.config(text=f"發現新版本 v{new_version}，自動更新中…")
 
         def run():
             try:
-                import ssl, shutil, tempfile, os, zipfile
+                import hashlib, shutil, tempfile, os, zipfile
                 import urllib.request as _req
 
-                ssl_ctx = ssl.create_default_context()
-                ssl_ctx.check_hostname = False
-                ssl_ctx.verify_mode = ssl.CERT_NONE
+                # 更新下載必須通過完整憑證驗證，不留退路
+                ssl_ctx = verified_context()
                 req = _req.Request(download_url, headers={"User-Agent": "heicat-egs-tool"})
                 with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
                     temp_zip = f.name
                 with _req.urlopen(req, context=ssl_ctx, timeout=120) as resp:
                     with open(temp_zip, "wb") as f:
                         shutil.copyfileobj(resp, f)
+
+                # 有 .sha256 asset 就驗證 zip 完整性（舊 release 沒有，略過）
+                if sha_url:
+                    req = _req.Request(sha_url, headers={"User-Agent": "heicat-egs-tool"})
+                    with _req.urlopen(req, context=ssl_ctx, timeout=30) as resp:
+                        expected = resp.read().decode("utf-8").split()[0].strip().lower()
+                    h = hashlib.sha256()
+                    with open(temp_zip, "rb") as f:
+                        for chunk in iter(lambda: f.read(1 << 20), b""):
+                            h.update(chunk)
+                    if h.hexdigest() != expected:
+                        raise RuntimeError(
+                            f"更新檔 SHA-256 不符（預期 {expected[:12]}…，實際 {h.hexdigest()[:12]}…）")
 
                 self.after(0, lambda: self._splash_lbl.config(text="解壓縮並套用更新…"))
 
@@ -977,15 +1031,23 @@ class App(tk.Tk):
                         with zipfile.ZipFile(temp_zip, "r") as z:
                             z.extractall(tmpdir)
                         new_app = next(
-                            p for p in Path(tmpdir).rglob("*.app") if p.is_dir()
+                            (p for p in Path(tmpdir).rglob("*.app") if p.is_dir()),
+                            None,
                         )
+                        if new_app is None:
+                            raise RuntimeError("更新檔內找不到 .app")
                         # 先備份再替換（確保同一 volume，可以原子 rename）
                         backup = app_bundle.with_suffix(".app.bak")
                         if backup.exists():
                             shutil.rmtree(str(backup))
                         shutil.copytree(str(new_app), str(app_bundle.with_suffix(".app.new")))
                         app_bundle.rename(backup)
-                        app_bundle.with_suffix(".app.new").rename(app_bundle)
+                        try:
+                            app_bundle.with_suffix(".app.new").rename(app_bundle)
+                        except Exception:
+                            # 換不回新版時把舊版救回來，不能留下沒有主程式的狀態
+                            backup.rename(app_bundle)
+                            raise
                         shutil.rmtree(str(backup), ignore_errors=True)
                     # 清除 quarantine，避免 macOS Gatekeeper 擋住更新後的 .app
                     subprocess.run(
@@ -1002,7 +1064,9 @@ class App(tk.Tk):
                     with tempfile.TemporaryDirectory() as tmpdir:
                         with zipfile.ZipFile(temp_zip, "r") as z:
                             z.extractall(tmpdir)
-                        top = next(p for p in Path(tmpdir).iterdir() if p.is_dir())
+                        top = next((p for p in Path(tmpdir).iterdir() if p.is_dir()), None)
+                        if top is None:
+                            raise RuntimeError("更新檔解壓後是空的")
                         for src in top.rglob("*"):
                             rel = src.relative_to(top)
                             dst = dst_root / rel
@@ -1013,11 +1077,28 @@ class App(tk.Tk):
                                 shutil.copy2(str(src), str(dst))
                                 if dst.suffix == ".command":
                                     os.chmod(str(dst), 0o755)
+                    # 新版可能新增相依套件（如 certifi），更新後補裝；
+                    # 失敗不擋更新（缺件時 sslctx 會退回系統憑證）
+                    req_file = dst_root / "黑貓主程式" / "requirements.txt"
+                    if req_file.exists():
+                        subprocess.run(
+                            [sys.executable, "-m", "pip", "install", "--quiet",
+                             "-r", str(req_file)],
+                            capture_output=True, timeout=300,
+                        )
 
                 os.unlink(temp_zip)
                 self.after(0, self._restart_app)
-            except Exception:
-                self.after(0, self._init_ui)
+            except Exception as ex:
+                print(f"[WARN] 自動更新失敗：{ex}", file=sys.stderr, flush=True)
+
+                def _fail():
+                    try:
+                        self._splash_lbl.config(text="自動更新失敗，以目前版本啟動…")
+                    except Exception:
+                        pass
+                    self.after(1500, self._init_ui)
+                self.after(0, _fail)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -1669,7 +1750,7 @@ _NAV_ITEMS = [
     ("settings",      "設定",         "8", "⚙"),
 ]
 
-class Sidebar(tk.Frame):
+class Sidebar(SafeAfterMixin, tk.Frame):
     def __init__(self, master, app):
         super().__init__(master, bg=RAIL, width=234)
         self.pack_propagate(False)
@@ -2074,7 +2155,7 @@ class SectionHeader(tk.Frame):
 
 # ─── single order view ──────────────────────────────────────────────────────
 
-class SingleOrderView(tk.Frame):
+class SingleOrderView(SafeAfterMixin, tk.Frame):
     def __init__(self, master, app):
         super().__init__(master, bg=PAPER)
         self.app = app
@@ -2566,8 +2647,11 @@ class SingleOrderView(tk.Frame):
             for page in reader.pages:
                 page.transfer_rotation_to_content()
                 writer.add_page(page)
-            with open(path, "wb") as f:
+            # 原地改寫 PDF，先寫暫存檔再 replace，中斷不毀原檔
+            tmp = f"{path}.tmp"
+            with open(tmp, "wb") as f:
                 writer.write(f)
+            os.replace(tmp, path)
         except Exception:
             pass
 
@@ -2951,7 +3035,7 @@ class SingleOrderView(tk.Frame):
 
 # ─── batch view ──────────────────────────────────────────────────────────────
 
-class BatchOrderView(tk.Frame):
+class BatchOrderView(SafeAfterMixin, tk.Frame):
     """多筆建單：從通訊錄複選聯絡人，每筆可獨立設定付款 / 尺寸 / 溫層 / 備註，一次建單。"""
 
     def __init__(self, master, app):
@@ -3433,21 +3517,24 @@ class BatchOrderView(tk.Frame):
                             try:
                                 pdf_bytes = client.download_obt(file_no)
                                 pdf_path = str(Path(self.output_dir) / f"{oid}_{obt}.pdf")
-                                with open(pdf_path, "wb") as pf:
+                                with open(f"{pdf_path}.tmp", "wb") as pf:
                                     pf.write(pdf_bytes)
+                                os.replace(f"{pdf_path}.tmp", pdf_path)
                                 SingleOrderView._normalize_pdf_rotation(pdf_path)
                             except Exception as pex:
                                 pdf_path = ""
                                 self.after(0, lambda o=oid, e=str(pex):
                                     self._log(f"⚠ {o}  PDF 下載失敗：{e[:60]}"))
                         if pdf_path:
-                            self.app._staging.append({
+                            item = {
                                 "order_id": oid,
                                 "name": order.get("recipient_name", ""),
                                 "obt": obt,
                                 "pdf_path": pdf_path,
                                 "created_at": datetime.datetime.now().strftime("%H:%M"),
-                            })
+                            }
+                            # _staging 只在主執行緒讀寫，回主執行緒再 append
+                            self.after(0, lambda it=item: self.app._staging.append(it))
                             self.after(0, lambda o=oid, n=obt: self._log(f"✓ {o}  OBT:{n}"))
                             _append_build_log(f"✓ OBT:{obt} 訂單:{oid}")
                         else:
@@ -3525,11 +3612,9 @@ def _fetch_obt_status(obt: str) -> str:
     向黑貓官網查詢單一 OBT 的最新配送狀態。
     回傳繁體中文狀態字串，查不到或出錯時回傳說明文字。
     """
-    import urllib.request, urllib.parse, ssl, re
+    import urllib.request, urllib.parse, urllib.error, re, ssl
 
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = verified_context()
     ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     base = "https://www.t-cat.com.tw/inquire/trace.aspx"
 
@@ -3537,8 +3622,17 @@ def _fetch_obt_status(obt: str) -> str:
     try:
         req = urllib.request.Request(base,
             headers={"User-Agent": ua, "Accept-Language": "zh-TW,zh;q=0.9"})
-        with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
-            html = r.read().decode("utf-8", errors="ignore")
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
+                html = r.read().decode("utf-8", errors="ignore")
+        except urllib.error.URLError as e:
+            if not isinstance(e.reason, ssl.SSLCertVerificationError):
+                raise
+            # t-cat.com.tw 憑證驗證失敗時的退路（僅此主機、僅本次查詢）
+            print(f"[WARN] t-cat.com.tw 憑證驗證失敗（{e.reason}），改用不驗證連線", flush=True)
+            ctx = insecure_context()
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
+                html = r.read().decode("utf-8", errors="ignore")
     except Exception as e:
         return f"網路錯誤：{str(e)[:40]}"
 
@@ -3626,7 +3720,7 @@ def _apply_trk_grid(frame):
     for i, (_, mn, w) in enumerate(_TRK_GCOLS):
         frame.columnconfigure(i, minsize=mn, weight=w)
 
-class TrackingView(tk.Frame):
+class TrackingView(SafeAfterMixin, tk.Frame):
     def __init__(self, master, app):
         super().__init__(master, bg=PAPER)
         self.app = app
@@ -4876,7 +4970,7 @@ class ContactsView(tk.Frame):
 
 # ─── config view ─────────────────────────────────────────────────────────────
 
-class ConfigView(tk.Frame):
+class ConfigView(SafeAfterMixin, tk.Frame):
     FIELDS_API = [("客戶代號", "username"), ("API 授權碼", "api_token")]
     FIELDS_SENDER = [
         ("姓名 / 公司名稱", "name"),
@@ -5391,7 +5485,7 @@ class ConfigView(tk.Frame):
 
 # ─── freight fee view ────────────────────────────────────────────────────────
 
-class FreightView(tk.Frame):
+class FreightView(SafeAfterMixin, tk.Frame):
     """運費明細查詢 — 透過契客專區網頁查詢交易明細"""
 
     def __init__(self, master, app):
@@ -5897,7 +5991,7 @@ class ContactDialog(tk.Toplevel):
         self.destroy()
 
 
-class EpbTransferView(tk.Frame):
+class EpbTransferView(SafeAfterMixin, tk.Frame):
     """EPB 調撥建單 — 讀取 EPB 待出貨調撥單，批次建立黑貓託運單。"""
 
     def __init__(self, master, app):
@@ -6027,9 +6121,8 @@ class EpbTransferView(tk.Frame):
         return _load_json_dict(_epb_log_path())
 
     def _save_epb_log(self, log: dict):
-        path = _epb_log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(_epb_log_path(),
+                           json.dumps(log, ensure_ascii=False, indent=2))
 
     def _match_contact(self, to_store_name: str, to_store_id: str = ""):
         """

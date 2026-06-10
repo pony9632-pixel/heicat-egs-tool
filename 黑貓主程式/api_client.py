@@ -21,38 +21,62 @@ from __future__ import annotations
 
 import ssl
 import json
+import time
 import urllib.request
 import urllib.error
 from datetime import date, timedelta
 
+from sslctx import verified_context, insecure_context
+
 
 API_BASE = "https://api.suda.com.tw/api/Egs"
 
-# Disable SSL verification for api.suda.com.tw (certificate chain issue)
-_ssl_ctx = ssl.create_default_context()
-_ssl_ctx.check_hostname = False
-_ssl_ctx.verify_mode = ssl.CERT_NONE
+_ssl_ctx = verified_context()
+_ssl_fallback_used = False
 
 
-def _post(endpoint: str, payload: dict, timeout: int = 15) -> dict:
+def _open(req: urllib.request.Request, timeout: int):
+    """urlopen，預設完整憑證驗證；api.suda.com.tw 實際驗證失敗時
+    退回不驗證（僅此主機、僅此程序內），並印出警告。"""
+    global _ssl_ctx, _ssl_fallback_used
+    try:
+        return urllib.request.urlopen(req, context=_ssl_ctx, timeout=timeout)
+    except urllib.error.URLError as e:
+        if not _ssl_fallback_used and isinstance(e.reason, ssl.SSLCertVerificationError):
+            print(f"[WARN] api.suda.com.tw 憑證驗證失敗（{e.reason}），改用不驗證連線", flush=True)
+            _ssl_ctx = insecure_context()
+            _ssl_fallback_used = True
+            return urllib.request.urlopen(req, context=_ssl_ctx, timeout=timeout)
+        raise
+
+
+def _post(endpoint: str, payload: dict, timeout: int = 15, retry: int = 0) -> dict:
+    """POST JSON。retry 只對連線層錯誤（URLError，請求未送達）重試，
+    建單/取消這類非冪等呼叫一律 retry=0，避免重複建單。"""
     url = f"{API_BASE}/{endpoint}"
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, context=_ssl_ctx, timeout=timeout) as r:
-            body = r.read().decode("utf-8")
-            return json.loads(body)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8")
+    for attempt in range(retry + 1):
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
         try:
-            return json.loads(body)
-        except Exception:
-            raise RuntimeError(f"HTTP {e.code}：伺服器拒絕請求。{('回應：' + body[:200]) if body.strip() else '（無回應內容）'}")
+            with _open(req, timeout=timeout) as r:
+                body = r.read().decode("utf-8")
+                return json.loads(body)
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            try:
+                return json.loads(body)
+            except Exception:
+                raise RuntimeError(f"HTTP {e.code}：伺服器拒絕請求。{('回應：' + body[:200]) if body.strip() else '（無回應內容）'}")
+        except urllib.error.URLError as e:
+            if attempt < retry:
+                time.sleep(1 + attempt * 2)
+                continue
+            raise RuntimeError(f"無法連線黑貓 API：{e.reason}")
 
 
 class SudaClient:
@@ -130,18 +154,28 @@ class SudaClient:
         """
         下載已建立的 PDF，直接回傳 PDF 二進位資料。
         file_no 來自 PrintOBT 成功回應的 FileNo 欄位。
+        下載為冪等操作，連線層錯誤重試 2 次。
         """
-        import json as _json
-        payload = _json.dumps({**self._auth(), "FileNo": file_no},
-                              ensure_ascii=False).encode("utf-8")
+        payload = json.dumps({**self._auth(), "FileNo": file_no},
+                             ensure_ascii=False).encode("utf-8")
         url = f"{API_BASE}/DownloadOBT"
-        req = urllib.request.Request(
-            url, data=payload,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, context=_ssl_ctx, timeout=15) as r:
-            return r.read()
+        for attempt in range(3):
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                method="POST",
+            )
+            try:
+                with _open(req, timeout=15) as r:
+                    return r.read()
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"下載 PDF 失敗（HTTP {e.code}）。{('回應：' + body[:200]) if body.strip() else ''}")
+            except urllib.error.URLError as e:
+                if attempt < 2:
+                    time.sleep(1 + attempt * 2)
+                    continue
+                raise RuntimeError(f"下載 PDF 失敗，無法連線：{e.reason}")
 
     def query_freight(self, start_date: str, end_date: str) -> dict:
         """
@@ -161,7 +195,7 @@ class SudaClient:
         last_err = None
         for endpoint, extra in candidates:
             try:
-                resp = _post(endpoint, {**auth, **extra})
+                resp = _post(endpoint, {**auth, **extra}, retry=2)
                 # 成功：回傳時附上使用的端點名稱供除錯
                 resp["_endpoint_used"] = endpoint
                 return resp
@@ -176,9 +210,12 @@ class SudaClient:
 
 
 def save_pdf(base64_data: str, path: str) -> None:
-    import base64
-    with open(path, "wb") as f:
+    import base64, os
+    # 先寫暫存檔再 rename，避免寫到一半中斷留下毀損的 PDF
+    tmp = f"{path}.tmp"
+    with open(tmp, "wb") as f:
         f.write(base64.b64decode(base64_data))
+    os.replace(tmp, path)
     print(f"[PDF] 已儲存：{path}")
 
 

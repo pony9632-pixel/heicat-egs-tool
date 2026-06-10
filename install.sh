@@ -88,27 +88,35 @@ echo ""
 # ── 4 + 5. 下載、解壓、安裝（全部用 Python，避開 unzip 中文路徑問題）─────────
 echo "📥 下載並安裝中（請稍候）..."
 "$PYTHON_BIN" -c "
-import urllib.request, zipfile, os, shutil, ssl, sys
+import urllib.request, urllib.error, zipfile, os, shutil, ssl, sys, tempfile
 
 zipball_url = '$ZIPBALL_URL'
 install_dir = '$INSTALL_DIR'
 
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
+# 用 tempfile 產生不可預測的暫存路徑，避免 /tmp 固定檔名遭預先佔用或符號連結攻擊
+_fd, tmp_zip = tempfile.mkstemp(prefix='heicat_install_', suffix='.zip')
+os.close(_fd)
+tmp_dir = tempfile.mkdtemp(prefix='heicat_dir_')
 
-tmp_zip = '/tmp/heicat_install_$$.zip'
-tmp_dir = '/tmp/heicat_dir_$$'
-
-# 下載
+# 下載：先用完整憑證驗證；bootstrap 階段沒有 certifi，部分 Python
+# 安裝缺 CA 憑證會驗證失敗，此時才退回不驗證並警告
 req = urllib.request.Request(zipball_url, headers={'User-Agent': 'heicat-install'})
-with urllib.request.urlopen(req, context=ctx, timeout=60) as r, open(tmp_zip, 'wb') as f:
-    shutil.copyfileobj(r, f)
+try:
+    ctx = ssl.create_default_context()
+    with urllib.request.urlopen(req, context=ctx, timeout=60) as r, open(tmp_zip, 'wb') as f:
+        shutil.copyfileobj(r, f)
+except urllib.error.URLError as e:
+    if not isinstance(getattr(e, 'reason', None), ssl.SSLCertVerificationError):
+        raise
+    print('⚠️  此 Python 缺少 CA 憑證，改用不驗證連線下載（安裝後程式會改用 certifi 驗證）', file=sys.stderr)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(zipball_url, headers={'User-Agent': 'heicat-install'})
+    with urllib.request.urlopen(req, context=ctx, timeout=60) as r, open(tmp_zip, 'wb') as f:
+        shutil.copyfileobj(r, f)
 
-# 解壓
-if os.path.exists(tmp_dir):
-    shutil.rmtree(tmp_dir)
-os.makedirs(tmp_dir)
+# 解壓（tmp_dir 已由 mkdtemp 建立）
 with zipfile.ZipFile(tmp_zip, 'r') as z:
     z.extractall(tmp_dir)
 

@@ -8,20 +8,36 @@ from __future__ import annotations
 import ssl, re, urllib.request, urllib.parse, urllib.error, http.cookiejar
 from html.parser import HTMLParser
 
+from sslctx import verified_context, insecure_context
+
 BASE    = "https://www.takkyubin.com.tw/YMTContract/aspx"
-_SSLCTX = ssl.create_default_context()
-_SSLCTX.check_hostname = False
-_SSLCTX.verify_mode    = ssl.CERT_NONE
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 class TakkyubinWebClient:
     def __init__(self):
-        self._jar    = http.cookiejar.CookieJar()
+        self._jar = http.cookiejar.CookieJar()
+        self._insecure = False
+        self._build_opener(verified_context())
+
+    def _build_opener(self, ctx: ssl.SSLContext):
         self._opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self._jar),
-            urllib.request.HTTPSHandler(context=_SSLCTX),
+            urllib.request.HTTPSHandler(context=ctx),
         )
+
+    def _open(self, req: urllib.request.Request, timeout: int):
+        """opener.open，預設完整憑證驗證；takkyubin.com.tw 實際驗證失敗時
+        退回不驗證（僅此 session），並印出警告。"""
+        try:
+            return self._opener.open(req, timeout=timeout)
+        except urllib.error.URLError as e:
+            if not self._insecure and isinstance(e.reason, ssl.SSLCertVerificationError):
+                print(f"[WARN] takkyubin.com.tw 憑證驗證失敗（{e.reason}），改用不驗證連線", flush=True)
+                self._insecure = True
+                self._build_opener(insecure_context())
+                return self._opener.open(req, timeout=timeout)
+            raise
 
     def _req(self, url: str, post_data: bytes | None = None) -> str:
         headers = {"User-Agent": _UA,
@@ -30,15 +46,15 @@ class TakkyubinWebClient:
         if post_data:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         req = urllib.request.Request(url, data=post_data, headers=headers)
-        with self._opener.open(req, timeout=8) as r:
+        with self._open(req, timeout=20) as r:
             ct = r.headers.get("Content-Type","")
-            enc = "utf-8"
-            if "charset=" in ct: enc = ct.split("charset=")[-1].strip()
+            m = re.search(r"charset=([\w-]+)", ct, re.I)
+            enc = m.group(1) if m else "utf-8"
             return r.read().decode(enc, errors="replace")
 
     def _get_bytes(self, url: str) -> bytes:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
-        with self._opener.open(req, timeout=10) as r:
+        with self._open(req, timeout=10) as r:
             return r.read()
 
     @staticmethod
@@ -89,12 +105,15 @@ class TakkyubinWebClient:
             "txtValidate": captcha, "btnSubmit": " 登入 ",
         }, encoding="utf-8").encode("utf-8")
         html = self._req(f"{BASE}/Login.aspx", data)
-        bad = ("驗證碼" in html and "不正確" in html) \
+        # 1. 明確錯誤訊息 → 失敗
+        if ("驗證碼" in html and "不正確" in html) \
            or ("密碼" in html and "錯誤" in html) \
-           or "登入失敗" in html or "txtUserID" in html
-        ok = "SudaPaymentDetail" in html or "RedirectFunc" in html \
-          or "logout" in html.lower() or "歡迎" in html
-        return ok and not bad
+           or "登入失敗" in html:
+            return False
+        # 2. 回應頁仍含登入表單（密碼欄）→ 沒登進去
+        if "txtUserPW" in html:
+            return False
+        return True
 
     def is_logged_in(self) -> bool:
         try:

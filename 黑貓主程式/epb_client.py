@@ -77,7 +77,13 @@ def _run_remote(sql: str, timeout: int = 180) -> tuple[list, list]:
         return [], []
     reader = csv.reader(lines, delimiter="\t")
     rows = list(reader)
-    return rows[0], rows[1:]
+    headers, data = rows[0], rows[1:]
+    # 欄位數不符的列直接丟棄：資料含 tab/換行會造成欄位平移，
+    # 寧可少一筆也不能讓地址、電話對到錯的欄位
+    good = [r for r in data if len(r) == len(headers)]
+    if len(good) != len(data):
+        print(f"[WARN] EPB 查詢有 {len(data) - len(good)} 列欄位數異常，已略過", flush=True)
+    return headers, good
 
 
 def _q(value: str) -> str:
