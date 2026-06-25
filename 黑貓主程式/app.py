@@ -69,8 +69,11 @@ def _ensure_data_dir():
     data_dir = get_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     # migrate files that used to sit next to the app
+    # 注意：default_contacts.json 不在此清單。它隨 app 出貨、永遠留在 app 目錄
+    # 讀取（見 _default_contacts_path），若搬到 data dir 會導致每次全新安裝
+    # 首啟時被搬走、通訊錄空白。
     old_files = [
-        "config.yaml", "contacts.json", "default_contacts.json",
+        "config.yaml", "contacts.json",
         "tracking.json", "deleted_obts.json", "epb_transfer_log.json",
     ]
     for name in old_files:
