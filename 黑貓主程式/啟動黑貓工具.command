@@ -55,7 +55,7 @@ ensure_env() {
         write_log "找不到虛擬環境，正在建立（第一次約需 1～2 分鐘，請勿關閉視窗）..."
         SYS_PY="$(find_python || true)"
         if [[ -z "$SYS_PY" ]]; then
-            write_log "找不到 Python 3.10 以上（含 tkinter）。請到 GitHub Release 頁面下載 install-heicat-tool.zip，解開後執行裡面的 .command，它會自動安裝 Python。"
+            write_log "找不到 Python 3.10 以上（含 tkinter）。請依 README 在終端機貼上安裝指令重新安裝，它會自動安裝 Python。"
             return 1
         fi
         write_log "SYS_PY=$SYS_PY ($("$SYS_PY" --version 2>&1))"

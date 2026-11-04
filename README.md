@@ -24,22 +24,18 @@
 
 > 已經有 Python 3.10 以上的電腦可以跳過這步。
 
-### 步驟 2：雙擊安裝工具
+### 步驟 2：一鍵安裝工具
 
-1. 到 **https://github.com/pony9632-pixel/heicat-egs-tool/releases/latest** 下載 `install-heicat-tool.zip`
-2. 在「下載項目」找到解開的 `install-heicat-tool.command`（Safari 會自動解壓；其他瀏覽器雙擊 zip 一下），**按右鍵 → 打開**（第一次會問「來自未識別的開發者」，再點一次「打開」即可）
-3. 等終端機視窗跑完、顯示「安裝完成」後關閉視窗
-
-安裝程式會自動下載主程式、建立執行環境、安裝套件，完成後自動開啟程式資料夾。  
-重新安裝或修復時也是雙擊這個檔案，會保留原本的設定與通訊錄。
-
-<details>
-<summary>偏好用終端機指令安裝</summary>
+開「**終端機**」（Spotlight 搜尋 `Terminal`），貼上以下指令後按 Enter，等它跑完即可：
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/pony9632-pixel/heicat-egs-tool/main/install.sh" | bash
 ```
-</details>
+
+安裝程式會自動檢查並補齊缺少的東西（Python、tkinter、pip、憑證），下載主程式、建立執行環境、安裝套件，完成後自動開啟程式資料夾。  
+重新安裝或修復時也是貼同一行指令，會保留原本的設定與通訊錄。
+
+> 為什麼不是雙擊安裝？從瀏覽器下載的腳本會被 macOS 的 Gatekeeper 擋下，每台電腦都要到系統設定手動放行；貼指令沒有這個問題。
 
 ### 步驟 3：填設定
 

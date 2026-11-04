@@ -42,20 +42,7 @@ else
   gh release create "v$VERSION" --title "v$VERSION" --generate-notes
 fi
 
-# 6. 附上可雙擊的安裝器，讓同事從 Release 頁面下載即可安裝。
-#    - 包成 zip：瀏覽器直接下載 .command 會丟掉執行權限，Terminal 會拒絕執行；
-#      zip 解開後權限保留，Safari 還會自動解壓
-#    - 用英文檔名：GitHub 會把非 ASCII 的 asset 檔名改成 default.*
-INSTALLER_NAME="install-heicat-tool"
-INSTALLER_TMP="$(mktemp -d -t heicat_rel)"
-cp "安裝黑貓工具.command" "$INSTALLER_TMP/$INSTALLER_NAME.command"
-chmod +x "$INSTALLER_TMP/$INSTALLER_NAME.command"
-(cd "$INSTALLER_TMP" && zip -q -X "$INSTALLER_NAME.zip" "$INSTALLER_NAME.command")
-gh release upload "v$VERSION" "$INSTALLER_TMP/$INSTALLER_NAME.zip" --clobber
-rm -rf "$INSTALLER_TMP"
-echo "✓ 已上傳 $INSTALLER_NAME.zip"
-
-# 7. 若有打包好的 .app zip（dist/*.zip），連同 SHA-256 一起上傳，
+# 6. 若有打包好的 .app zip（dist/*.zip），連同 SHA-256 一起上傳，
 #    讓自動更新可以驗證下載檔完整性（找不到 .sha256 的舊版 release 會略過驗證）
 for ZIP in dist/*.zip; do
   [ -e "$ZIP" ] || continue
