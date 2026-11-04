@@ -6,10 +6,12 @@ set -euo pipefail
 
 TMP_ZIP=""
 TMP_DIR=""
+TMP_PKG_DIR=""
 cleanup() {
     # 用 if 而非 && 短路：變數為空時 && 會回傳 1，配合 set -e 讓整個安裝以失敗狀態結束
     if [[ -n "$TMP_ZIP" ]]; then rm -f "$TMP_ZIP"; fi
     if [[ -n "$TMP_DIR" ]]; then rm -rf "$TMP_DIR"; fi
+    if [[ -n "$TMP_PKG_DIR" ]]; then rm -rf "$TMP_PKG_DIR"; fi
 }
 trap cleanup EXIT
 
@@ -29,46 +31,61 @@ if [[ "$(uname)" != "Darwin" ]]; then
     exit 1
 fi
 
-# ── 2. 確認 Python 3.10 以上 ─────────────────────────────────────────────────
-echo "🔍 檢查 Python 3..."
+# ── 2. 確認 Python 3.10 以上（含 tkinter）；沒有就自動下載官方安裝檔 ──────────
+PYTHON_PKG_VERSION="3.14.10"
+PYTHON_PKG_URL="https://www.python.org/ftp/python/$PYTHON_PKG_VERSION/python-$PYTHON_PKG_VERSION-macos11.pkg"
 
 python_ok() {
-    command -v python3 &>/dev/null && python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
+    "$1" -c 'import sys, tkinter; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
 }
 
-if ! python_ok; then
-    echo ""
-    echo "❌ 找不到 Python 3.10 以上版本。"
-    echo ""
-    echo "   請先安裝 Python，步驟如下："
-    echo ""
-    echo "   1. 開啟瀏覽器，前往：https://www.python.org/downloads/"
-    echo "   2. 點「Download Python 3.x.x」下載安裝檔"
-    echo "   3. 執行安裝，全部選預設，一路按「繼續」即可"
-    echo "   4. 安裝完成後，重新開啟終端機（Terminal）"
-    echo "   5. 再次執行這個安裝指令"
-    echo ""
-    exit 1
-fi
-PYTHON_BIN="$(command -v python3)"
-echo "✅ $("$PYTHON_BIN" --version) 已就緒"
-echo ""
+# 依序找：python.org 官方版（新到舊）→ Homebrew → PATH 上的 python3。
+# /usr/bin/python3 是 Xcode 的殼，沒裝 Command Line Tools 時一執行就跳安裝視窗，
+# 所以放最後、且只在已裝 CLT 時才試。
+find_python() {
+    local c
+    for c in $(ls -d /Library/Frameworks/Python.framework/Versions/3.*/bin/python3 2>/dev/null | sort -rV) \
+             /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+        if [[ -x "$c" ]] && python_ok "$c"; then echo "$c"; return 0; fi
+    done
+    c="$(command -v python3 2>/dev/null || true)"
+    if [[ -n "$c" ]]; then
+        if [[ "$c" != /usr/bin/python3 ]] || xcode-select -p &>/dev/null; then
+            if python_ok "$c"; then echo "$c"; return 0; fi
+        fi
+    fi
+    return 1
+}
 
-# ── 2b. 確認 tkinter 可用 ─────────────────────────────────────────────────────
-echo "🔍 檢查 tkinter（GUI 模組）..."
-if ! "$PYTHON_BIN" -c "import tkinter" &>/dev/null; then
+echo "🔍 檢查 Python 3（需 3.10 以上並含 tkinter）..."
+PYTHON_BIN="$(find_python || true)"
+if [[ -z "$PYTHON_BIN" ]]; then
+    echo "⚠️  找不到符合的 Python，自動下載官方安裝檔 Python $PYTHON_PKG_VERSION（約 70 MB）..."
+    TMP_PKG_DIR="$(mktemp -d -t heicat_py)"
+    PKG="$TMP_PKG_DIR/python-$PYTHON_PKG_VERSION.pkg"
+    curl -fL --progress-bar -o "$PKG" "$PYTHON_PKG_URL"
+    if ! pkgutil --check-signature "$PKG" 2>/dev/null | grep -q "Developer ID Installer: Python Software Foundation"; then
+        echo "❌ 下載的 Python 安裝檔簽章驗證失敗，為安全起見中止。請手動到 https://www.python.org/downloads/ 安裝。"
+        exit 1
+    fi
     echo ""
-    echo "❌ Python 缺少 tkinter 模組（GUI 所需）。"
+    echo "📦 即將開啟 Python 安裝程式，請依畫面一路按「繼續」→「安裝」（會要求輸入電腦密碼），"
+    echo "   安裝完成按「關閉」後，這裡會自動接著安裝黑貓工具。"
     echo ""
-    echo "   請重新安裝 Python（官網版本內建 tkinter）："
-    echo ""
-    echo "   1. 前往：https://www.python.org/downloads/"
-    echo "   2. 下載並安裝最新版 Python 3.x"
-    echo "   3. 安裝完成後重新開啟終端機，再執行這個安裝指令"
-    echo ""
-    exit 1
+    open -W "$PKG"
+    PYTHON_BIN="$(find_python || true)"
+    if [[ -z "$PYTHON_BIN" ]]; then
+        echo ""
+        echo "❌ Python 安裝未完成或被取消。請再執行一次安裝程式，或手動安裝：https://www.python.org/downloads/"
+        exit 1
+    fi
+    # 官方版 Python 的 CA 憑證要另外裝，否則 urllib 驗證 HTTPS 會失敗
+    CERT_CMD="/Applications/Python ${PYTHON_PKG_VERSION%.*}/Install Certificates.command"
+    if [[ -x "$CERT_CMD" ]]; then
+        "$CERT_CMD" >/dev/null 2>&1 || true
+    fi
 fi
-echo "✅ tkinter 可用"
+echo "✅ $("$PYTHON_BIN" --version) 已就緒（$PYTHON_BIN）"
 echo ""
 
 # ── 3. 取得最新版本資訊 ───────────────────────────────────────────────────────
@@ -148,6 +165,10 @@ echo "📦 建立虛擬環境並安裝套件..."
 VENV_DIR="$INSTALL_DIR/venv"
 "$PYTHON_BIN" -m venv "$VENV_DIR"
 VENV_PYTHON="$VENV_DIR/bin/python3"
+if ! "$VENV_PYTHON" -m pip --version &>/dev/null; then
+    echo "🔧 venv 內沒有 pip，補裝中..."
+    "$VENV_PYTHON" -m ensurepip --upgrade
+fi
 
 REQ_FILE="$INSTALL_DIR/黑貓主程式/requirements.txt"
 if [[ -f "$REQ_FILE" ]]; then

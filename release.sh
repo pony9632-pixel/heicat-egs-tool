@@ -42,9 +42,13 @@ else
   gh release create "v$VERSION" --title "v$VERSION" --generate-notes
 fi
 
-# 6. 附上可雙擊的安裝器，讓同事從 Release 頁面下載即可安裝
-gh release upload "v$VERSION" "安裝黑貓工具.command"
-echo "✓ 已上傳 安裝黑貓工具.command"
+# 6. 附上可雙擊的安裝器，讓同事從 Release 頁面下載即可安裝。
+#    GitHub 會把非 ASCII 的 asset 檔名改成 default.command，所以用英文檔名上傳
+INSTALLER_ASSET="install-heicat-tool.command"
+cp "安裝黑貓工具.command" "/tmp/$INSTALLER_ASSET"
+gh release upload "v$VERSION" "/tmp/$INSTALLER_ASSET" --clobber
+rm -f "/tmp/$INSTALLER_ASSET"
+echo "✓ 已上傳 $INSTALLER_ASSET"
 
 # 7. 若有打包好的 .app zip（dist/*.zip），連同 SHA-256 一起上傳，
 #    讓自動更新可以驗證下載檔完整性（找不到 .sha256 的舊版 release 會略過驗證）

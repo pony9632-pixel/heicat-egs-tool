@@ -26,7 +26,7 @@
 
 ### 步驟 2：雙擊安裝工具
 
-1. 到 **https://github.com/pony9632-pixel/heicat-egs-tool/releases/latest** 下載 `安裝黑貓工具.command`
+1. 到 **https://github.com/pony9632-pixel/heicat-egs-tool/releases/latest** 下載 `install-heicat-tool.command`
 2. 在「下載項目」找到它，**按右鍵 → 打開**（第一次會問「來自未識別的開發者」，再點一次「打開」即可）
 3. 等終端機視窗跑完、顯示「安裝完成」後關閉視窗
 
