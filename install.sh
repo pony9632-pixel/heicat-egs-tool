@@ -7,8 +7,9 @@ set -euo pipefail
 TMP_ZIP=""
 TMP_DIR=""
 cleanup() {
-    [[ -n "$TMP_ZIP" ]] && rm -f "$TMP_ZIP"
-    [[ -n "$TMP_DIR" ]] && rm -rf "$TMP_DIR"
+    # 用 if 而非 && 短路：變數為空時 && 會回傳 1，配合 set -e 讓整個安裝以失敗狀態結束
+    if [[ -n "$TMP_ZIP" ]]; then rm -f "$TMP_ZIP"; fi
+    if [[ -n "$TMP_DIR" ]]; then rm -rf "$TMP_DIR"; fi
 }
 trap cleanup EXIT
 

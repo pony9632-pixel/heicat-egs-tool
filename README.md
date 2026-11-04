@@ -24,17 +24,24 @@
 
 > 已經有 Python 3.10 以上的電腦可以跳過這步。
 
-### 步驟 2：一鍵安裝工具
+### 步驟 2：雙擊安裝工具
 
-開「**終端機**」（Spotlight 搜尋 `Terminal`），貼上以下指令後按 Enter，等它跑完即可：
+1. 到 **https://github.com/pony9632-pixel/heicat-egs-tool/releases/latest** 下載 `安裝黑貓工具.command`
+2. 在「下載項目」找到它，**按右鍵 → 打開**（第一次會問「來自未識別的開發者」，再點一次「打開」即可）
+3. 等終端機視窗跑完、顯示「安裝完成」後關閉視窗
+
+安裝程式會自動下載主程式、建立執行環境、安裝套件，完成後自動開啟程式資料夾。  
+重新安裝或修復時也是雙擊這個檔案，會保留原本的設定與通訊錄。
+
+<details>
+<summary>偏好用終端機指令安裝</summary>
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/pony9632-pixel/heicat-egs-tool/main/install.sh" | bash
 ```
+</details>
 
-腳本會自動下載程式、建立執行環境、安裝套件，完成後自動開啟程式資料夾。
-
-### 步驟 2：填設定
+### 步驟 3：填設定
 
 雙擊 `啟動黑貓工具.command`，切到「**設定**」分頁，填：
 
