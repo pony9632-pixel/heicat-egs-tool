@@ -59,7 +59,9 @@ ensure_env() {
             return 1
         fi
         write_log "SYS_PY=$SYS_PY ($("$SYS_PY" --version 2>&1))"
-        if ! "$SYS_PY" -m venv "$VENV_DIR" >> "$LOG" 2>&1; then
+        # --clear：venv 裡的 python 是指向建立它那台電腦的絕對路徑符號連結，
+        # 整個資料夾複製到別台 Mac 後會斷掉；不清空就重建會報 No such file or directory
+        if ! "$SYS_PY" -m venv --clear "$VENV_DIR" >> "$LOG" 2>&1; then
             write_log "建立虛擬環境失敗。"
             return 1
         fi

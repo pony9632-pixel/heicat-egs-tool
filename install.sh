@@ -60,7 +60,7 @@ find_python() {
 echo "🔍 檢查 Python 3（需 3.10 以上並含 tkinter）..."
 PYTHON_BIN="$(find_python || true)"
 if [[ -z "$PYTHON_BIN" ]]; then
-    echo "⚠️  找不到符合的 Python，自動下載官方安裝檔 Python $PYTHON_PKG_VERSION（約 70 MB）..."
+    echo "⚠️  找不到符合的 Python，自動下載官方安裝檔 Python ${PYTHON_PKG_VERSION}（約 70 MB）..."
     TMP_PKG_DIR="$(mktemp -d -t heicat_py)"
     PKG="$TMP_PKG_DIR/python-$PYTHON_PKG_VERSION.pkg"
     curl -fL --progress-bar -o "$PKG" "$PYTHON_PKG_URL"
@@ -85,7 +85,9 @@ if [[ -z "$PYTHON_BIN" ]]; then
         "$CERT_CMD" >/dev/null 2>&1 || true
     fi
 fi
-echo "✅ $("$PYTHON_BIN" --version) 已就緒（$PYTHON_BIN）"
+# 變數一律用 ${} 包住：macOS 內建 bash 3.2 在 zh_TW.UTF-8 locale 下，
+# $VAR 後面直接接全形字會把該字的第一個 byte 併進變數名，變成 unbound variable
+echo "✅ $("${PYTHON_BIN}" --version) 已就緒（${PYTHON_BIN}）"
 echo ""
 
 # ── 3. 取得最新版本資訊 ───────────────────────────────────────────────────────
@@ -163,7 +165,8 @@ echo ""
 # ── 6. 建立 venv 並安裝套件 ──────────────────────────────────────────────────
 echo "📦 建立虛擬環境並安裝套件..."
 VENV_DIR="$INSTALL_DIR/venv"
-"$PYTHON_BIN" -m venv "$VENV_DIR"
+# --clear：舊 venv 若是從別台 Mac 複製來的，符號連結已斷，不清空會重建失敗
+"$PYTHON_BIN" -m venv --clear "$VENV_DIR"
 VENV_PYTHON="$VENV_DIR/bin/python3"
 if ! "$VENV_PYTHON" -m pip --version &>/dev/null; then
     echo "🔧 venv 內沒有 pip，補裝中..."
