@@ -26,8 +26,8 @@
 
 ### 步驟 2：雙擊安裝工具
 
-1. 到 **https://github.com/pony9632-pixel/heicat-egs-tool/releases/latest** 下載 `install-heicat-tool.command`
-2. 在「下載項目」找到它，**按右鍵 → 打開**（第一次會問「來自未識別的開發者」，再點一次「打開」即可）
+1. 到 **https://github.com/pony9632-pixel/heicat-egs-tool/releases/latest** 下載 `install-heicat-tool.zip`
+2. 在「下載項目」找到解開的 `install-heicat-tool.command`（Safari 會自動解壓；其他瀏覽器雙擊 zip 一下），**按右鍵 → 打開**（第一次會問「來自未識別的開發者」，再點一次「打開」即可）
 3. 等終端機視窗跑完、顯示「安裝完成」後關閉視窗
 
 安裝程式會自動下載主程式、建立執行環境、安裝套件，完成後自動開啟程式資料夾。  
