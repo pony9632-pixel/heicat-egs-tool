@@ -129,7 +129,8 @@ def _csv_row_to_api_order(row: dict, sender: dict) -> dict:
         "IsDeclare": "N",
         "ProductTypeId": FIXED_PRODUCT_TYPE_ID,
         "ProductName": row.get("product_name") or "一般物品",
-        "Remark": row.get("notes") or "",
+        # 備註欄位名是 Memo（規格書 String(100)）；送 Remark 會被 API 靜默忽略、託運單印不出備註
+        "Memo": row.get("notes") or "",
         "CollectionAmount": row.get("collection_amount") or "0",
     }
 
