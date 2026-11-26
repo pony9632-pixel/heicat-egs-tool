@@ -25,10 +25,13 @@ import yaml
 from theme import LIGHT as T
 import tokens as TOK
 
-from api_client import SudaClient, save_pdf, default_shipment_date, default_delivery_date, _skip_sunday
+from api_client import (SudaClient, save_pdf, default_shipment_date, default_delivery_date,
+                        _skip_sunday, OBT_STATUS_MAX_PER_CALL, explain_error,
+                        ApiTimeoutError)
 from sslctx import verified_context, insecure_context
 from web_client import TakkyubinWebClient
-from order import generate_template, load_orders, create_orders, TEMPLATE_FIELDS, _csv_row_to_api_order
+from order import (generate_template, load_orders, create_orders, TEMPLATE_FIELDS,
+                   _csv_row_to_api_order, validate_order)
 
 # ─── 資料庫路徑系統 ──────────────────────────────────────────────────────────
 # .datapath  放在程式旁（不同步）：只記錄「資料庫資料夾在哪」
@@ -179,7 +182,9 @@ F_NAV    = (FONT_FAMILY, _sz(13))
 
 SPEC_OPTIONS   = {"0001  60 cm": "0001", "0002  90 cm": "0002", "0003 120 cm": "0003", "0004 150 cm": "0004"}
 THERMO_OPTIONS = {"0001 常溫": "0001", "0002 冷藏": "0002", "0003 冷凍": "0003"}
-DTIME_OPTIONS  = {"01 不指定": "01", "02 上午 08–12": "02", "03 下午 12–17": "03", "04 晚上 17–20": "04"}
+# 配送時段代碼依印單 API 規格書：01=13 時前、02=14–18 時、04=不指定（沒有 03）。
+# 第一個 key 是預設值，_label_for 對不到代碼（如舊資料的 03）時也會退回它。
+DTIME_OPTIONS  = {"04 不指定": "04", "01 13 時前": "01", "02 14–18 時": "02"}
 PRODUCT_TYPE_OPTIONS = {
     "0001 一般食品":       "0001",
     "0002 名特產/甜點":    "0002",
@@ -388,16 +393,20 @@ def _normalize_created_at(ca: str) -> str:
     return ca
 
 
-def append_tracking(obt_number: str, recipient_name: str, order_id: str):
+def append_tracking(obt_number: str, recipient_name: str, order_id: str,
+                    sender_name: str = ""):
     """Add a new tracking record; auto-prune records older than 14 days."""
     import datetime
     records = load_tracking()
-    records.append({
+    rec = {
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "obt_number": obt_number,
         "recipient_name": recipient_name,
         "order_id": order_id,
-    })
+    }
+    if sender_name:
+        rec["sender_name"] = sender_name
+    records.append(rec)
     cutoff = (datetime.datetime.now() - datetime.timedelta(days=14)).isoformat()
     records = [r for r in records
                if _normalize_created_at(r.get("created_at", "")) >= cutoff]
@@ -2324,7 +2333,7 @@ class SingleOrderView(SafeAfterMixin, tk.Frame):
         self._combo_field(adv_g1, 0, 0, "尺寸", "spec",
                           list(SPEC_OPTIONS.keys()), default="0001  60 cm")
         self._combo_field(adv_g1, 0, 1, "配送時段", "delivery_time",
-                          list(DTIME_OPTIONS.keys()), default="01 不指定")
+                          list(DTIME_OPTIONS.keys()), default="04 不指定")
         adv_g2 = tk.Frame(self._pkg_detail, bg=CARD)
         adv_g2.pack(fill="x", padx=18, pady=(0, 12))
         adv_g2.columnconfigure(0, weight=1)
@@ -2575,7 +2584,7 @@ class SingleOrderView(SafeAfterMixin, tk.Frame):
             "order_id": "", "product_name": "一般物品",
             "recipient_name": "", "recipient_phone": "", "recipient_mobile": "",
             "recipient_address": "", "spec": "0001  60 cm",
-            "thermosphere": "0001 常溫", "delivery_time": "01 不指定",
+            "thermosphere": "0001 常溫", "delivery_time": "04 不指定",
             "shipment_date": default_shipment_date(),
             "delivery_date": default_delivery_date(),
             "is_freight": "N 寄件人付", "is_collection": "N 不代收",
@@ -2997,6 +3006,11 @@ class SingleOrderView(SafeAfterMixin, tk.Frame):
         if not sender.get("name"):
             messagebox.showwarning("寄件人資料未設定", "請先到「設定」頁填寫寄件人資料。"); return
 
+        problems = validate_order(values)
+        if problems:
+            messagebox.showwarning("資料需要修正",
+                "送出前檢查發現以下問題：\n\n" + "\n".join(f"• {p}" for p in problems)); return
+
         self.result_var.set("建單中，請稍候…")
         self.result_lbl.configure(fg=MUTED)
 
@@ -3022,8 +3036,6 @@ class SingleOrderView(SafeAfterMixin, tk.Frame):
                     self.after(0, lambda: self._go_print_btn.pack(side="left", padx=(10, 0)))
                 else:
                     raw = r['message']
-                    if "E009" in raw:
-                        raw += "\n→ 品名類別已固定為 0006 3C，請確認版本為 v1.5.1 以上並在「設定」頁儲存設定後重試。"
                     msg = f"✗ 建單失敗：{raw}"
                     _append_build_log(f"✗ 訂單:{values.get('order_id','')} {raw[:80]}")
                     self.after(0, lambda: self.result_lbl.configure(fg=ERR))
@@ -3089,7 +3101,7 @@ class BatchOrderView(SafeAfterMixin, tk.Frame):
 
         self.default_spec = tk.StringVar(value="0001  60 cm")
         self.default_thermo = tk.StringVar(value="0001 常溫")
-        self.default_dtime = tk.StringVar(value="01 不指定")
+        self.default_dtime = tk.StringVar(value="04 不指定")
         self.default_shipment = tk.StringVar(value=default_shipment_date())
         self.default_delivery = tk.StringVar(value=default_delivery_date())
 
@@ -3188,7 +3200,7 @@ class BatchOrderView(SafeAfterMixin, tk.Frame):
         is_freight = "Y" if cat in ("門市", "廠商") else "N"
         spec_code = SPEC_OPTIONS.get(self.default_spec.get(), "0001")
         thermo_code = THERMO_OPTIONS.get(self.default_thermo.get(), "0001")
-        dtime_code = DTIME_OPTIONS.get(self.default_dtime.get(), "01")
+        dtime_code = DTIME_OPTIONS.get(self.default_dtime.get(), "04")
         shipment = (self.default_shipment.get() or "").strip() or default_shipment_date()
         delivery = (self.default_delivery.get() or "").strip() or default_delivery_date()
 
@@ -3433,7 +3445,7 @@ class BatchOrderView(SafeAfterMixin, tk.Frame):
             "recipient_address": csv_row.get("recipient_address", ""),
             "spec": csv_row.get("spec") or "0001",
             "thermosphere": csv_row.get("thermosphere") or "0001",
-            "delivery_time": csv_row.get("delivery_time") or "01",
+            "delivery_time": csv_row.get("delivery_time") or "04",
             "shipment_date": csv_row.get("shipment_date") or default_shipment_date(),
             "delivery_date": csv_row.get("delivery_date") or default_delivery_date(),
             "product_name": csv_row.get("product_name") or "一般物品",
@@ -3484,6 +3496,18 @@ class BatchOrderView(SafeAfterMixin, tk.Frame):
         if not sender.get("name"):
             messagebox.showwarning("寄件人資料未設定",
                                     "請先到「設定」頁填寫寄件人資料。"); return
+
+        bad = [(r["data"].get("order_id") or f"第 {n} 筆", validate_order(r["data"]))
+               for n, r in enumerate(self.rows, 1)]
+        bad = [(oid, probs) for oid, probs in bad if probs]
+        if bad:
+            for oid, probs in bad:
+                self._log(f"✗ {oid}：{' '.join(probs)}")
+            shown = "\n".join(f"• {oid}：{probs[0]}" for oid, probs in bad[:8])
+            more = f"\n…另有 {len(bad) - 8} 筆" if len(bad) > 8 else ""
+            messagebox.showwarning("資料需要修正",
+                f"有 {len(bad)} 筆資料送出前檢查沒過，尚未送出任何一筆：\n\n{shown}{more}"
+                "\n\n完整原因請看下方紀錄，修正後再按一次。"); return
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
         rows_snapshot = [dict(r["data"]) for r in self.rows]
@@ -3545,9 +3569,9 @@ class BatchOrderView(SafeAfterMixin, tk.Frame):
                             _append_build_log(f"✓ OBT:{obt} 訂單:{oid} (PDF未存)")
                         success_indices.add(i - 1)
                     else:
-                        msg = resp.get("Message", "")[:60]
+                        msg = explain_error(resp.get("Message", ""))[:200]
                         self.after(0, lambda o=oid, m=msg: self._log(f"✗ {o}: {m}"))
-                        _append_build_log(f"✗ 訂單:{oid} {msg}")
+                        _append_build_log(f"✗ 訂單:{oid} {msg[:120]}")
                 except Exception as ex:
                     self.after(0, lambda o=oid, e=str(ex): self._log(f"✗ {o}: {e}"))
                     _append_build_log(f"✗ 訂單:{oid} 例外:{str(ex)[:80]}")
@@ -3704,6 +3728,110 @@ def _fetch_obt_status(obt: str) -> str:
         return m_st.group(1).strip()
 
     return "無法解析"
+
+
+# ─── 官方貨態 API（OBTStatus）＋ 網頁查詢退路 ────────────────────────────────
+
+# 規格書限制：相同單號 2 小時內只能查一次、同時最多 3 個查詢、一次最多 10 筆。
+_OBT_API_MIN_INTERVAL = 2 * 60 * 60
+_obt_api_sem  = threading.BoundedSemaphore(3)
+_obt_api_lock = threading.Lock()
+_obt_api_last: dict[str, float] = {}   # 單號 → 上次用 API 查詢的 epoch（僅本次執行期間有效）
+# StatusId → 程式內慣用的狀態字；其餘沿用 API 回的 StatusName。
+# 301 在代碼表的說明是「配完」、官網顯示「順利送達」，這裡固定成後者，
+# 因為「順利送達」是全程式判斷已完成的依據。
+_OBT_STATUS_ID_NAMES = {"301": "順利送達"}
+
+
+def _obt_api_status_map(resp) -> dict[str, str]:
+    """把 OBTStatus 回應轉成 {單號: 狀態字}。只含有貨態的單號；回應不成功時回空 dict。"""
+    if not isinstance(resp, dict) or resp.get("IsOK") != "Y":
+        return {}
+    data = resp.get("Data")
+    items = data.get("OBTs") if isinstance(data, dict) else None
+    out: dict[str, str] = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        obt  = str(item.get("OBTNumber") or "").strip()
+        sid  = str(item.get("StatusId") or "").strip()
+        name = _OBT_STATUS_ID_NAMES.get(sid) or str(item.get("StatusName") or "").strip()
+        if obt and name:
+            out[obt] = name
+    return out
+
+
+def _fetch_obt_statuses(obts, on_result=None) -> dict[str, str]:
+    """
+    查詢多筆 OBT 的最新貨態，回傳 {單號: 狀態字}（key 為傳入的原始單號字串）。
+
+    優先用官方 OBTStatus API（一次 10 筆）；以下情況該單號退回官網網頁查詢
+    （_fetch_obt_status），所以 API 出任何狀況都不會讓貨態查不到：
+      - 沒設定客戶代號 / API 授權碼
+      - 該單號 2 小時內已用 API 查過
+      - API 連線失敗、回應失敗或被限流
+      - API 回應裡沒有該單號（尚無貨態）
+
+    on_result(obt, status) 每取得一筆就呼叫一次（在呼叫端的執行緒內），供畫面逐筆更新。
+    """
+    order: list[str] = []
+    seen: set[str] = set()
+    for o in obts:
+        if o and str(o).strip() and o not in seen:
+            seen.add(o)
+            order.append(o)
+
+    results: dict[str, str] = {}
+
+    def _emit(obt: str, status: str):
+        results[obt] = status
+        if on_result:
+            on_result(obt, status)
+
+    cfg = load_cfg()
+    has_api = bool(str(cfg.get("username") or "").strip()
+                   and str(cfg.get("api_token") or "").strip())
+
+    via_api: list[str] = []
+    if has_api:
+        now = time.time()
+        with _obt_api_lock:
+            for o in order:
+                key = str(o).strip()
+                if now - _obt_api_last.get(key, 0.0) >= _OBT_API_MIN_INTERVAL:
+                    via_api.append(o)
+                    _obt_api_last[key] = now   # 先佔位，避免其他執行緒同時重查同一單號
+    api_set = set(via_api)
+    via_web: list[str] = [o for o in order if o not in api_set]
+
+    if via_api:
+        client = make_client(cfg)
+        for i in range(0, len(via_api), OBT_STATUS_MAX_PER_CALL):
+            chunk = via_api[i:i + OBT_STATUS_MAX_PER_CALL]
+            found: dict[str, str] = {}
+            try:
+                with _obt_api_sem:
+                    resp = client.obt_status([str(o).strip() for o in chunk])
+                found = _obt_api_status_map(resp)
+                if not found:
+                    msg = resp.get("Message", "") if isinstance(resp, dict) else ""
+                    print(f"[貨態API] 無可用結果，改用網頁查詢：{str(msg)[:80]}", flush=True)
+            except Exception as e:
+                # 請求多半沒送達，釋放佔位讓下次還能再試 API
+                with _obt_api_lock:
+                    for o in chunk:
+                        _obt_api_last.pop(str(o).strip(), None)
+                print(f"[貨態API] 查詢失敗，改用網頁查詢：{str(e)[:80]}", flush=True)
+            for o in chunk:
+                status = found.get(str(o).strip())
+                if status:
+                    _emit(o, status)
+                else:
+                    via_web.append(o)
+
+    for o in via_web:
+        _emit(o, _fetch_obt_status(o))
+    return results
 
 
 # ─── tracking view ───────────────────────────────────────────────────────────
@@ -3976,10 +4104,8 @@ class TrackingView(SafeAfterMixin, tk.Frame):
                  command=lambda _obt=obt: self._copy(_obt)).pack(side="left", padx=(0, 4))
         TwButton(btns, "刪除", variant="ghost",
                  command=lambda _obt=obt: self._delete_one(_obt)).pack(side="left", padx=(0, 8))
-        _clbl = tk.Label(btns, text="取消配送", font=(FONT_FAMILY, _sz(9)), fg=ERR, bg=CARD,
-                         cursor="hand2")
-        _clbl.pack(side="left", padx=(0, 4))
-        _clbl.bind("<Button-1>", lambda e, _obt=obt, _n=name: self._cancel_obt(_obt, _n))
+        # 「取消配送」入口已依需求移除（黑貓後台處理註銷要 2～3 分鐘，使用上像沒反應），只留刪除。
+        # _cancel_obt 仍保留且可用；要恢復只需在這裡加回一個呼叫 self._cancel_obt(obt, name) 的按鈕。
 
         if divider:
             Hairline(self._list_body).pack(fill="x")
@@ -4057,18 +4183,49 @@ class TrackingView(SafeAfterMixin, tk.Frame):
             tk.Label(row, text=label, font=F_KICKER, bg=HAIR3, fg=MUTED, width=8, anchor="w").pack(side="left")
             tk.Label(row, text=val,   font=F_MONO,   bg=HAIR3, fg=INK,   anchor="w").pack(side="left")
 
-        msg_lbl = tk.Label(f, text="", font=F_SMALL, bg=PAPER, fg=ERR)
+        msg_lbl = tk.Label(f, text="", font=F_SMALL, bg=PAPER, fg=ERR,
+                           wraplength=380, justify="left")
         msg_lbl.pack(pady=(0, 10))
 
         btn_row = tk.Frame(f, bg=PAPER); btn_row.pack()
 
         def _do_cancel():
-            msg_lbl.config(
-                text="取消中…黑貓 API 處理可能需 1~2 分鐘，請耐心等待",
-                fg=MUTED)
-            for b in btn_row.winfo_children(): b.configure(state="disabled")
+            started = time.time()
+            state = {"done": False}
+            confirm_btn.configure(state="disabled")
+            # 等待期間仍可關閉視窗，取消在背景繼續，完成後跳通知
+            back_btn.configure(text="關閉視窗（背景繼續）")
+
+            def _tick():
+                if state["done"] or not dlg.winfo_exists():
+                    return
+                sec = int(time.time() - started)
+                msg_lbl.config(
+                    text=f"取消中… 已等待 {sec} 秒\n"
+                         "黑貓處理取消常需 2～3 分鐘（最長等 5 分鐘）。可以先關閉這個視窗，完成後會跳出通知。",
+                    fg=MUTED)
+                dlg.after(1000, _tick)
+            _tick()
+
             cfg = load_cfg()
             client = make_client(cfg)
+
+            def _finish_ok():
+                state["done"] = True
+                if dlg.winfo_exists():
+                    dlg.destroy()
+                self.refresh()
+                messagebox.showinfo("取消成功", f"宅配單 {obt} 已成功取消。", parent=self)
+
+            def _finish_fail(text: str):
+                state["done"] = True
+                if dlg.winfo_exists():
+                    msg_lbl.config(text=text, fg=ERR)
+                    confirm_btn.configure(state="normal")
+                    back_btn.configure(text="返回")
+                else:
+                    messagebox.showwarning("取消未完成", f"宅配單 {obt}\n\n{text}", parent=self)
+
             def run():
                 try:
                     resp = client.cancel_obt(obt)   # 傳 str（內部已處理）
@@ -4084,38 +4241,35 @@ class TrackingView(SafeAfterMixin, tk.Frame):
                             if r.get("obt_number") == obt:
                                 r["status"] = "已取消"
                         save_tracking(records)
-                        self.after(0, lambda: (dlg.destroy(), self.refresh(),
-                            messagebox.showinfo("取消成功", f"宅配單 {obt} 已成功取消。", parent=self)))
+                        self.after(0, _finish_ok)
                     else:
                         raw = (resp.get("Message")
                                or resp.get("ReturnMessage")
                                or str(resp))
-                        self.after(0, lambda m=raw: (
-                            msg_lbl.config(text=f"取消失敗：{m[:120]}", fg=ERR),
-                            [b.configure(state="normal") for b in btn_row.winfo_children()]))
+                        self.after(0, lambda m=explain_error(raw): _finish_fail(f"取消失敗：{m[:240]}"))
+                except ApiTimeoutError:
+                    self.after(0, lambda: _finish_fail(
+                        "黑貓超過 5 分鐘沒有回應，無法確認這張單是否已取消。\n"
+                        "可以再按一次取消：若回「查無訂單資料」代表先前已取消成功；"
+                        "或到契客專區確認。"))
                 except Exception as ex:
-                    msg = str(ex)
-                    if "timed out" in msg.lower():
-                        hint = "API 逾時（>180 秒未回應），請稍後再試或到客樂得手動取消"
-                    elif "500" in msg:
-                        hint = f"伺服器錯誤：{msg[:120]}"
-                    else:
-                        hint = msg[:120]
-                    self.after(0, lambda h=hint: (
-                        msg_lbl.config(text=h, fg=ERR),
-                        [b.configure(state="normal") for b in btn_row.winfo_children()]))
-            import threading; threading.Thread(target=run, daemon=True).start()
+                    self.after(0, lambda m=explain_error(str(ex)): _finish_fail(m[:240]))
+            threading.Thread(target=run, daemon=True).start()
 
-        tk.Button(btn_row, text="確認取消宅配", font=(FONT_FAMILY, _sz(12), "bold"),
+        confirm_btn = tk.Button(btn_row, text="確認取消宅配", font=(FONT_FAMILY, _sz(12), "bold"),
                   bg=HAIR3, fg=INK, relief="flat", padx=16, pady=6,
-                  cursor="hand2", command=_do_cancel).pack(side="left", padx=(0, 10))
-        tk.Button(btn_row, text="返回", font=(FONT_FAMILY, _sz(12)),
+                  cursor="hand2", command=_do_cancel)
+        confirm_btn.pack(side="left", padx=(0, 10))
+        back_btn = tk.Button(btn_row, text="返回", font=(FONT_FAMILY, _sz(12)),
                   bg=HAIR3, fg=INK2, relief="flat", padx=16, pady=6,
-                  cursor="hand2", command=dlg.destroy).pack(side="left")
+                  cursor="hand2", command=dlg.destroy)
+        back_btn.pack(side="left")
 
     def _delete_one(self, obt: str):
         if not messagebox.askyesno("確認刪除",
-                f"確定要刪除單號 {obt} 的紀錄嗎？\n\n刪除後此單號不會再被同步回來。", parent=self):
+                f"確定要刪除單號 {obt} 的紀錄嗎？\n\n"
+                "刪除後此單號不會再被同步回來。\n"
+                "注意：這只會移除本機的紀錄，不會通知黑貓取消這張單。", parent=self):
             return
         records = load_tracking()
         records = [r for r in records if r.get("obt_number") != obt]
@@ -4150,7 +4304,7 @@ class TrackingView(SafeAfterMixin, tk.Frame):
             lbl.config(text="● 查詢中…", bg=HAIR3, fg=MUTED)
 
         def run():
-            result = _fetch_obt_status(obt)
+            result = _fetch_obt_statuses([obt]).get(obt) or "無法解析"
             self.after(0, lambda: self._set_status(obt, result))
 
         threading.Thread(target=run, daemon=True).start()
@@ -4164,9 +4318,11 @@ class TrackingView(SafeAfterMixin, tk.Frame):
                 lbl.config(text="● 查詢中…", bg=HAIR3, fg=MUTED)
 
         def run():
-            for obt in obts:
-                result = _fetch_obt_status(obt)
-                self.after(0, lambda _o=obt, _r=result: self._set_status(_o, _r))
+            # 官方貨態 API 一次查 10 筆，查不到的單號才逐筆走網頁查詢
+            _fetch_obt_statuses(
+                obts,
+                on_result=lambda _o, _r: self.after(
+                    0, lambda _o=_o, _r=_r: self._set_status(_o, _r)))
             import datetime, time as _t
             self._last_sync_ts = _t.time()
             def _done(n=len(obts)):
@@ -5407,7 +5563,7 @@ class ConfigView(SafeAfterMixin, tk.Frame):
         self.api_status.config(text="● 測試中…", fg=MUTED)
         def run():
             try:
-                resp = client.print_obt([])
+                resp = client.print_obt([], timeout=30)
                 if "SrvTranId" in resp:
                     self.after(0, lambda: self.api_status.config(text="● 連線正常", fg=OK))
                     self.after(0, lambda: self.status.config(text="✓ 連線成功！API 授權碼有效", fg=OK))
@@ -6424,8 +6580,8 @@ class EpbTransferView(SafeAfterMixin, tk.Frame):
                     if r.get("success") and not r.get("obt_number"):
                         msg = "API 回成功但未取得 OBT 單號（檢查收件人電話/地址）"
                     else:
-                        msg = (r.get("message") or "未知錯誤")[:80]
-                    _append_build_log(f"✗ EPB 調撥:{doc_id} {msg}")
+                        msg = (r.get("message") or "未知錯誤")[:200]
+                    _append_build_log(f"✗ EPB 調撥:{doc_id} {msg[:120]}")
                     self.after(0, lambda d=doc_id, m=msg: self._log(f"✗ {d}：{m}"))
 
                 self.after(0, lambda _i=i, _t=total: (

@@ -35,8 +35,22 @@ fi
 PYTHON_PKG_VERSION="3.14.10"
 PYTHON_PKG_URL="https://www.python.org/ftp/python/$PYTHON_PKG_VERSION/python-$PYTHON_PKG_VERSION-macos11.pkg"
 
+# Apple 晶片的 Mac 一律以原生 arm64 執行 Python（arch -arm64）。
+# 只有 Intel 版 Python 的電腦會被當成「沒有可用的 Python」，改裝官方通用版，
+# 否則 macOS 26 起會跳「即將結束支援 Intel 架構」，之後的 macOS 拿掉 Rosetta 就無法執行。
+IS_APPLE_SILICON=0
+if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then IS_APPLE_SILICON=1; fi
+
+run_py() {
+    if [[ $IS_APPLE_SILICON -eq 1 ]]; then
+        arch -arm64 "$@"
+    else
+        "$@"
+    fi
+}
+
 python_ok() {
-    "$1" -c 'import sys, tkinter; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
+    run_py "$1" -c 'import sys, tkinter; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
 }
 
 # 依序找：python.org 官方版（新到舊）→ Homebrew → PATH 上的 python3。
@@ -87,7 +101,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 # 變數一律用 ${} 包住：macOS 內建 bash 3.2 在 zh_TW.UTF-8 locale 下，
 # $VAR 後面直接接全形字會把該字的第一個 byte 併進變數名，變成 unbound variable
-echo "✅ $("${PYTHON_BIN}" --version) 已就緒（${PYTHON_BIN}）"
+echo "✅ $(run_py "${PYTHON_BIN}" --version) 已就緒（${PYTHON_BIN}，$(run_py "${PYTHON_BIN}" -c 'import platform; print(platform.machine())')）"
 echo ""
 
 # ── 3. 取得最新版本資訊 ───────────────────────────────────────────────────────
@@ -107,7 +121,7 @@ echo ""
 
 # ── 4 + 5. 下載、解壓、安裝（全部用 Python，避開 unzip 中文路徑問題）─────────
 echo "📥 下載並安裝中（請稍候）..."
-"$PYTHON_BIN" -c "
+run_py "$PYTHON_BIN" -c "
 import urllib.request, urllib.error, zipfile, os, shutil, ssl, sys, tempfile
 
 zipball_url = '$ZIPBALL_URL'
@@ -166,18 +180,18 @@ echo ""
 echo "📦 建立虛擬環境並安裝套件..."
 VENV_DIR="$INSTALL_DIR/venv"
 # --clear：舊 venv 若是從別台 Mac 複製來的，符號連結已斷，不清空會重建失敗
-"$PYTHON_BIN" -m venv --clear "$VENV_DIR"
+run_py "$PYTHON_BIN" -m venv --clear "$VENV_DIR"
 VENV_PYTHON="$VENV_DIR/bin/python3"
-if ! "$VENV_PYTHON" -m pip --version &>/dev/null; then
+if ! run_py "$VENV_PYTHON" -m pip --version &>/dev/null; then
     echo "🔧 venv 內沒有 pip，補裝中..."
-    "$VENV_PYTHON" -m ensurepip --upgrade
+    run_py "$VENV_PYTHON" -m ensurepip --upgrade
 fi
 
 REQ_FILE="$INSTALL_DIR/黑貓主程式/requirements.txt"
 if [[ -f "$REQ_FILE" ]]; then
-    "$VENV_PYTHON" -m pip install --quiet --upgrade -r "$REQ_FILE"
+    run_py "$VENV_PYTHON" -m pip install --quiet --upgrade -r "$REQ_FILE"
 else
-    "$VENV_PYTHON" -m pip install --quiet --upgrade pyyaml "pypdf>=4.0" "requests>=2.31" customtkinter
+    run_py "$VENV_PYTHON" -m pip install --quiet --upgrade pyyaml "pypdf>=4.0" "requests>=2.31" customtkinter
 fi
 echo "✅ 套件安裝完成"
 

@@ -136,6 +136,24 @@ python3 -c "import yaml, pypdf; print('OK')"
 </details>
 
 <details>
+<summary><b>macOS 跳出「即將結束支援基於 Intel 架構的 App」</b></summary>
+
+v2.6.10 起，啟動程式與安裝程式在 Apple 晶片（M 系列）的 Mac 上會強制用原生模式執行，不會再以 Intel（Rosetta）模式啟動。
+
+- 如果通知寫的是別的程式名稱（不是從「啟動黑貓工具」開的），那是其他軟體造成的，與本工具無關。
+- 如果啟動時終端機顯示「這台 Mac 只有 Intel 版 Python」，請重新貼一次安裝指令，它會自動安裝 Apple 晶片版的 Python。
+
+</details>
+
+<details>
+<summary><b>建錯的宅配單怎麼處理</b></summary>
+
+在「貨運查詢」頁按該筆的「刪除」，會把它從本機清單移除，之後同步也不會再出現。
+刪除只影響本機紀錄，不會通知黑貓；需要在黑貓端作廢請到契客專區處理或聯絡黑貓營業所。
+
+</details>
+
+<details>
 <summary><b>建單失敗顯示 E009</b></summary>
 
 請到「**設定**」分頁按「**儲存設定**」，讓設定檔寫入固定的品名類別值，再重試。
